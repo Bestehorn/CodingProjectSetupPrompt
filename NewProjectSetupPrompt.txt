@@ -16,6 +16,8 @@ This project needs a proper structure for a professional Python software develop
 - If it does not exist, create a file "docs/ProjectPlan.md". This file contains two main sections: 1. the overall project plan with milestones and key deliverables and 2. a section that lists "todos" that are left for future work as well as open issues.
 - If it does not exist, create a file "docs/ProjectDesign.md". This file contains the main design principles and overall architecture of the project.
 - Create the following files in ".clinerules" that contain rules for the coding assistant Cline (documentation of this feature is at "https://docs.cline.bot/features/cline-rules" - review this page before starting this step):
+  - "use-venv.md": All command line commands must be executed inside the venv. No execution may happen without activated venv.
+  - "no-tmp-files-in-root.md": Coding assistants that create intermediate files to organize/automate/streamline their work such as implementation plans, scripts or other such assets must store them in "tmp/". No such files must be stored in the root directory of the project or any other directory. More specifically, implementation plan documents created by Cline with the "/deep-planning" command must be stored on "tmp/" and cannot be stored anywhere else.
   - "pre-work.md": Write a Cline rule that enforces the following points:
     1. Before any work starts, read "docs/forLLMConsumption.md" as well as "docs/ProjectDesign.md". No activity starts without this step.
 	2. All designs and implementations must adhere to software best-practices.
@@ -52,6 +54,8 @@ This project needs a proper structure for a professional Python software develop
 	3. The file structure in "test" mirrors the file structure in "src" (with the exception of "test/integration"), i.e., the tests for "src/package/x.py" belong into "test/package/x.py".
 	4. The project aims for an average code coverage of 80% or more. Nevertheless, the critical path of the application in "src" must be fully covered by the automated tests.
 	5. Running pytest must be default produce a code coverage report.
+- Copy all of the aforementioned files from .clinerules to corresponding directories of the other coding assistants such as:
+  - ".amazonq" for Amazon Q.
 - Create the following files in ".clinerules/workflows" for Cline workflows (read documentation at https://docs.cline.bot/features/slash-commands/workflows):
   - "ci-workflow.md": Create a workflow that forces Cline to execute the following steps/algorithm:
     1. Read the CI workflow as it is defined for this project.
