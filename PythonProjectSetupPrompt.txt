@@ -1,21 +1,53 @@
 This project needs a proper structure for a professional Python software development project with an automated CI/CD pipeline, testing and coding standards, coding assistant support, documentation and versioning. Hence, you are asked to complete the following:
-- Create the directories ".amazonq", ".clinerules", ".clinerules/workflows", ".vscode", "cdk", "docs", "scripts", "src", "test" and "tmp" if they do not already exist
+- Create the directories ".amazonq", ".clinerules", ".clinerules/workflows", ".vscode", "cdk", "config", "docs", "scripts", "src", "test" and "tmp" if they do not already exist
 - Create a .gitignore file if it does not exist; if such a file exist, keep the information in it and modify the file so that it has the default entries that keeps generated files of a Python project out of the repository. Add the tmp folder to .gitignore. and all directories that contain AWS CDK related output in "cdk".
-- setup a versioning system using setuptools-csm and an auto-generated file "src/_version.py" that serves as a single source of truth for the current version number. All other files must use this file for determining the current version and no other files where the version number is maintained are permitted.
-- create requirements.txt, requirements-dev.txt and cdk/requirements.txt files and analyze any files in "src", "cdk", "scripts" and "test" for potential dependencies. The dependencies must be grouped/managed in the files as follows:
-  - requirements.txt: Analyze files in "src" for production runtime dependencies. This file allows users of the code in this project to install these dependencies using "pip install -r requirements.txt", hence all dependencies must be properly listed.
-  - requirements-dev.txt: is for developers that contribute to this project and hence, in addition to the dependencies listed in requirements.txt, this file must also have all dependencies needed for development & deployment of the code, e.g., code linting.
-  - cdk/requirements.txt: Includes AWS CDK infrastructure dependencies (e.g., aws-cdk-lib>=2.0.0, constructs>=10.0.0, awscli, boto3 if needed). This file lists all dependencies that are needed for deploying infrastructure on AWS either manually or through CI workflows. CI workflows must use this file to install dependencies.
-  Adapt the content of these files based on actual usage in the codebase.
-- Create a basic python package project file (toml) and all other files that are necessary for publishing Python code. Ensure that this has dependency sections such as "dev" or "cdk" that use the requirements
+- setup a versioning system using setuptools-scm and an auto-generated file "src/_version.py" that serves as a single source of truth for the current version number. All other files must use this file for determining the current version and no other files where the version number is maintained are permitted.
+- Create a pyproject.toml file as the single source of truth for project metadata, dependencies, and build configuration:
+  - Configure [build-system] with setuptools>=64 and setuptools-scm>=8 as build requirements
+  - Configure [tool.setuptools_scm] for automatic version management from git tags
+  - Define [project] section with: name, dynamic version reference, description, authors, license, and Python version requirements (e.g., requires-python = ">=3.9")
+  - Analyze files in "src", "cdk", "scripts", and "test" directories to identify all dependencies used in the codebase
+  - Organize dependencies into appropriate sections:
+    * [project.dependencies]: Production runtime dependencies only (what end-users of the package need to run the code)
+    * [project.optional-dependencies] with the following groups:
+      - dev: All packages/dependencies needed for development of this project, e.g., [pytest, pytest-cov, black, isort, flake8, mypy, bandit, and any other development/testing tools]
+      - cdk: All packages/dependencies needed for deploymennt of this project using AWS CDK, e.g., [aws-cdk-lib>=2.0.0, constructs>=10.0.0, awscli, boto3 if needed for CDK constructs]
+  - Configure tool-specific settings in their respective sections: [tool.black], [tool.isort], [tool.mypy], [tool.pytest.ini_options]
+  - Set max-line-length=120 for all formatting and linting tools in their configuration sections
+  - Ensure _version.py and other generated files are excluded from linting tools in their respective configuration sections (e.g., exclude patterns in tool.black, tool.isort, etc.)
+  - Include all other metadata required for publishing Python packages (classifiers, keywords, urls, etc.)
+- Create an AWS account configuration management system to establish a single source of truth for AWS account IDs, profile names, and regions:
+  - (if it does not exist) create "config/aws_accounts.json" as the single source of truth for AWS account mappings. This JSON file maps environment names (e.g., "dev", "staging", "prod") to their corresponding AWS account IDs, AWS CLI profile names, default regions, and descriptions. Example structure:
+    ```json
+    {
+      "accounts": {
+        "dev": {
+          "account_id": "123456789012",
+          "profile": "myproject-dev",
+          "region": "us-east-1",
+          "description": "Development environment"
+        }
+      }
+    }
+    ```
+  - (if it does not exist) create "src/aws_config.py" module that provides type-safe, validated access to AWS account configurations. This module must:
+    * Implement a singleton pattern (using __new__) to ensure configuration is loaded only once
+    * Load and parse the config/aws_accounts.json file
+    * Define an AWSAccount dataclass (frozen=True) with fields: account_id, profile, region, description
+    * Provide a get_account(env_name: str) method that returns an AWSAccount object and raises ValueError with helpful message listing available environments if the environment name is unknown
+    * Provide convenience methods: get_account_id(env_name), get_profile(env_name), get_region(env_name), list_environments()
+    * Export a singleton instance 'aws_config' for import by other modules
+    * Use proper type hints throughout
+  - If config/aws_accounts.json contains sensitive information, add it to .gitignore and create "config/aws_accounts.json.template" with the same structure but placeholder values, documenting the expected format
+  - Document in "docs/forLLMConsumption.md" that all AWS account IDs, profile names, and regions must be accessed exclusively through the src/aws_config.py module - hardcoding these values anywhere in the codebase is strictly forbidden. Include usage examples for both CDK code and scripts.
 - Determine if this project's repo is on github, gitlab or some other repo hoster and setup a basic CI workflow with the following components depending on which repo hoster is used:
+  - Install dependencies: Use `pip install -e ".[dev,cdk]"` to install the project in editable mode with all optional dependency groups defined in pyproject.toml
   - run the tests which are stored in "test/"; the target test coverage for this project is 80%, but the critical path of the application must be fully covered by tests.
-  - modern coding standards are automatically checked (black, isort, flake8, mypy); note that generated files such as _version.py must be excluded from checks. We use a maximum code line length of 120 chars for this project. Ensure that this is reflected in the CI workflow.
+  - modern coding standards are automatically checked (black, isort, flake8, mypy); note that generated files such as _version.py must be excluded from checks. We use a maximum code line length of 120 chars for this project. Ensure that this is reflected in both the CI workflow commands and in the tool configuration sections of pyproject.toml.
   - run a security check using bandit
   - All of the three CI components above should be run (ideally, in parallel) and the CI workflow passes, if all of these tests pass. These checks must be run across all files containing code in "cdk", "src", "scripts" and "test"
-  - update requirements.txt and similar files so that they contain the dependencies required for running CI workflows.
 - If it does not exist, create a virtual environment "venv" for Python for this project. Create a settings.json in ".vscode" so that terminals are automatically started with an activated virtual environment.
-- Ensure that all dependendencies listed in any of the requirements.txt files are installed in the virtual environment
+- Install the project in editable mode with all dependency groups: Run `pip install -e ".[dev,cdk]"` in the activated virtual environment to ensure all dependencies defined in pyproject.toml are installed
 - If it does not exist, create a file "docs/forLLMConsumption.md". This file contains project-relevant information in a format suitable for coding assistants.
 - If it does not exist, create a file "docs/ProjectPlan.md". This file contains two main sections: 1. the overall project plan with milestones and key deliverables and 2. a section that lists "todos" that are left for future work as well as open issues.
 - If it does not exist, create a file "docs/ProjectDesign.md". This file contains the main design principles and overall architecture of the project.
@@ -61,7 +93,17 @@ This project needs a proper structure for a professional Python software develop
 	3. The file structure in "test" mirrors the file structure in "src" (with the exception of "test/integration"), i.e., the tests for "src/package/x.py" belong into "test/package/x.py".
 	4. The project aims for an average code coverage of 80% or more. Nevertheless, the critical path of the application in "src" must be fully covered by the automated tests.
 	5. Running pytest must be default produce a code coverage report.
-  - "manage-dependencies.md": When you add, remove or modify import statements in any of the source files, you must review the requirements.txt files of this project if there are changes needed. If such changes are needed, you must flag them and then implement the required changes.
+  - "manage-dependencies.md": When you add, remove or modify import statements in any of the source files, you must review pyproject.toml to determine if dependency changes are needed in [project.dependencies] or [project.optional-dependencies]. If such changes are needed, you must flag them explicitly and then implement the required changes in pyproject.toml. Remember that production dependencies go in [project.dependencies], development tools go in [project.optional-dependencies.dev], and CDK/infrastructure tools go in [project.optional-dependencies.cdk].
+  - "aws-config-rule.md": Write a Cline rule that enforces the following requirements for AWS account configuration:
+    1. All AWS account IDs, AWS CLI profile names, and AWS regions must be accessed exclusively through the src/aws_config.py module by importing the aws_config singleton instance.
+    2. Hardcoding AWS account IDs, profile names, or region names anywhere in the codebase (in CDK code, scripts, or application code) is strictly forbidden and must be flagged as a critical violation.
+    3. When code needs AWS account information, it must use one of the following patterns:
+       - `from src.aws_config import aws_config` followed by `aws_config.get_account(env_name)` or convenience methods
+       - For CDK: `account = aws_config.get_account("dev")` then use `account.account_id` and `account.region`
+       - For scripts with boto3: `profile = aws_config.get_profile("dev")` then `boto3.Session(profile_name=profile)`
+    4. Environment names (e.g., "dev", "staging", "prod") should be passed as parameters or environment variables, never hardcoded except in configuration contexts.
+    5. If new AWS accounts/environments need to be added, the only file that should be modified is config/aws_accounts.json - no code changes should be required.
+    6. Before writing any code that interacts with AWS services, verify that the src/aws_config.py module is being used correctly and that no AWS-specific values are hardcoded.
 - Copy all of the aforementioned files from .clinerules to corresponding directories of the other coding assistants such as (do not copy the workflows directory as this is not supported by Amazon Q):
   - ".amazonq" for Amazon Q.
 - Create the following files in ".clinerules/workflows" for Cline workflows (read documentation at https://docs.cline.bot/features/slash-commands/workflows):
