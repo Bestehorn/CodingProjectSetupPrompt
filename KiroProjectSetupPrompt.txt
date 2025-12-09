@@ -1,0 +1,1476 @@
+# Kiro Project Setup Prompt (Migration-Aware)
+# ============================================
+# Copy and paste this prompt into a new or existing project to set up
+# a professional Python development environment with Kiro-native configuration.
+# 
+# MIGRATION MODE: This prompt is designed to work with both new AND existing projects.
+# It will detect existing configurations and MERGE them with the standard setup,
+# preserving project-specific customizations while adding missing standard components.
+#
+# This prompt replaces Cline rules (.clinerules) and Amazon Q rules (.amazonq)
+# with Kiro steering files, hooks, and MCP server configuration.
+
+---
+
+## CRITICAL: MIGRATION-AWARE EXECUTION
+
+This prompt MUST be executed in migration-aware mode. For EVERY step:
+
+1. **DETECT**: Check if the target file/directory already exists
+2. **ANALYZE**: If it exists, analyze its current content for project-specific customizations
+3. **MERGE**: Combine existing customizations with the standard template
+4. **PRESERVE**: Never delete or overwrite project-specific configurations
+5. **REPORT**: Document what was preserved, what was added, and any conflicts found
+
+When conflicts arise between existing config and standard template:
+- **PRESERVE existing** project-specific settings
+- **ADD missing** standard settings
+- **FLAG conflicts** for user review
+- **DO NOT silently overwrite** any existing configuration
+
+---
+
+## PART 0: MCP SERVER VERIFICATION AND CONFIGURATION
+
+Before starting any other work, verify access to the following MCP servers. For each server, test connectivity by calling one of its tools. If a server is not accessible, configure it in `.kiro/settings/mcp.json` using the provided configuration, then verify access again.
+
+### Migration Behavior:
+- If `.kiro/settings/mcp.json` exists, READ it first and preserve all existing server configurations
+- Only ADD servers that are missing from the existing configuration
+- If a server exists but has different settings, KEEP the existing settings (they may be project-specific)
+- Report which servers were already configured vs newly added
+
+### Required MCP Servers:
+
+1. **AWS Doc MCP** - AWS documentation search and retrieval
+   - Test: Call `search_documentation` with query "S3 bucket"
+   - Config if missing:
+   ```json
+   "AWS Doc MCP": {
+     "command": "uvx",
+     "args": ["--from", "awslabs.aws-documentation-mcp-server@latest", "awslabs.aws-documentation-mcp-server.exe"],
+     "env": {
+       "FASTMCP_LOG_LEVEL": "ERROR",
+       "AWS_DOCUMENTATION_PARTITION": "aws"
+     },
+     "disabled": false,
+     "autoApprove": ["search_documentation", "read_documentation", "recommend"]
+   }
+   ```
+
+2. **Strands SDK MCP** - Strands agents documentation
+   - Test: Call `search_docs` with query "agent"
+   - Config if missing:
+   ```json
+   "Strands SDK MCP": {
+     "command": "uvx",
+     "args": ["strands-agents-mcp-server"],
+     "env": {
+       "FASTMCP_LOG_LEVEL": "INFO"
+     },
+     "disabled": false,
+     "autoApprove": ["search_docs", "fetch_doc"]
+   }
+   ```
+
+3. **AgentCore MCP** - Amazon Bedrock AgentCore documentation and management
+   - Test: Call `search_agentcore_docs` with query "memory"
+   - Config if missing:
+   ```json
+   "AgentCore MCP": {
+     "disabled": false,
+     "timeout": 60,
+     "type": "stdio",
+     "command": "uv",
+     "args": ["tool", "run", "--from", "awslabs.amazon-bedrock-agentcore-mcp-server@latest", "awslabs.amazon-bedrock-agentcore-mcp-server.exe"],
+     "env": {
+       "FASTMCP_LOG_LEVEL": "ERROR"
+     },
+     "autoApprove": ["search_agentcore_docs", "fetch_agentcore_doc", "manage_agentcore_runtime", "manage_agentcore_memory", "manage_agentcore_gateway"]
+   }
+   ```
+
+4. **AWS CDK Doc MCP** - AWS CDK documentation, patterns, and best practices
+   - Test: Call `CDKGeneralGuidance` with query "best practices"
+   - Config if missing:
+   ```json
+   "AWS CDK Doc MCP": {
+     "disabled": false,
+     "timeout": 60,
+     "type": "stdio",
+     "command": "uv",
+     "args": ["tool", "run", "--from", "awslabs.cdk-mcp-server@latest", "awslabs.cdk-mcp-server.exe"],
+     "env": {
+       "FASTMCP_LOG_LEVEL": "ERROR",
+       "AWS_PROFILE": "default",
+       "AWS_REGION": "us-west-2"
+     },
+     "autoApprove": ["CDKGeneralGuidance", "GetAwsSolutionsConstructPattern", "SearchGenAICDKConstructs", "LambdaLayerDocumentationProvider", "ExplainCDKNagRule", "CheckCDKNagSuppressions", "GenerateBedrockAgentSchema"]
+   }
+   ```
+
+---
+
+## PART 1: DIRECTORY STRUCTURE
+
+### Migration Behavior:
+- Only CREATE directories that don't exist
+- NEVER delete existing directories or their contents
+- Report which directories already existed vs newly created
+
+Create the following directories if they do not already exist:
+- `.kiro/steering/` - Kiro steering files (replaces .clinerules and .amazonq)
+- `.kiro/hooks/` - Kiro agent hooks (replaces .clinerules/workflows)
+- `.kiro/settings/` - Kiro settings including MCP configuration
+- `.kiro/specs/templates/` - Reusable spec templates for common patterns
+- `.vscode/` - VS Code settings
+- `cdk/` - AWS CDK infrastructure code
+- `config/` - Configuration files
+- `docs/` - Project documentation
+- `scripts/` - CLI tools and utilities
+- `src/` - Production source code
+- `test/` - Test code (mirrors src/ structure)
+- `test/integration/` - Integration tests requiring external systems
+- `tmp/` - Temporary files (gitignored)
+
+### Migration from Cline/Amazon Q:
+
+If `.clinerules/` exists:
+- READ all existing rules and extract their content
+- MIGRATE each rule to the corresponding `.kiro/steering/` file (see Part 8 mapping)
+- MERGE any project-specific rules that don't have a standard equivalent into a new `project-specific.md` steering file
+- PRESERVE any custom workflows in `.clinerules/workflows/` by converting them to Kiro hooks (see Part 9)
+- Only DELETE `.clinerules/` AFTER confirming all content has been migrated
+- Report what was migrated and any content that couldn't be automatically converted
+
+If `.amazonq/` exists:
+- READ all existing rules and check for project-specific content
+- MERGE any unique project-specific rules into `.kiro/steering/project-specific.md`
+- Only DELETE `.amazonq/` AFTER confirming all unique content has been preserved
+- Report what was migrated
+
+### Cline Rule to Kiro Steering Mapping:
+| Cline Rule | Kiro Steering File |
+|------------|-------------------|
+| use-venv.md | (merged into tech-stack.md) |
+| coding-rules.md | coding-standards.md |
+| design-rules.md | design-principles.md |
+| file-rules.md | file-organization.md |
+| pre-work.md | pre-work.md |
+| post-activity.md | post-activity.md |
+| test-rule.md | testing.md |
+| manage-dependencies.md | dependencies.md |
+| aws-config-rule.md | aws-config.md |
+| (any other) | project-specific.md |
+
+---
+
+## PART 2: GITIGNORE
+
+### Migration Behavior:
+- If `.gitignore` exists, READ it first
+- PRESERVE all existing entries (they may be project-specific)
+- ADD only missing standard entries
+- DO NOT remove or modify existing entries
+- Report what entries were added
+
+### Standard entries to ADD if missing:
+
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Type Checking
+.mypy_cache/
+
+# AWS CDK
+cdk/cdk.out/
+cdk/*.js
+cdk/*.d.ts
+
+# Temporary
+tmp/
+
+# Generated
+src/_version.py
+
+# Security
+bandit-report.json
+bandit_results.json
+
+# Environment
+.env
+.env.local
+
+# Sensitive Config
+config/aws_accounts.json
+```
+
+---
+
+## PART 3: VERSIONING WITH SETUPTOOLS-SCM
+
+### Migration Behavior:
+- If `src/_version.py` already exists and is manually maintained, PRESERVE it and skip setuptools-scm setup
+- If versioning is already configured in `pyproject.toml`, PRESERVE existing configuration
+- Only ADD setuptools-scm if no versioning system exists
+- Report the versioning approach being used (existing vs new)
+
+### If no versioning exists, set up:
+- Configure `pyproject.toml` with setuptools-scm
+- Auto-generate `src/_version.py` as the single source of truth
+- All version references must use this file
+
+---
+
+## PART 4: LEGACY DEPENDENCY MIGRATION
+
+This section handles migration from legacy dependency management formats to the modern pyproject.toml standard. This migration is CRITICAL for aligning with Python packaging best practices.
+
+### Detection Phase
+
+Check for the following legacy dependency management files:
+
+| File Pattern | Format | Priority |
+|--------------|--------|----------|
+| `requirements.txt`, `requirements-*.txt`, `*-requirements.txt` | pip requirements | High |
+| `setup.py` | setuptools (legacy) | High |
+| `setup.cfg` | setuptools (declarative) | High |
+| `Pipfile`, `Pipfile.lock` | pipenv | Medium |
+| `pyproject.toml` with `[tool.poetry]` | poetry | Medium |
+| `environment.yml`, `environment.yaml` | conda | Low |
+| `pyproject.toml` with `[tool.flit]` | flit | Low |
+
+### Migration Decision Tree
+
+```
+IF pyproject.toml exists with [project.dependencies]:
+    → Already using modern format, MERGE standard deps only
+ELSE IF any legacy format exists:
+    → Perform FULL MIGRATION to pyproject.toml
+ELSE (new project):
+    → Create fresh pyproject.toml with standard structure
+```
+
+### Requirements.txt Migration
+
+#### File to Section Mapping
+
+| Source File | Target Section | Install Command |
+|-------------|----------------|-----------------|
+| `requirements.txt` | `[project.dependencies]` | `pip install .` |
+| `requirements-prod.txt` | `[project.dependencies]` | `pip install .` |
+| `requirements-dev.txt` | `[project.optional-dependencies.dev]` | `pip install ".[dev]"` |
+| `dev-requirements.txt` | `[project.optional-dependencies.dev]` | `pip install ".[dev]"` |
+| `requirements-test.txt` | `[project.optional-dependencies.test]` | `pip install ".[test]"` |
+| `test-requirements.txt` | `[project.optional-dependencies.test]` | `pip install ".[test]"` |
+| `requirements-cdk.txt` | `[project.optional-dependencies.cdk]` | `pip install ".[cdk]"` |
+| `requirements-docs.txt` | `[project.optional-dependencies.docs]` | `pip install ".[docs]"` |
+| `requirements-{custom}.txt` | `[project.optional-dependencies.{custom}]` | `pip install ".[{custom}]"` |
+
+#### Parsing Rules
+
+1. **Preserve exact version pins**: Keep `==`, `>=`, `<=`, `~=`, `!=` exactly as specified
+2. **Preserve all dependencies**: Include transitive dependencies (do not filter)
+3. **Handle -r includes**: Parse included files, but avoid duplicating deps in target
+4. **Handle environment markers**: Preserve markers like `; python_version >= "3.9"`
+5. **Handle comments**: Ignore lines starting with `#`
+6. **Flag for manual review**:
+   - `-e` editable installs (local paths)
+   - `--index-url`, `--extra-index-url` (move to pip.conf or document)
+   - Local wheel files (`.whl`)
+   - Git URLs (`git+https://...`)
+
+#### Example Migration
+
+**Before:**
+```
+# requirements.txt
+boto3==1.28.0
+requests==2.31.0
+
+# requirements-dev.txt
+-r requirements.txt
+pytest==7.4.0
+black==23.7.0
+hypothesis==6.82.0
+
+# requirements-cdk.txt
+aws-cdk-lib==2.100.0
+constructs==10.2.0
+```
+
+**After (pyproject.toml):**
+```toml
+[project]
+dependencies = [
+    "boto3==1.28.0",
+    "requests==2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==7.4.0",
+    "black==23.7.0",
+    "hypothesis==6.82.0",
+]
+cdk = [
+    "aws-cdk-lib==2.100.0",
+    "constructs==10.2.0",
+]
+```
+
+### setup.py Migration
+
+#### Extraction Strategy
+
+1. **Try static analysis first** (AST parsing of setup.py)
+2. Extract from `setup()` call:
+   - `name` → `[project] name`
+   - `version` → `[project] version` (or dynamic if from file)
+   - `description` → `[project] description`
+   - `author`, `author_email` → `[project] authors`
+   - `url` → `[project.urls]`
+   - `python_requires` → `[project] requires-python`
+   - `install_requires` → `[project.dependencies]`
+   - `extras_require` → `[project.optional-dependencies]`
+   - `entry_points` → `[project.scripts]` or `[project.entry-points]`
+3. If static analysis fails, flag for manual review
+
+### setup.cfg Migration
+
+#### Section Mapping
+
+| setup.cfg Section | pyproject.toml Section |
+|-------------------|------------------------|
+| `[metadata] name` | `[project] name` |
+| `[metadata] version` | `[project] version` |
+| `[metadata] description` | `[project] description` |
+| `[metadata] author` | `[project] authors` |
+| `[options] python_requires` | `[project] requires-python` |
+| `[options] install_requires` | `[project.dependencies]` |
+| `[options.extras_require]` | `[project.optional-dependencies]` |
+| `[options.entry_points]` | `[project.scripts]` |
+
+### Pipfile Migration
+
+#### Section Mapping
+
+| Pipfile Section | pyproject.toml Section |
+|-----------------|------------------------|
+| `[packages]` | `[project.dependencies]` |
+| `[dev-packages]` | `[project.optional-dependencies.dev]` |
+| `[requires] python_version` | `[project] requires-python` |
+
+**Note**: Use `Pipfile.lock` for exact versions if available (more accurate than Pipfile).
+
+### Poetry pyproject.toml Migration
+
+If `pyproject.toml` exists with `[tool.poetry]` sections, reformat to PEP 621 standard:
+
+| Poetry Section | Standard Section |
+|----------------|------------------|
+| `[tool.poetry] name` | `[project] name` |
+| `[tool.poetry] version` | `[project] version` |
+| `[tool.poetry.dependencies]` | `[project.dependencies]` |
+| `[tool.poetry.group.dev.dependencies]` | `[project.optional-dependencies.dev]` |
+| `[tool.poetry.group.{name}.dependencies]` | `[project.optional-dependencies.{name}]` |
+| `[tool.poetry.scripts]` | `[project.scripts]` |
+
+**Note**: Remove `[tool.poetry]` sections after migration. Keep `poetry.lock` for reference but it won't be used.
+
+### Conda environment.yml Migration
+
+#### Handling Strategy
+
+1. Parse `dependencies:` list
+2. Separate pip dependencies (under `- pip:` subsection) from conda dependencies
+3. Migrate pip dependencies directly to `[project.dependencies]`
+4. **Flag conda-only packages** for manual review (may need pip equivalents)
+5. Warn about potential package name differences between conda and pip
+
+### Documentation Updates (REQUIRED)
+
+After migrating dependencies, update ALL documentation that references the old format:
+
+#### Files to Update
+
+1. **README.md**: 
+   - Change `pip install -r requirements.txt` → `pip install .`
+   - Change `pip install -r requirements-dev.txt` → `pip install ".[dev]"`
+   - Update development setup instructions
+
+2. **CONTRIBUTING.md** (if exists):
+   - Update installation instructions
+   - Update development environment setup
+
+3. **docs/forLLMConsumption.md**:
+   - Update dependency management section
+   - Document new install commands
+
+4. **docs/*.md** (all documentation):
+   - Search for `requirements.txt` references and update
+
+5. **CI/CD workflows** (`.gitlab-ci.yml`, `.github/workflows/*.yml`):
+   - Change `pip install -r requirements.txt` → `pip install -e .`
+   - Change `pip install -r requirements-dev.txt` → `pip install -e ".[dev]"`
+   - Update to use `pip install -e ".[dev,cdk]"` for full dev setup
+
+6. **Makefile** (if exists):
+   - Update install targets
+
+7. **Docker files** (if exist):
+   - Update pip install commands
+
+### Cleanup (After Successful Migration)
+
+After verifying the migration is complete and working:
+
+1. **DELETE legacy files** (version control provides backup):
+   - `requirements*.txt` files
+   - `setup.py` (if fully migrated)
+   - `setup.cfg` (if fully migrated)
+   - `Pipfile`, `Pipfile.lock` (if migrated)
+   - `environment.yml` (if migrated)
+
+2. **DO NOT DELETE**:
+   - `pyproject.toml` (this is the target!)
+   - Any lock files you want to keep for reference
+
+### Migration Report Section
+
+Add to the final migration report:
+
+```markdown
+## Dependency Migration
+
+### Source Format Detected
+- [List all legacy files found]
+
+### Migration Mapping
+| Source | Target Section | Packages Migrated |
+|--------|----------------|-------------------|
+| requirements.txt | [project.dependencies] | 15 packages |
+| requirements-dev.txt | [project.optional-dependencies.dev] | 8 packages |
+| ... | ... | ... |
+
+### Files Deleted
+- [List of deleted legacy files]
+
+### Documentation Updated
+- [List of files where install commands were updated]
+
+### Manual Review Required
+- [List any items that couldn't be automatically migrated]
+- [List any conflicts or ambiguities found]
+
+### New Install Commands
+- Production: `pip install .`
+- Development: `pip install -e ".[dev]"`
+- Full (dev + cdk): `pip install -e ".[dev,cdk]"`
+```
+
+---
+
+## PART 5: PYPROJECT.TOML CONFIGURATION
+
+### Migration Behavior:
+- If `pyproject.toml` exists, READ it completely first
+- PRESERVE all existing sections and settings
+- MERGE standard settings with existing ones:
+  - For dependencies: ADD missing ones, keep existing versions
+  - For tool configs: ADD missing settings, PRESERVE existing customizations
+  - For project metadata: PRESERVE existing, ADD missing fields only
+- If migrating from legacy format (Part 4), create pyproject.toml with migrated content
+- Report what was preserved, what was added, and any conflicts
+
+### Build System (add if missing):
+```toml
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "src/_version.py"
+```
+
+### Project Metadata (preserve existing, add missing):
+- name, dynamic version, description, authors, license
+- requires-python = ">=3.9" (or preserve existing if stricter)
+- Analyze src/, cdk/, scripts/, test/ to identify all dependencies
+
+### Dependencies (merge strategy):
+- `[project.dependencies]`: PRESERVE existing, ADD missing production deps
+- `[project.optional-dependencies.dev]`: PRESERVE existing, ADD missing: pytest, pytest-cov, hypothesis, black, isort, flake8, mypy, pylint, bandit, pre-commit, boto3-stubs
+- `[project.optional-dependencies.cdk]`: PRESERVE existing, ADD missing: aws-cdk-lib>=2.0.0, constructs>=10.0.0
+
+Note: pylint is used for TARGETED checks only (circular imports, complexity, duplicate code) - not as a replacement for flake8.
+
+### Tool Configuration (merge with existing, use max-line-length=120 as default):
+
+For each tool section, if it exists:
+- PRESERVE all existing settings
+- ADD missing standard settings
+- If line-length differs from 120, KEEP existing (project-specific choice)
+
+```toml
+[tool.black]
+line-length = 120  # or preserve existing
+exclude = '''
+/(
+    src/_version\.py
+    | \.git
+    | \.venv
+    | venv
+    | cdk\.out
+)/
+'''
+# MERGE with any existing exclude patterns
+
+[tool.isort]
+profile = "black"
+line_length = 120  # or preserve existing
+skip = ["src/_version.py", ".venv", "venv", "cdk.out"]
+# MERGE with any existing skip patterns
+
+[tool.mypy]
+python_version = "3.9"  # or preserve existing
+ignore_missing_imports = true
+exclude = ["src/_version.py", "venv", ".venv", "cdk.out"]
+# PRESERVE any existing type checking strictness settings
+
+[tool.pytest.ini_options]
+testpaths = ["test"]  # or preserve existing
+addopts = "--cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=80"
+# MERGE with existing addopts, preserve coverage threshold if different
+filterwarnings = ["ignore::DeprecationWarning"]
+# MERGE with existing filterwarnings
+
+[tool.bandit]
+exclude_dirs = ["test", "venv", ".venv", "cdk.out"]
+# MERGE with existing exclude_dirs
+skips = ["B101"]
+# MERGE with existing skips
+
+[tool.pylint.master]
+# Pylint is used for TARGETED checks only - not full linting (flake8 handles that)
+ignore = ["_version.py", "venv", ".venv", "cdk.out"]
+# MERGE with existing ignore patterns
+
+[tool.pylint.messages_control]
+# Disable ALL checks except the specific ones we want
+disable = ["all"]
+# Enable only: circular imports, complexity, and duplicate code
+enable = [
+    "R0401",  # cyclic-import
+    "R0801",  # duplicate-code
+    "R0913",  # too-many-arguments
+    "R0914",  # too-many-locals
+    "R0915",  # too-many-statements
+    "R0912",  # too-many-branches
+]
+
+[tool.pylint.design]
+max-args = 8           # Maximum number of arguments for function/method
+max-locals = 20        # Maximum number of local variables
+max-statements = 50    # Maximum number of statements in function/method
+max-branches = 15      # Maximum number of branch for function/method body
+min-similarity-lines = 6  # Minimum lines for duplicate code detection
+```
+
+---
+
+## PART 6: AWS ACCOUNT CONFIGURATION
+
+### Migration Behavior:
+- If `config/aws_accounts.json` exists, PRESERVE it completely (contains project-specific accounts)
+- If `config/aws_accounts.json.template` exists, PRESERVE it
+- If `src/aws_config.py` exists, ANALYZE it for project-specific customizations and PRESERVE them
+- Only CREATE files that don't exist
+- Report what was preserved vs created
+
+### Create `config/aws_accounts.json.template` ONLY if it doesn't exist:
+```json
+{
+  "accounts": {
+    "dev": {
+      "account_id": "123456789012",
+      "profile": "myproject-dev",
+      "region": "us-east-1",
+      "description": "Development environment"
+    },
+    "staging": {
+      "account_id": "234567890123",
+      "profile": "myproject-staging", 
+      "region": "us-east-1",
+      "description": "Staging environment"
+    },
+    "prod": {
+      "account_id": "345678901234",
+      "profile": "myproject-prod",
+      "region": "us-east-1",
+      "description": "Production environment"
+    }
+  }
+}
+```
+
+### Create `src/aws_config.py` ONLY if it doesn't exist:
+- Singleton pattern with `__new__`
+- Load and parse `config/aws_accounts.json`
+- `AWSAccount` dataclass (frozen=True): account_id, profile, region, description
+- Methods: `get_account(env)`, `get_account_id(env)`, `get_profile(env)`, `get_region(env)`, `list_environments()`
+- Raise `ValueError` with helpful message if environment unknown
+- Export singleton instance `aws_config`
+
+If `src/aws_config.py` exists but lacks some methods, ADD the missing methods while PRESERVING existing implementation.
+
+---
+
+## PART 7: CI/CD WORKFLOW
+
+### Migration Behavior:
+This is CRITICAL - CI workflows often have project-specific customizations that MUST be preserved.
+
+- If `.gitlab-ci.yml` exists:
+  - READ it completely and ANALYZE all stages, jobs, and scripts
+  - PRESERVE all existing jobs and their configurations
+  - PRESERVE all project-specific variables, artifacts, and cache settings
+  - PRESERVE any custom stages or job dependencies
+  - Only ADD missing standard jobs (test, quality, security) if they don't exist
+  - If similar jobs exist with different names, KEEP existing names
+  - MERGE script commands: ADD missing checks, PRESERVE existing ones
+  - Report what was preserved, added, and any potential conflicts
+
+- If `.github/workflows/` exists:
+  - Apply same migration logic to GitHub Actions workflows
+  - PRESERVE all existing workflows and jobs
+
+- If no CI exists, create standard workflow
+
+### Standard CI Components (add if missing, merge if similar exists):
+
+#### For GitLab - Standard jobs to ADD if no equivalent exists:
+```yaml
+stages:
+  - test
+  - quality
+  - security
+  # PRESERVE any additional existing stages
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+  # MERGE with existing variables
+
+.python-setup: &python-setup
+  image: python:3.9  # or preserve existing image
+  before_script:
+    - pip install -e ".[dev,cdk]"
+    # MERGE with existing before_script commands
+
+test:  # or preserve existing test job name
+  <<: *python-setup
+  stage: test
+  script:
+    - pytest test/ --cov=src --cov-report=term-missing --cov-fail-under=80
+    # MERGE with existing test commands
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  # PRESERVE existing artifacts, rules, etc.
+
+quality:  # or preserve existing quality job name
+  <<: *python-setup
+  stage: quality
+  script:
+    # MERGE these with existing quality checks:
+    - black --check src/ test/ scripts/ cdk/ --exclude="src/_version.py"
+    - isort --check-only src/ test/ scripts/ cdk/ --skip="src/_version.py"
+    - flake8 src/ test/ scripts/ cdk/ --max-line-length=120 --extend-ignore=E203,W503 --exclude="src/_version.py"
+    - mypy src/ --exclude="src/_version.py" --ignore-missing-imports
+    # Pylint for targeted checks (circular imports, complexity, duplicate code)
+    - pylint src/ cdk/ scripts/ --disable=all --enable=R0401,R0801,R0913,R0914,R0915,R0912 --max-args=8 --max-locals=20 --ignore="_version.py"
+    # PRESERVE any additional project-specific quality checks
+
+security:  # or preserve existing security job name
+  <<: *python-setup
+  stage: security
+  script:
+    - bandit -r src/ scripts/ -x "src/_version.py" -f json -o bandit-report.json || true
+    - bandit -r src/ scripts/ -x "src/_version.py"
+    # PRESERVE any additional security checks
+```
+
+### Conflict Resolution for CI:
+- If existing CI has different Python version, PRESERVE existing
+- If existing CI has different coverage threshold, PRESERVE existing
+- If existing CI has additional tools (pylint, safety, etc.), PRESERVE them
+- If existing CI has deployment stages, PRESERVE them completely
+- Flag any conflicts between standard and existing for user review
+
+---
+
+## PART 8: KIRO STEERING FILES
+
+### Migration Behavior:
+- If `.kiro/steering/` files already exist, READ them first
+- MERGE standard content with existing project-specific content
+- PRESERVE any project-specific rules or customizations
+- ADD missing standard sections
+- If migrating from `.clinerules/`, incorporate that content
+- Create `project-specific.md` for any rules that don't fit standard categories
+- Report what was preserved, merged, and added
+
+Create/merge the following files in `.kiro/steering/`:
+
+### 8.1 `tech-stack.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Technology Stack
+
+## Core Technologies
+- Python 3.9+ with type hints and dataclasses
+- AWS CDK v2 for infrastructure
+- boto3 for AWS SDK
+- pytest + hypothesis for testing
+
+## Code Quality Tools
+- black (120 char line length)
+- isort (black profile)
+- flake8 (E203, W503 ignored)
+- mypy (strict type checking)
+- pylint (targeted checks only: circular imports, complexity, duplicate code)
+- bandit (security scanning)
+
+## Preferred Libraries
+- dataclasses for models (not pydantic unless needed)
+- logging (not print)
+- pathlib (not os.path)
+- typing for all type hints
+
+## Virtual Environment
+All commands must execute inside the activated venv. No execution without activated venv.
+
+<!-- MIGRATION: Add any project-specific technology choices below -->
+```
+
+### 8.2 `pre-work.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Pre-Work Requirements
+
+Before starting ANY work:
+
+1. Read and understand project context:
+   - #[[file:docs/forLLMConsumption.md]]
+   - #[[file:docs/ProjectDesign.md]]
+
+2. All designs and implementations must adhere to software best-practices
+
+3. Flag any conflicts with existing documentation or design
+
+4. Review existing code in relevant directories before implementing new functionality
+
+<!-- MIGRATION: Add any project-specific pre-work requirements below -->
+```
+
+### 8.3 `coding-standards.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Coding Standards (NO EXCEPTIONS)
+
+1. **JSON Field Access**: Use string constants, not literals
+   - BAD: `obj["content"]`
+   - GOOD: `FIELD_CONTENT = "content"; obj[FIELD_CONTENT]`
+
+2. **OOP Design**: Use abstractions and interfaces to avoid duplication
+   - One class per file with matching filename
+   - Inheritance visible from class/file names
+
+3. **Modular Functions**: Break down into reusable library-style functions
+
+4. **Relative Imports**: All imports within `src/` must be relative
+
+5. **Logging**: Use `logging` library, minimal logging for success cases
+
+6. **Named Parameters**: Always use named parameters at call sites
+   - BAD: `f(5, "abc")`
+   - GOOD: `f(a=5, b="abc")`
+
+7. **Error Handling**: 
+   - Throw exceptions for errors (not empty lists/zero values)
+   - Return `None` for expected failures
+   - Custom exceptions with `details=None` default
+
+8. **Exception Hierarchy**: Group similar exceptions into classes inheriting from base
+
+9. **Line Length**: Maximum 120 characters
+
+<!-- MIGRATION: Add any project-specific coding standards below -->
+```
+
+### 8.4 `design-principles.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Design Principles
+
+1. **Pre-Design Reading**: Re-read `docs/ProjectDesign.md` before any design work
+
+2. **Modularization Priority**: 
+   - Separate functions into independent pieces
+   - Use inheritance for modularity
+   - Review existing components for reuse
+
+3. **Avoid Breaking Changes**: 
+   - Review existing functions before changes
+   - Flag any breaking changes explicitly
+
+4. **Design Patterns**: Use patterns (Factory, Strategy, Repository, etc.) for maintainability
+
+<!-- MIGRATION: Add any project-specific design principles below -->
+```
+
+### 8.5 `file-organization.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# File Organization Rules
+
+1. **Root Directory**: Only global config files (README.md, pyproject.toml, etc.)
+
+2. **Directory Purposes**:
+   - `src/`: Production code only
+   - `test/`: Pytest test code only (mirrors src/ structure)
+   - `test/integration/`: Integration tests requiring external systems
+   - `cdk/`: AWS CDK infrastructure code
+   - `scripts/`: CLI tools and manual test scripts
+   - `docs/`: Documentation for humans and coding assistants
+   - `tmp/`: Temporary files (cleaned after tasks)
+
+3. **No Temp Files in src/**: Temporary code goes in `tmp/`
+
+4. **Clean tmp/ After Tasks**: Deleting tmp/ must not affect the solution
+
+<!-- MIGRATION: Add any project-specific file organization rules below -->
+```
+
+### 8.6 `post-activity.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Post-Activity Checklist
+
+Before marking any activity as complete:
+
+1. **Run All Tests**: `pytest test/` - fix any failures before continuing
+
+2. **Run CI Checks Locally**:
+   ```bash
+   black src/ test/ scripts/ cdk/ --check --exclude="src/_version.py"
+   isort src/ test/ scripts/ cdk/ --check-only --skip="src/_version.py"
+   flake8 src/ test/ scripts/ cdk/ --max-line-length=120 --extend-ignore=E203,W503 --exclude="src/_version.py"
+   mypy src/ --exclude="src/_version.py" --ignore-missing-imports
+   pylint src/ cdk/ scripts/ --disable=all --enable=R0401,R0801,R0913,R0914,R0915,R0912 --max-args=8 --max-locals=20 --ignore="_version.py"
+   bandit -r src/ scripts/ -x "src/_version.py"
+   ```
+   Fix all issues before continuing.
+   
+   Note: pylint is used for targeted checks only:
+   - R0401: Circular imports
+   - R0801: Duplicate code
+   - R0913: Too many arguments (>8)
+   - R0914: Too many local variables (>20)
+   - R0915: Too many statements (>50)
+   - R0912: Too many branches (>15)
+
+3. **Update Documentation**: 
+   - Update `docs/` to reflect any changes
+   - Update `docs/forLLMConsumption.md` with consolidated info
+
+4. **Flag Deviations**: Report any documentation/implementation mismatches
+
+5. **Clean tmp/**: Remove all temporary files
+
+<!-- MIGRATION: Add any project-specific post-activity checks below -->
+<!-- If project has additional CI checks, add them to step 2 -->
+```
+
+### 8.7 `testing.md` (conditional - test files):
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "test/**/*.py"
+---
+# Testing Standards
+
+1. **Test Location**: 
+   - Unit tests in `test/` (mirrors `src/` structure)
+   - Integration tests in `test/integration/`
+
+2. **Coverage Target**: 80% minimum, 100% for critical paths
+
+3. **Test Structure**: 
+   - Tests for `src/package/x.py` go in `test/package/test_x.py`
+   - Use pytest fixtures for common setup
+   - Use hypothesis for property-based testing
+
+4. **Running Tests**: `pytest test/ --cov=src --cov-report=term-missing`
+
+<!-- MIGRATION: Add any project-specific testing standards below -->
+<!-- Preserve existing coverage thresholds if different from 80% -->
+```
+
+### 8.8 `cdk-rules.md` (conditional - CDK files):
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "cdk/**/*.py"
+---
+# CDK Development Rules
+
+1. **Use L2 Constructs**: Prefer high-level constructs over L1 (Cfn*)
+
+2. **AWS Config Access**: Use `src/aws_config.py` for account IDs, profiles, regions
+   ```python
+   from src.aws_config import aws_config
+   account = aws_config.get_account("dev")
+   ```
+
+3. **Stack Organization**: One stack per file, clear naming
+
+4. **CDK Best Practices**: Use AWS CDK Doc MCP for guidance
+   - Call `CDKGeneralGuidance` for best practices
+   - Call `GetAwsSolutionsConstructPattern` for patterns
+
+<!-- MIGRATION: Add any project-specific CDK rules below -->
+```
+
+### 8.9 `aws-config.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# AWS Configuration Rules (CRITICAL)
+
+1. **Single Source of Truth**: All AWS account IDs, profiles, and regions MUST come from `src/aws_config.py`
+
+2. **NO HARDCODING**: Hardcoded AWS values are FORBIDDEN and must be flagged as critical violations
+
+3. **Usage Patterns**:
+   ```python
+   from src.aws_config import aws_config
+   
+   # Get full account info
+   account = aws_config.get_account("dev")
+   print(account.account_id, account.region)
+   
+   # Convenience methods
+   profile = aws_config.get_profile("dev")
+   session = boto3.Session(profile_name=profile)
+   ```
+
+4. **Adding Environments**: Only modify `config/aws_accounts.json` - no code changes needed
+
+<!-- MIGRATION: Add any project-specific AWS configuration rules below -->
+```
+
+### 8.10 `dependencies.md` (conditional - Python files):
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "**/*.py"
+---
+# Dependency Management
+
+When adding, removing, or modifying imports:
+
+1. **Review pyproject.toml** for needed dependency changes
+
+2. **Dependency Locations**:
+   - Production deps → `[project.dependencies]`
+   - Dev tools → `[project.optional-dependencies.dev]`
+   - CDK/infra → `[project.optional-dependencies.cdk]`
+
+3. **Flag Changes**: Explicitly flag any dependency changes needed
+
+4. **Install After Changes**: `pip install -e ".[dev,cdk]"`
+
+<!-- MIGRATION: Add any project-specific dependency rules below -->
+```
+
+### 8.11 `lambda-rules.md` (conditional - Lambda handlers):
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "src/lambda_handlers/**/*.py"
+---
+# Lambda Handler Rules
+
+1. **Cold Start Optimization**: Minimize imports, use lazy loading
+
+2. **Handler Structure**:
+   ```python
+   def handler(event: dict, context) -> dict:
+       # Validate input
+       # Process
+       # Return response
+   ```
+
+3. **Error Handling**: Return proper error responses, don't raise unhandled exceptions
+
+4. **Logging**: Use structured logging with request IDs
+
+<!-- MIGRATION: Add any project-specific Lambda rules below -->
+```
+
+### 8.12 `project-specific.md` (for migrated/custom rules):
+```markdown
+---
+inclusion: always
+---
+# Project-Specific Rules
+
+This file contains project-specific rules that were either:
+- Migrated from .clinerules/ or .amazonq/
+- Custom rules that don't fit standard categories
+
+<!-- MIGRATION: This file is auto-populated during migration -->
+<!-- Add any rules from .clinerules/ that don't fit other categories -->
+```
+
+---
+
+## PART 9: KIRO HOOKS
+
+### Migration Behavior:
+- If `.kiro/hooks/` files already exist, PRESERVE them
+- If migrating from `.clinerules/workflows/`, convert workflows to hooks
+- ADD missing standard hooks
+- DO NOT overwrite existing hooks with same name
+- Report what was preserved, converted, and added
+
+### Workflow to Hook Conversion:
+| Cline Workflow | Kiro Hook |
+|----------------|-----------|
+| ci-workflow.md | run-ci-workflow.json |
+| test-coverage.md | test-coverage.json |
+| documentation.md | sync-documentation.json |
+
+Create/preserve the following files in `.kiro/hooks/`:
+
+### 9.1 `post-implementation-ci.json`:
+```json
+{
+  "name": "Post-Implementation CI Check",
+  "description": "Runs CI checks after Kiro completes implementation work",
+  "trigger": {
+    "type": "onAgentComplete"
+  },
+  "action": {
+    "type": "sendMessage",
+    "message": "Implementation complete. Run the post-activity checklist: 1) pytest test/ 2) black/isort/flake8/mypy checks 3) Update docs if needed. Report any failures."
+  }
+}
+```
+
+### 9.2 `lint-on-save.json`:
+```json
+{
+  "name": "Lint Python on Save",
+  "description": "Runs black and isort on saved Python files",
+  "trigger": {
+    "type": "onFileChange",
+    "pattern": "**/*.py"
+  },
+  "action": {
+    "type": "shell",
+    "command": "black --check --quiet ${file} && isort --check-only --quiet ${file}"
+  }
+}
+```
+
+### 9.3 `run-ci-workflow.json`:
+```json
+{
+  "name": "Run Full CI Workflow",
+  "description": "Manually trigger full CI checks",
+  "trigger": {
+    "type": "manual"
+  },
+  "action": {
+    "type": "sendMessage",
+    "message": "Execute the full CI workflow: 1) Read .gitlab-ci.yml (or .github/workflows/) 2) Run all quality checks 3) Fix any issues 4) Run pytest 5) Fix failing tests. Repeat until all checks pass."
+  }
+}
+```
+
+### 9.4 `test-coverage.json`:
+```json
+{
+  "name": "Check Test Coverage",
+  "description": "Manually trigger test coverage analysis",
+  "trigger": {
+    "type": "manual"
+  },
+  "action": {
+    "type": "sendMessage",
+    "message": "Analyze test coverage: 1) Run pytest with coverage 2) If below target (check pyproject.toml or CI config for threshold), identify uncovered code 3) Generate tests for uncovered critical paths 4) Repeat until coverage target met."
+  }
+}
+```
+
+### 9.5 `sync-documentation.json`:
+```json
+{
+  "name": "Sync Documentation",
+  "description": "Manually trigger documentation sync",
+  "trigger": {
+    "type": "manual"
+  },
+  "action": {
+    "type": "sendMessage",
+    "message": "Sync documentation: 1) Read all docs/ files 2) Compare with src/ and cdk/ implementation 3) Identify conflicts and deviations 4) Update docs to match implementation 5) Update docs/forLLMConsumption.md with consolidated info."
+  }
+}
+```
+
+---
+
+## PART 10: SPEC TEMPLATES
+
+### Migration Behavior:
+- If `.kiro/specs/templates/` already has templates, PRESERVE them
+- ADD missing standard templates
+- DO NOT overwrite existing templates
+- Report what was preserved vs added
+
+Create reusable spec templates in `.kiro/specs/templates/` (only if they don't exist):
+
+### 10.1 `new-lambda/requirements.md`:
+```markdown
+# Requirements: [Lambda Name]
+
+## Introduction
+[Brief description of the Lambda function's purpose]
+
+## Glossary
+- **Lambda_Handler**: The AWS Lambda function entry point
+
+## Requirements
+
+### Requirement 1: Core Functionality
+**User Story:** As a [role], I want [Lambda to do X], so that [benefit]
+
+#### Acceptance Criteria
+1. WHEN [trigger event] THEN the Lambda_Handler SHALL [response]
+2. WHEN [error condition] THEN the Lambda_Handler SHALL [error handling]
+```
+
+### 10.2 `new-model/requirements.md`:
+```markdown
+# Requirements: [Model Name]
+
+## Introduction
+[Brief description of the data model's purpose]
+
+## Glossary
+- **Model_Name**: [Definition]
+
+## Requirements
+
+### Requirement 1: Data Structure
+**User Story:** As a developer, I want [model to represent X], so that [benefit]
+
+#### Acceptance Criteria
+1. THE Model_Name SHALL contain fields: [list fields]
+2. WHEN serializing Model_Name THEN the system SHALL produce valid JSON
+3. WHEN deserializing JSON THEN the system SHALL produce a valid Model_Name instance
+```
+
+---
+
+## PART 11: VS CODE SETTINGS
+
+### Migration Behavior:
+- If `.vscode/settings.json` exists, READ it first
+- PRESERVE all existing settings (they may be project-specific)
+- MERGE standard settings: ADD missing, PRESERVE existing
+- Pay special attention to:
+  - Python interpreter path (may be project-specific)
+  - Test configuration (may have custom args)
+  - Formatting settings (may have custom line length)
+- Report what was preserved vs added
+
+### Standard settings to ADD if missing (merge with existing):
+```json
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.env.windows": {
+    "PATH": "${workspaceFolder}/venv/Scripts;${env:PATH}"
+  },
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["test/"],
+  "editor.formatOnSave": true,
+  "python.formatting.provider": "black",
+  "python.formatting.blackArgs": ["--line-length", "120"],
+  "python.sortImports.args": ["--profile", "black"],
+  "[python]": {
+    "editor.rulers": [120],
+    "editor.defaultFormatter": "ms-python.black-formatter"
+  }
+}
+```
+
+Note: Adjust paths for Linux/Mac if needed:
+- Linux/Mac interpreter: `${workspaceFolder}/venv/bin/python`
+- Linux/Mac PATH: `${workspaceFolder}/venv/bin:${env:PATH}`
+
+---
+
+## PART 12: DOCUMENTATION
+
+### Migration Behavior:
+- If documentation files exist, PRESERVE their content
+- ANALYZE existing docs for project-specific information
+- ADD missing standard sections
+- DO NOT overwrite existing content
+- Report what was preserved vs added
+
+### `docs/forLLMConsumption.md`:
+If it doesn't exist, create it. If it exists:
+- PRESERVE all existing content
+- ADD missing standard sections at the end
+- Ensure it includes:
+  - Project overview and purpose
+  - Architecture and design patterns
+  - Directory structure
+  - Key components and their responsibilities
+  - AWS configuration usage
+  - Testing strategy
+  - Common commands
+
+### `docs/ProjectPlan.md`:
+If it doesn't exist, create it. If it exists:
+- PRESERVE all existing content
+- Ensure it has sections for:
+  - Overall project plan with milestones
+  - TODOs and open issues
+
+### `docs/ProjectDesign.md`:
+If it doesn't exist, create it. If it exists:
+- PRESERVE all existing content
+- Ensure it has sections for:
+  - Main design principles
+  - Overall architecture
+  - Component interactions
+
+---
+
+## PART 13: VIRTUAL ENVIRONMENT
+
+### Migration Behavior:
+- If `venv/` exists and is functional, PRESERVE it
+- Only create new venv if it doesn't exist or is broken
+- If `requirements.txt` or `requirements-dev.txt` exist, ensure their deps are in pyproject.toml
+- Report venv status
+
+### If no venv exists:
+1. Create virtual environment:
+   ```bash
+   python -m venv venv
+   ```
+
+2. Activate and install dependencies:
+   ```bash
+   # Windows
+   venv\Scripts\activate
+   # Linux/Mac
+   source venv/bin/activate
+   
+   pip install -e ".[dev,cdk]"
+   ```
+
+### If venv exists:
+1. Verify it's functional: `venv/Scripts/python --version` (or `venv/bin/python`)
+2. Ensure dependencies are up to date: `pip install -e ".[dev,cdk]"`
+
+---
+
+## PART 14: FINAL VERIFICATION AND MIGRATION REPORT
+
+After completing all setup:
+
+### Verification Checklist:
+1. **Verify MCP Servers**: Test each MCP server is accessible
+2. **Verify Virtual Environment**: Confirm venv is activated and dependencies installed
+3. **Run CI Checks**: Execute all quality checks (black, isort, flake8, mypy, bandit)
+4. **Run Tests**: Execute pytest with coverage
+5. **Verify Steering Files**: Confirm all `.kiro/steering/` files are created/merged
+6. **Verify Hooks**: Confirm all `.kiro/hooks/` files are created/preserved
+
+### Migration Report (REQUIRED):
+Generate a comprehensive migration report with the following sections:
+
+```markdown
+# Migration Report
+
+## Summary
+- Project type: [New / Existing with Cline / Existing with Amazon Q / Existing without assistant config]
+- Migration date: [date]
+
+## MCP Servers
+| Server | Status | Action Taken |
+|--------|--------|--------------|
+| AWS Doc MCP | [Accessible/Configured/Failed] | [Already configured/Added/Error details] |
+| Strands SDK MCP | ... | ... |
+| AgentCore MCP | ... | ... |
+| AWS CDK Doc MCP | ... | ... |
+
+## Files Created
+- [List of new files created]
+
+## Files Preserved (Existing)
+- [List of existing files that were kept unchanged]
+
+## Files Merged
+- [List of files where existing content was merged with standard content]
+- For each: [What was preserved vs what was added]
+
+## Migrations Performed
+- [List of migrations from .clinerules/ or .amazonq/]
+- For each: [Source file → Destination file, what content was migrated]
+
+## Configuration Conflicts
+- [List any conflicts between existing config and standard template]
+- For each: [What was kept (existing) vs what was skipped (standard)]
+
+## Warnings
+- [Any issues that need user attention]
+- [Any manual steps required]
+
+## Deleted Files/Directories
+- [List of .clinerules/, .amazonq/, or other files deleted after migration]
+- [Confirmation that content was preserved before deletion]
+
+## Recommendations
+- [Any suggested improvements or follow-up actions]
+```
+
+---
+
+## APPENDIX: QUICK REFERENCE
+
+### Standard Directory Structure:
+```
+project/
+├── .kiro/
+│   ├── steering/          # Kiro rules (replaces .clinerules)
+│   ├── hooks/             # Kiro automation (replaces workflows)
+│   ├── settings/          # MCP and other settings
+│   └── specs/             # Feature specifications
+│       └── templates/     # Reusable spec templates
+├── .vscode/               # VS Code settings
+├── cdk/                   # AWS CDK infrastructure
+├── config/                # Configuration files
+├── docs/                  # Documentation
+├── scripts/               # CLI tools
+├── src/                   # Production code
+├── test/                  # Test code
+│   └── integration/       # Integration tests
+└── tmp/                   # Temporary files (gitignored)
+```
+
+### Key Files:
+| File | Purpose |
+|------|---------|
+| `pyproject.toml` | Project metadata, dependencies, tool config |
+| `.gitlab-ci.yml` | CI/CD pipeline |
+| `src/aws_config.py` | AWS account configuration singleton |
+| `config/aws_accounts.json` | AWS account mappings |
+| `docs/forLLMConsumption.md` | Consolidated docs for AI assistants |
+
+### Steering File Inclusion Types:
+| Type | When Applied |
+|------|--------------|
+| `inclusion: always` | Every interaction |
+| `inclusion: fileMatch` | When matching files are open |
+| `inclusion: manual` | When explicitly referenced with # |
+
+### Hook Trigger Types:
+| Trigger | When Fired |
+|---------|------------|
+| `onFileChange` | When a file is saved |
+| `onAgentComplete` | After Kiro finishes a task |
+| `onNewSession` | When a new chat session starts |
+| `manual` | When user clicks the hook button |
+
+### Dependency Migration Quick Reference:
+| Legacy Format | Target in pyproject.toml |
+|---------------|--------------------------|
+| `requirements.txt` | `[project.dependencies]` |
+| `requirements-dev.txt` | `[project.optional-dependencies.dev]` |
+| `requirements-test.txt` | `[project.optional-dependencies.test]` |
+| `requirements-cdk.txt` | `[project.optional-dependencies.cdk]` |
+| `setup.py install_requires` | `[project.dependencies]` |
+| `setup.py extras_require` | `[project.optional-dependencies]` |
+| `Pipfile [packages]` | `[project.dependencies]` |
+| `Pipfile [dev-packages]` | `[project.optional-dependencies.dev]` |
+| `poetry dependencies` | `[project.dependencies]` |
+| `poetry group.dev` | `[project.optional-dependencies.dev]` |
+
+### Install Commands After Migration:
+| Purpose | Command |
+|---------|---------|
+| Production only | `pip install .` |
+| Development | `pip install -e ".[dev]"` |
+| CDK/Infrastructure | `pip install -e ".[cdk]"` |
+| Full development | `pip install -e ".[dev,cdk]"` |
+| All optional deps | `pip install -e ".[dev,cdk,test,docs]"` |
+
+---
+
+# END OF PROMPT
