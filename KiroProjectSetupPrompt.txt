@@ -1086,93 +1086,582 @@ This file contains project-specific rules that were either:
 ## PART 9: KIRO HOOKS
 
 ### Migration Behavior:
-- If `.kiro/hooks/` files already exist, PRESERVE them
-- If migrating from `.clinerules/workflows/`, convert workflows to hooks
-- ADD missing standard hooks
-- DO NOT overwrite existing hooks with same name
-- Report what was preserved, converted, and added
+- If `.kiro/hooks/` directory exists with hook files, READ and PRESERVE all existing hooks
+- Existing hooks take precedence - DO NOT overwrite any existing `.kiro.hook` files
+- If `.clinerules/workflows/` directory exists, automatically convert ALL workflow files to Kiro hooks (see Automatic Workflow Conversion Process below)
+- ADD missing standard hooks only if they don't already exist
+- Report what was preserved, what was converted from workflows, and what was added
+- Only DELETE `.clinerules/workflows/` AFTER confirming all workflows have been converted
 
-### Workflow to Hook Conversion:
-| Cline Workflow | Kiro Hook |
-|----------------|-----------|
-| ci-workflow.md | run-ci-workflow.json |
-| test-coverage.md | test-coverage.json |
-| documentation.md | sync-documentation.json |
+### Automatic Workflow Conversion Process:
 
-Create/preserve the following files in `.kiro/hooks/`:
+**CRITICAL RULE**: For EACH workflow file in `.clinerules/workflows/`, create ONE corresponding hook file. NEVER combine multiple workflows into a single hook.
 
-### 9.1 `post-implementation-ci.json`:
+When `.clinerules/workflows/` directory is detected, execute the following steps:
+
+**Step 1: Scan for Workflow Files**
+- List all `.md` files in `.clinerules/workflows/` directory
+- Count the total number of workflow files found
+- Prepare to process each file individually
+
+**Step 2: Process Each Workflow File Separately**
+
+For EACH workflow file (process one at a time, never combine):
+
+a. **Read Complete Content**
+   - Read the ENTIRE content of THIS specific workflow file
+   - Do NOT abbreviate, summarize, or skip any content
+   - Preserve all formatting, numbering, code blocks, and instructions
+
+b. **Determine Trigger Type**
+   - Analyze the workflow filename and content to determine appropriate trigger
+   - Use these heuristics:
+     * If filename contains "save", "edit", "change", "lint", "format" → `fileEdited` trigger
+     * If filename contains "post", "after", "complete", "finish" → `agentComplete` trigger
+     * If filename contains "run", "check", "manual" → `manual` trigger
+     * Default → `manual` trigger (safest option when uncertain)
+   - For `fileEdited` triggers, determine appropriate file patterns from workflow content
+
+c. **Generate Hook Filename**
+   - Take the workflow filename (e.g., `ci-workflow.md`)
+   - Remove the `.md` extension
+   - Add the `.kiro.hook` extension
+   - Result: `ci-workflow.kiro.hook`
+   - This creates a one-to-one mapping: 1 workflow file → 1 hook file
+
+d. **Create Hook File**
+   - Create ONE new `.kiro.hook` file in `.kiro/hooks/` directory
+   - Use the complete hook JSON structure (see Hook File Format Reference below)
+   - Set `enabled` to `true`
+   - Set `name` based on workflow filename (convert kebab-case to Title Case)
+   - Set `description` based on workflow purpose (extract from content or filename)
+   - Set `version` to `"1"`
+   - Set `when.type` to the determined trigger type
+   - Set `when.patterns` if using `fileEdited` trigger
+   - Set `then.type` to `"askAgent"` (most workflows are agent instructions)
+   - Set `then.prompt` to the COMPLETE workflow content (no abbreviation)
+
+e. **Verify Conversion**
+   - Confirm the hook file was created successfully
+   - Verify the hook file contains all required fields
+   - Verify the prompt field contains the complete workflow content
+
+f. **Move to Next Workflow**
+   - Repeat steps a-e for the next workflow file
+   - Continue until ALL workflow files have been processed
+
+**Step 3: Report Conversion Results**
+- List each workflow file and its corresponding hook file in a table format:
+  ```
+  | Source Workflow | Target Hook | Trigger Type | Status |
+  |-----------------|-------------|--------------|--------|
+  | ci-workflow.md | ci-workflow.kiro.hook | agentComplete | ✓ Converted |
+  | test-coverage.md | test-coverage.kiro.hook | manual | ✓ Converted |
+  ```
+- Confirm total number of workflows converted
+- Report any workflows that couldn't be automatically converted (with reasons)
+- Confirm that each workflow was converted to exactly ONE hook (not combined)
+
+**Step 4: Verify One-to-One Mapping**
+- Count workflow files in `.clinerules/workflows/`
+- Count newly created hook files in `.kiro/hooks/`
+- Verify: Number of workflow files = Number of new hook files
+- If counts don't match, report the discrepancy and identify missing conversions
+
+**CRITICAL REMINDERS**:
+- Each workflow file MUST be converted to exactly ONE hook file
+- NEVER combine multiple workflows into a single hook
+- NEVER abbreviate or summarize workflow content in the hook prompt
+- Process workflows sequentially, one at a time
+- Verify one-to-one mapping before considering conversion complete
+
+### Hook File Format Reference:
+
+All Kiro hooks must follow this JSON structure with `.kiro.hook` file extension:
+
+#### Complete Hook JSON Structure
+
 ```json
 {
-  "name": "Post-Implementation CI Check",
-  "description": "Runs CI checks after Kiro completes implementation work",
-  "trigger": {
-    "type": "onAgentComplete"
+  "enabled": true,
+  "name": "Hook Name",
+  "description": "What this hook does and when it runs",
+  "version": "1",
+  "when": {
+    "type": "fileEdited|agentComplete|manual",
+    "patterns": ["**/*.py", "**/*.md"]
   },
-  "action": {
-    "type": "sendMessage",
-    "message": "Implementation complete. Run the post-activity checklist: 1) pytest test/ 2) black/isort/flake8/mypy checks 3) Update docs if needed. Report any failures."
+  "then": {
+    "type": "askAgent|shell",
+    "prompt": "Complete instructions here",
+    "command": "shell command here"
   }
 }
 ```
 
-### 9.2 `lint-on-save.json`:
+#### Required Fields with Type Requirements
+
+**Top-Level Fields:**
+- `enabled` (boolean): Whether the hook is active. Set to `true` to enable the hook, `false` to disable it without deleting the file.
+- `name` (string): Human-readable hook name. Use Title Case (e.g., "Post-Implementation CI Check").
+- `description` (string): Clear description of what the hook does and when it runs. Should help users understand the hook's purpose at a glance.
+- `version` (string): Version number as a string (e.g., "1"). Must be a string, not a number.
+
+**Trigger Configuration (`when` object):**
+- `type` (string, required): Specifies when the hook should execute. Must be one of:
+  - `"fileEdited"`: Triggers when files matching the patterns are saved
+  - `"agentComplete"`: Triggers when the agent finishes executing a task
+  - `"manual"`: Triggers only when user explicitly invokes the hook
+- `patterns` (array of strings, required for `fileEdited` type only): Glob patterns for file matching
+  - Examples: `["**/*.py"]`, `["src/**/*.ts", "test/**/*.ts"]`, `["**/*.md"]`
+  - Use `**` for recursive directory matching
+  - Multiple patterns are OR'd together (any match triggers the hook)
+
+**Action Configuration (`then` object):**
+- `type` (string, required): Specifies what action to perform. Must be one of:
+  - `"askAgent"`: Sends a message to the agent with instructions
+  - `"shell"`: Executes a shell command
+- `prompt` (string, required for `askAgent` type): Complete instructions for the agent
+  - Must contain full, unabbreviated instructions
+  - Should include all steps, sub-steps, and details
+  - Can reference steering files or workflow content
+  - Should specify expected outputs or reporting requirements
+- `command` (string, required for `shell` type): Shell command to execute
+  - Can use variables like `${file}` for the edited file path
+  - Should be a single command or command chain
+  - Example: `"black --check ${file} && isort --check-only ${file}"`
+
+#### Trigger Type Options and Configurations
+
+**1. File Edited Trigger (`fileEdited`)**
+
+Triggers when files matching specified patterns are saved.
+
 ```json
 {
-  "name": "Lint Python on Save",
-  "description": "Runs black and isort on saved Python files",
-  "trigger": {
-    "type": "onFileChange",
-    "pattern": "**/*.py"
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.py",
+      "**/*.md",
+      "src/**/*.ts"
+    ]
+  }
+}
+```
+
+**Use cases:**
+- Running formatters or linters on save
+- Updating documentation when code changes
+- Triggering tests for modified files
+- Validating configuration files
+
+**Pattern matching rules:**
+- `**/*.py` - All Python files in any directory
+- `src/**/*.py` - Python files only in src/ and subdirectories
+- `*.json` - JSON files in root directory only
+- `**/*.{ts,tsx}` - TypeScript files with either extension
+
+**2. Agent Complete Trigger (`agentComplete`)**
+
+Triggers when the agent finishes executing a task.
+
+```json
+{
+  "when": {
+    "type": "agentComplete"
+  }
+}
+```
+
+**Use cases:**
+- Running post-implementation checks (tests, linting, security scans)
+- Updating documentation after code changes
+- Cleaning up temporary files
+- Generating reports or summaries
+
+**No additional configuration needed** - triggers after every agent task completion.
+
+**3. Manual Trigger (`manual`)**
+
+Triggers only when user explicitly invokes the hook via UI button or command.
+
+```json
+{
+  "when": {
+    "type": "manual"
+  }
+}
+```
+
+**Use cases:**
+- On-demand CI workflow execution
+- Manual test coverage analysis
+- Documentation synchronization
+- One-off maintenance tasks
+
+**No additional configuration needed** - user controls when to execute.
+
+#### Action Type Options and Configurations
+
+**1. Ask Agent Action (`askAgent`)**
+
+Sends a message to the agent with instructions to execute.
+
+```json
+{
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the following steps:\n\n1. Run all unit tests\n2. Check code coverage\n3. Report results"
+  }
+}
+```
+
+**Prompt guidelines:**
+- Include complete, step-by-step instructions
+- Specify expected outputs or reports
+- Reference steering files if needed (e.g., "Execute requirements from .kiro/steering/post-activity.md")
+- Include all conditional logic and decision points
+- Preserve all formatting, code blocks, and examples
+- DO NOT abbreviate or summarize instructions
+
+**Use cases:**
+- Complex multi-step workflows
+- Tasks requiring agent intelligence (analysis, code generation, etc.)
+- Tasks that need to read/write multiple files
+- Tasks requiring decision-making based on context
+
+**2. Shell Command Action (`shell`)**
+
+Executes a shell command directly.
+
+```json
+{
+  "then": {
+    "type": "shell",
+    "command": "black --check ${file} && isort --check-only ${file}"
+  }
+}
+```
+
+**Available variables:**
+- `${file}` - Path to the file that triggered the hook (for `fileEdited` triggers)
+- `${workspaceFolder}` - Path to the workspace root directory
+
+**Command guidelines:**
+- Use `&&` to chain commands (all must succeed)
+- Use `||` for fallback commands (if first fails, try second)
+- Use `;` to run commands sequentially regardless of success
+- Keep commands simple and fast (avoid long-running processes)
+
+**Use cases:**
+- Quick formatting checks
+- Simple linting or validation
+- File operations (copy, move, delete)
+- Running specific test files
+
+#### Content Preservation Guidelines
+
+When converting workflows or referencing steering files in hooks, it is CRITICAL to preserve the complete content without any abbreviation or summarization. The hook's effectiveness depends entirely on providing the agent with complete, detailed instructions.
+
+**CRITICAL RULE**: The `prompt` field in a hook must contain the COMPLETE, UNABBREVIATED content from the source workflow or steering file. Partial or summarized instructions will result in incomplete or incorrect agent behavior.
+
+**What to Preserve (Everything):**
+
+1. **All Numbered Steps and Sub-Steps**
+   - Preserve the complete step hierarchy (1, 1.1, 1.2, 2, 2.1, etc.)
+   - Include every step, even if it seems "obvious"
+   - Maintain the exact numbering and indentation structure
+   - Example: If the source has 6 main steps with 15 sub-steps, the hook must have all 6 main steps with all 15 sub-steps
+
+2. **All Code Blocks and Examples**
+   - Include every code example exactly as written
+   - Preserve all syntax highlighting markers (```python, ```bash, etc.)
+   - Include all inline code snippets (backtick-wrapped text)
+   - Preserve all command-line examples with their full syntax
+   - Example: If the source shows `pytest test/ --cov=src --cov-report=term-missing`, the hook must include the complete command with all flags
+
+3. **All Conditional Logic and Decision Points**
+   - Preserve all "if/then" conditions
+   - Include all "when/while" clauses
+   - Maintain all branching logic (if X then Y, else Z)
+   - Preserve all exception cases and edge case handling
+   - Example: "If tests fail, fix them before continuing. If coverage is below 80%, add more tests."
+
+4. **All Tool Invocations and Commands**
+   - Include complete command syntax with all flags and arguments
+   - Preserve all tool names and their exact invocation patterns
+   - Include all environment variables or configuration requirements
+   - Maintain all command chains (&&, ||, ;)
+   - Example: `black --check src/ test/ --exclude="src/_version.py"` must include all paths and flags
+
+5. **All Output Requirements and Reporting Instructions**
+   - Preserve all instructions about what to report
+   - Include all formatting requirements for reports
+   - Maintain all success/failure criteria
+   - Preserve all logging or documentation update requirements
+   - Example: "Provide a summary including: test results, coverage percentage, issues found, and actions taken"
+
+6. **All Error Handling and Edge Cases**
+   - Include all error handling instructions
+   - Preserve all edge case handling
+   - Maintain all validation requirements
+   - Include all retry or fallback logic
+   - Example: "If bandit fails, review the report and fix critical issues. If no critical issues, document why warnings are acceptable."
+
+7. **All Context and Explanatory Text**
+   - Preserve all explanatory sentences and context
+   - Include all "why" explanations, not just "what" instructions
+   - Maintain all warnings and cautions
+   - Preserve all references to other files or documentation
+   - Example: "This step is critical because..." or "Note: This must be done before..."
+
+8. **All Formatting and Structure**
+   - Preserve all line breaks and paragraph structure
+   - Maintain all bullet points and list formatting
+   - Keep all bold, italic, or other emphasis markers
+   - Preserve all section headers and dividers
+   - Maintain all indentation for nested content
+
+**What NOT to Do (Never):**
+
+1. **DO NOT Abbreviate**
+   - ❌ BAD: "Run tests and fix issues"
+   - ✅ GOOD: "Run pytest test/ --cov=src --cov-report=term-missing. If any tests fail, analyze the failure, fix the code, and re-run until all tests pass."
+
+2. **DO NOT Summarize Multi-Step Processes**
+   - ❌ BAD: "Check code quality"
+   - ✅ GOOD: "1. Run black --check src/ test/\n2. Run isort --check-only src/ test/\n3. Run flake8 src/ test/ --max-line-length=120\n4. Fix any issues found in steps 1-3"
+
+3. **DO NOT Remove "Obvious" Steps**
+   - ❌ BAD: "Run tests" (assuming the agent knows which test command)
+   - ✅ GOOD: "Run pytest test/ with coverage: pytest test/ --cov=src --cov-report=term-missing --cov-fail-under=80"
+
+4. **DO NOT Skip Code Examples**
+   - ❌ BAD: "Use the standard pytest command"
+   - ✅ GOOD: "Run: pytest test/ --cov=src --cov-report=term-missing"
+
+5. **DO NOT Simplify Conditional Logic**
+   - ❌ BAD: "Handle errors appropriately"
+   - ✅ GOOD: "If tests fail, fix the code and re-run. If coverage is below 80%, add tests for uncovered lines. If linting fails, run black and isort to auto-fix, then re-check."
+
+6. **DO NOT Omit Reporting Requirements**
+   - ❌ BAD: "Complete the checks"
+   - ✅ GOOD: "After completing all checks, provide a summary including: (1) test pass/fail count, (2) coverage percentage, (3) linting issues found and fixed, (4) any remaining issues"
+
+7. **DO NOT Use Vague References**
+   - ❌ BAD: "Run the usual CI checks"
+   - ✅ GOOD: "Run the following CI checks: black --check, isort --check-only, flake8, mypy, pylint (targeted), and bandit"
+
+8. **DO NOT Use Placeholder Text**
+   - ❌ BAD: "Run tests, etc."
+   - ❌ BAD: "Complete the workflow as described above"
+   - ❌ BAD: "...and so on"
+   - ✅ GOOD: Include every single step explicitly
+
+**Verification Checklist:**
+
+Before finalizing a hook with workflow content, verify:
+
+- [ ] Every numbered step from the source is present in the hook
+- [ ] Every code block and command example is included verbatim
+- [ ] Every conditional statement (if/when/while) is preserved
+- [ ] Every tool invocation includes all flags and arguments
+- [ ] Every reporting requirement is explicitly stated
+- [ ] Every error handling instruction is included
+- [ ] No phrases like "etc.", "and so on", or "as described" appear
+- [ ] The prompt is self-contained (doesn't require reading other files to understand)
+- [ ] Line breaks and formatting match the source structure
+- [ ] The total character count is similar to the source (not significantly shorter)
+
+**Example Comparison:**
+
+**❌ INCORRECT (Abbreviated):**
+```json
+{
+  "prompt": "Run tests and CI checks. Fix any issues. Update docs."
+}
+```
+
+**✅ CORRECT (Complete):**
+```json
+{
+  "prompt": "Execute the following steps:\n\n1. **Run Tests**: Execute pytest test/ --cov=src --cov-report=term-missing --cov-fail-under=80. If any tests fail, analyze the failure, fix the code, and re-run until all tests pass.\n\n2. **CI Checks**: Run the following checks in order:\n   - black --check src/ test/ scripts/ cdk/ --exclude=\"src/_version.py\"\n   - isort --check-only src/ test/ scripts/ cdk/ --skip=\"src/_version.py\"\n   - flake8 src/ test/ scripts/ cdk/ --max-line-length=120 --extend-ignore=E203,W503 --exclude=\"src/_version.py\"\n   - mypy src/ --exclude=\"src/_version.py\" --ignore-missing-imports\n   - bandit -r src/ scripts/ -x \"src/_version.py\"\n   Fix all issues found before continuing.\n\n3. **Update Documentation**: Review docs/ directory and update any files that don't reflect current implementation. Include:\n   - Architecture changes\n   - New components or modules\n   - Updated commands or workflows\n   - Changed configuration requirements\n\n4. **Report**: Provide a summary including:\n   - Test results (pass/fail counts, coverage percentage)\n   - CI check results (which checks passed, which failed, what was fixed)\n   - Documentation changes made (which files updated, what sections changed)\n   - Any remaining issues that need attention"
+}
+```
+
+**Key Difference**: The correct version includes every detail, every command with full syntax, every reporting requirement, and every conditional instruction. The incorrect version loses critical information that the agent needs to execute the workflow correctly.
+
+**Remember**: When in doubt, include MORE detail, not less. The agent cannot infer missing steps or "obvious" requirements. Complete, explicit instructions ensure consistent, correct execution every time.
+
+#### Complete Real-World Example
+
+This example demonstrates a fully-configured hook with all required fields and complete workflow content:
+
+```json
+{
+  "enabled": true,
+  "name": "Post-Activity Compliance Check",
+  "description": "Automatically executes mandatory post-activity requirements including unit tests, CI workflow compliance checks, documentation updates, LLM documentation consolidation, deviation review, and temporary file cleanup",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "src/**/*.py",
+      "test/**/*.py",
+      "scripts/**/*.py",
+      "docs/**/*.md",
+      ".gitlab-ci.yml",
+      "pyproject.toml",
+      "requirements*.txt"
+    ]
   },
-  "action": {
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the mandatory post-activity requirements from .clinerules/post-activity.md:\n\n1. **Unit Test Execution**: Run ALL unit tests using pytest. If any tests fail, continue editing code until all tests pass. Implementation is never finished with failing tests.\n\n2. **CI Workflow Compliance Check**: Read .gitlab-ci.yml and execute all commit checking steps locally:\n   - black code formatting check\n   - isort import sorting check  \n   - flake8 linting\n   - mypy type checking\n   - bandit security scanning\n   Fix any issues identified before continuing.\n\n3. **Documentation Update Requirements**: Once all tests succeed, revise and update entire documentation in docs/ to reflect any changes in the project so new developers can get started quickly.\n\n4. **LLM Documentation Consolidation**: Consolidate all relevant documentation for LLM/coding assistant consumption in docs/forLLMConsumption.md.\n\n5. **Documentation Deviation Review**: Review entire documentation in docs/ and identify deviations between documentation and current implementation. Explicitly flag these deviations.\n\n6. **Temporary File Cleanup**: Remove all files in tmp/ directory.\n\nProvide an activity summary including:\n- Status of all unit tests (pass/fail counts)\n- Results of CI workflow checks\n- Documentation changes made\n- Any deviations identified between documentation and implementation  \n- Confirmation that temporary files have been cleaned up\n\nNO ACTIVITY IS COMPLETE until all these steps are successfully executed. Partial completion is not acceptable."
+  }
+}
+```
+
+**Key observations from this example:**
+1. The `enabled` field is a boolean (`true`), not a string
+2. The `version` field is a string (`"1"`), not a number
+3. The `when.type` is `"fileEdited"` with a comprehensive `patterns` array covering all relevant file types
+4. The `then.type` is `"askAgent"` with a complete, unabbreviated `prompt` field
+5. The prompt contains ALL workflow instructions with every step, sub-step, and requirement preserved
+6. No abbreviation or summarization - every detail from the source workflow is included
+7. The prompt includes specific tool invocations, expected outputs, and completion criteria
+
+#### Content Preservation Guidelines
+
+When converting workflows or referencing steering files in hooks:
+
+**DO:**
+- Include ALL content from the source file in the prompt field
+- Preserve all numbered steps, sub-steps, and details
+- Preserve all code examples, command examples, and specific tool invocations
+- Preserve all conditional logic and decision points
+- Preserve all output requirements and reporting instructions
+- Preserve all formatting, including line breaks, indentation, and markdown
+- Include complete error handling and edge case instructions
+- Specify all expected outputs and success criteria
+
+**DO NOT:**
+- Abbreviate or shorten any instructions
+- Summarize multi-step processes into single steps
+- Remove "obvious" or "implied" steps
+- Skip code examples or command syntax
+- Simplify conditional logic
+- Omit reporting or output requirements
+- Use phrases like "etc.", "and so on", or "as described above"
+
+**Example of INCORRECT abbreviation:**
+```json
+{
+  "prompt": "Run tests and CI checks. Fix any issues. Update docs."
+}
+```
+
+**Example of CORRECT complete content:**
+```json
+{
+  "prompt": "Execute the following steps:\n\n1. **Run Tests**: Execute pytest test/ --cov=src. If any tests fail, fix them before continuing.\n\n2. **CI Checks**: Run black --check, isort --check-only, flake8, mypy, and bandit. Fix all issues found.\n\n3. **Update Documentation**: Review docs/ and update any files that don't reflect current implementation. Include: architecture changes, new components, updated commands.\n\n4. **Report**: Provide summary of test results, CI check results, and documentation changes made."
+}
+```
+
+### Workflow to Hook Mapping:
+| Cline Workflow | Kiro Hook |
+|----------------|-----------|
+| ci-workflow.md | ci-workflow.kiro.hook |
+| test-coverage.md | test-coverage.kiro.hook |
+| documentation.md | documentation.kiro.hook |
+| post-activity.md | post-activity.kiro.hook |
+| (any workflow) | (same-name).kiro.hook |
+
+Create/preserve the following files in `.kiro/hooks/`:
+
+### 9.1 `post-implementation-ci.kiro.hook`:
+```json
+{
+  "enabled": true,
+  "name": "Post-Implementation CI Check",
+  "description": "Automatically executes mandatory post-activity requirements including unit tests, CI workflow compliance checks, documentation updates, LLM documentation consolidation, deviation review, and temporary file cleanup",
+  "version": "1",
+  "when": {
+    "type": "agentComplete"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the mandatory post-activity requirements from .kiro/steering/post-activity.md:\n\n1. **Unit Test Execution**: Run ALL unit tests using pytest. If any tests fail, continue editing code until all tests pass. Implementation is never finished with failing tests.\n\n2. **CI Workflow Compliance Check**: Read .gitlab-ci.yml (or .github/workflows/) and execute all commit checking steps locally:\n   - black code formatting check\n   - isort import sorting check\n   - flake8 linting\n   - mypy type checking\n   - pylint targeted checks (circular imports, complexity, duplicate code)\n   - bandit security scanning\n   Fix any issues identified before continuing.\n\n3. **Documentation Update Requirements**: Once all tests succeed, revise and update entire documentation in docs/ to reflect any changes in the project so new developers can get started quickly.\n\n4. **LLM Documentation Consolidation**: Consolidate all relevant documentation for LLM/coding assistant consumption in docs/forLLMConsumption.md.\n\n5. **Documentation Deviation Review**: Review entire documentation in docs/ and identify deviations between documentation and current implementation. Explicitly flag these deviations.\n\n6. **Temporary File Cleanup**: Remove all files in tmp/ directory.\n\nProvide an activity summary including:\n- Status of all unit tests (pass/fail counts)\n- Results of CI workflow checks\n- Documentation changes made\n- Any deviations identified between documentation and implementation\n- Confirmation that temporary files have been cleaned up\n\nNO ACTIVITY IS COMPLETE until all these steps are successfully executed. Partial completion is not acceptable."
+  }
+}
+```
+
+### 9.2 `lint-on-save.kiro.hook`:
+```json
+{
+  "enabled": true,
+  "name": "Lint Python on Save",
+  "description": "Runs black and isort formatting checks on saved Python files",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": ["**/*.py"]
+  },
+  "then": {
     "type": "shell",
     "command": "black --check --quiet ${file} && isort --check-only --quiet ${file}"
   }
 }
 ```
 
-### 9.3 `run-ci-workflow.json`:
+### 9.3 `run-ci-workflow.kiro.hook`:
 ```json
 {
+  "enabled": true,
   "name": "Run Full CI Workflow",
-  "description": "Manually trigger full CI checks",
-  "trigger": {
+  "description": "Manually trigger full CI checks including all quality, security, and test steps",
+  "version": "1",
+  "when": {
     "type": "manual"
   },
-  "action": {
-    "type": "sendMessage",
-    "message": "Execute the full CI workflow: 1) Read .gitlab-ci.yml (or .github/workflows/) 2) Run all quality checks 3) Fix any issues 4) Run pytest 5) Fix failing tests. Repeat until all checks pass."
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the full CI workflow:\n\n1. **Read CI Configuration**: Read .gitlab-ci.yml (or .github/workflows/) to understand all configured checks\n\n2. **Code Formatting Checks**:\n   - Run black --check on all Python files (excluding src/_version.py)\n   - Run isort --check-only on all Python files (excluding src/_version.py)\n   - Fix any formatting issues found\n\n3. **Linting Checks**:\n   - Run flake8 with max-line-length=120, extend-ignore=E203,W503 (excluding src/_version.py)\n   - Fix any linting issues found\n\n4. **Type Checking**:\n   - Run mypy on src/ (excluding src/_version.py) with --ignore-missing-imports\n   - Fix any type errors found\n\n5. **Targeted Code Quality Checks**:\n   - Run pylint with only these checks enabled: R0401 (circular imports), R0801 (duplicate code), R0913 (too many arguments), R0914 (too many locals), R0915 (too many statements), R0912 (too many branches)\n   - Fix any issues found\n\n6. **Security Scanning**:\n   - Run bandit on src/ and scripts/ (excluding src/_version.py)\n   - Review and fix any security issues found\n\n7. **Test Execution**:\n   - Run pytest with coverage reporting\n   - Fix any failing tests\n   - Ensure coverage meets threshold (check pyproject.toml or CI config)\n\n8. **Report Results**: Provide summary of all checks with pass/fail status and any issues that need attention\n\nRepeat steps until all checks pass. Do not proceed if any critical issues remain."
   }
 }
 ```
 
-### 9.4 `test-coverage.json`:
+### 9.4 `test-coverage.kiro.hook`:
 ```json
 {
+  "enabled": true,
   "name": "Check Test Coverage",
-  "description": "Manually trigger test coverage analysis",
-  "trigger": {
+  "description": "Manually trigger comprehensive test coverage analysis and improvement",
+  "version": "1",
+  "when": {
     "type": "manual"
   },
-  "action": {
-    "type": "sendMessage",
-    "message": "Analyze test coverage: 1) Run pytest with coverage 2) If below target (check pyproject.toml or CI config for threshold), identify uncovered code 3) Generate tests for uncovered critical paths 4) Repeat until coverage target met."
+  "then": {
+    "type": "askAgent",
+    "prompt": "Analyze and improve test coverage:\n\n1. **Run Coverage Analysis**:\n   - Execute pytest with coverage reporting: pytest test/ --cov=src --cov-report=term-missing --cov-report=html\n   - Note the current coverage percentage\n   - Identify which files and lines are not covered\n\n2. **Check Coverage Target**:\n   - Read pyproject.toml [tool.pytest.ini_options] for coverage threshold (typically 80%)\n   - Read CI configuration (.gitlab-ci.yml or .github/workflows/) for any coverage requirements\n   - Determine if current coverage meets the target\n\n3. **Identify Coverage Gaps**:\n   - List all uncovered files and their coverage percentages\n   - Prioritize critical paths and core functionality that lack coverage\n   - Identify edge cases and error handling paths that need testing\n\n4. **Generate Missing Tests**:\n   - For each uncovered critical path, create appropriate tests\n   - Focus on unit tests for core logic\n   - Add integration tests for component interactions if needed\n   - Use hypothesis for property-based testing where applicable\n\n5. **Verify Improvement**:\n   - Re-run pytest with coverage\n   - Confirm coverage has increased\n   - Repeat steps 3-5 until coverage target is met\n\n6. **Report Results**:\n   - Initial coverage percentage\n   - Final coverage percentage\n   - List of tests added\n   - Any remaining coverage gaps and justification for not covering them"
   }
 }
 ```
 
-### 9.5 `sync-documentation.json`:
+### 9.5 `sync-documentation.kiro.hook`:
 ```json
 {
+  "enabled": true,
   "name": "Sync Documentation",
-  "description": "Manually trigger documentation sync",
-  "trigger": {
+  "description": "Manually trigger comprehensive documentation synchronization with implementation",
+  "version": "1",
+  "when": {
     "type": "manual"
   },
-  "action": {
-    "type": "sendMessage",
-    "message": "Sync documentation: 1) Read all docs/ files 2) Compare with src/ and cdk/ implementation 3) Identify conflicts and deviations 4) Update docs to match implementation 5) Update docs/forLLMConsumption.md with consolidated info."
+  "then": {
+    "type": "askAgent",
+    "prompt": "Synchronize documentation with current implementation:\n\n1. **Read All Documentation**:\n   - Read all files in docs/ directory\n   - Read README.md\n   - Read any inline documentation and docstrings in src/\n   - Note the documented architecture, components, and workflows\n\n2. **Analyze Current Implementation**:\n   - Scan src/ directory structure and key files\n   - Scan cdk/ directory for infrastructure components\n   - Scan scripts/ for CLI tools and utilities\n   - Identify all major components, classes, and functions\n\n3. **Identify Conflicts and Deviations**:\n   - Compare documented architecture with actual implementation\n   - List components mentioned in docs but not in code\n   - List components in code but not documented\n   - Identify outdated descriptions, incorrect workflows, or wrong examples\n   - Flag any breaking changes or deprecated features still documented\n\n4. **Update Documentation**:\n   - Update docs/ files to match current implementation\n   - Add documentation for new components\n   - Remove or mark as deprecated any obsolete information\n   - Update code examples to reflect current API\n   - Update architecture diagrams if needed\n   - Ensure installation and setup instructions are current\n\n5. **Consolidate for LLM Consumption**:\n   - Update docs/forLLMConsumption.md with consolidated information\n   - Include: project overview, architecture, key components, directory structure, common commands, testing strategy\n   - Ensure this file provides complete context for AI coding assistants\n\n6. **Report Results**:\n   - List all documentation files updated\n   - Summarize major changes made\n   - List any deviations that couldn't be resolved automatically\n   - Confirm docs/forLLMConsumption.md is up to date"
   }
 }
 ```
