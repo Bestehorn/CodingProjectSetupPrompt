@@ -109,6 +109,25 @@ Before starting any other work, verify access to the following MCP servers. For 
    }
    ```
 
+5. **AWS API MCP** - AWS CLI command execution and suggestion
+   - Test: Call `suggest_aws_commands` with query "list S3 buckets"
+   - Config if missing:
+   ```json
+   "AWS API MCP": {
+     "disabled": false,
+     "timeout": 60,
+     "type": "stdio",
+     "command": "uv",
+     "args": ["tool", "run", "--from", "awslabs.aws-api-mcp-server@latest", "awslabs.aws-api-mcp-server.exe"],
+     "env": {
+       "FASTMCP_LOG_LEVEL": "ERROR",
+       "AWS_PROFILE": "default",
+       "AWS_REGION": "us-west-2"
+     },
+     "autoApprove": ["suggest_aws_commands", "call_aws"]
+   }
+   ```
+
 ---
 
 ## PART 1: DIRECTORY STRUCTURE
