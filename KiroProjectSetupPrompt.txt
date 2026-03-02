@@ -1241,6 +1241,46 @@ inclusion: always
 <!-- MIGRATION: This ensures continuous improvement across sessions -->
 ```
 
+### 8.17 `use-cdk-doc-mcp.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# CDK Documentation MCP Server Usage (MANDATORY)
+
+You have access to a MCP server for CDK documentation. Prior to starting any implementation or design task related to CDK code, you will access this MCP server to a.) determine the potential best practices you are going to design/implement, b.) retrieve the documentation for all the CDK functions along with all parameters for these functions to determine how to implement the CDK functionality and c.) implement/design the the functionality with references to these functions that clearly explain why/how you are using these CDK constructs. No CDK design/implementation work is done without this step. You must not assume any CDK functionality.
+```
+
+### 8.18 `use-strands-doc-mcp.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Strands SDK Documentation MCP Server Usage (MANDATORY)
+
+You have access to a MCP server for Strands SDK documentation. Prior to starting any implementation or design task related to Strands or fixing/using code that uses Strands SDK, you will access this MCP server to a.) determine the potential best practices you are going to design/implement from this documentation server, b.) retrieve the documentation for all the Strands SDK functions along with all parameters for these functions to determine how to implement the functionality and c.) implement/design the the functionality with references to these Strands SDK functions that clearly explain why/how you are using these Strands SDK constructs. No Strands design/implementation work is done without this step. You must not assume any Strands SDK functionality or parameters, but instead for each parameters you must be able to clearly point to the corresponding documentation where this is defined prior to using it (for design or implementation).
+```
+
+### 8.19 `use-agentcore-doc-mcp.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# AgentCore Documentation MCP Server Usage (MANDATORY)
+
+You have access to a MCP server for AgentCore documentation. Prior to starting any implementation or design task related to AgentCore or fixing/using code that uses AgentCore, you will access this MCP server to a.) determine the potential best practices you are going to design/implement from this documentation server, b.) retrieve the documentation for all the AgentCore functions along with all parameters for these functions to determine how to implement the functionality and c.) implement/design the the functionality with references to these AgentCore functions that clearly explain why/how you are using these AgentCore constructs. No AgentCore design/implementation work is done without this step. You must not assume any AgentCore functionality or parameters, but instead for each parameter/function you must be able to clearly point to the corresponding documentation where this is defined prior to using it (for design or implementation).
+```
+
+### 8.20 `use-aws-doc-mcp.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# AWS Documentation MCP Server Usage (MANDATORY)
+
+You have access to a MCP server for AWS documentation. Prior to starting any implementation or design task related to AWS services/features/APIs or fixing/using code that uses AWS services/features/APIs, you will access this MCP server to a.) determine the potential best practices you are going to design/implement from this documentation server, b.) retrieve the documentation for all the AWS services/features/APIs along with all parameters for these functions to determine how to implement the functionality and c.) implement/design the the functionality with references to these AWS services/features/APIs that clearly explain why/how you are using these AWS services/features/APIs constructs. No AWS services/features/APIs design/implementation work is done without this step. You must not assume any AWS services/features/APIs functionality or parameters, but instead for each parameter/function you must be able to clearly point to the corresponding documentation where this is defined prior to using it (for design or implementation).
+```
+
 ---
 
 ## PART 9: KIRO HOOKS
