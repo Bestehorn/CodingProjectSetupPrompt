@@ -1,0 +1,41 @@
+User: I want to create a new "issue-housekeeping"-agent which should do the following:
+
+It should access the repo that is used (likely through a wrapper script or a similar
+mechanism that is usually project/repo specific) and retrieve all the open issues.
+For each issue that is there, it should determine:
+
+1. Collect evidence if the issue has been resolved in the meantime. If such evidence
+   exists, the agent must document this evidence on the issue and then close it, but
+   only if it is 100% guaranteed that the issue has been resolved.
+
+2. For all issues that are not closed in step 1, we need to make the following
+   assessment: Determine if this issue can be easily resolved (Type1), i.e., if the
+   scope of changes is limited, or if this will require a spec session for a bug fix
+   or even a new feature (Type 2). In case of Type 1, the agent should document the
+   approach it will take on the issue, implement the changes including the
+   implementation of test cases; then it should execute the implementation and fix
+   any issues with tests that are failing. All of this needs to be documented on the
+   issue as well and only if all tests work, the agent must collect evidence that the
+   issue is now fixed, document this evidence on the issue and close it. For Type2
+   issues, the agent must draft a prompt that will serve as the baseline for the Kiro
+   spec session and document this prompt on the ticket.
+
+3. Once the agent has addressed all issues as outlined in step 2, it must conclude
+   the work with a summary and links to the open issues that need to be addressed in
+   separate spec sessions. Also the agent must prove that all steps of the CI workflow
+   still pass after these changes. The agent may conclude its work only if all tests
+   pass and all of the documentation on the issues has been updated as described above.
+
+Design Decisions:
+- The agent follows the same evidence-grounded, no-guessing patterns established
+  by the dead-code-removal-agent and doc-reviewer-agent.
+- State is persisted to `.kiro/agent-state/issue-housekeeping-agent/` for
+  resumability.
+- The agent uses a dedicated ephemeral git branch for all code changes.
+- Issue access is detected via the same ISSUE_MECHANISM pattern (gh CLI, glab CLI,
+  wrapper scripts).
+- The agent distinguishes Type1 (quick-fix) from Type2 (spec-required) issues
+  based on scope analysis.
+- All issue comments and closures are documented with evidence.
+- The agent runs the full CI/test suite to verify changes before concluding.
+- The agent produces a termination report summarizing all actions taken.
