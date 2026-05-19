@@ -141,6 +141,7 @@ Create the following directories if they do not already exist:
 - `.vscode/` - VS Code settings
 - `cdk/` - AWS CDK infrastructure code
 - `config/` - Configuration files
+- `credentials/` - Git host credential files (gitignored, stub templates checked in)
 - `docs/` - Project documentation
 - `scripts/` - CLI tools and utilities
 - `src/` - Production source code
@@ -440,6 +441,12 @@ bandit_results.json
 
 # Sensitive Config
 config/aws_accounts.json
+
+# Git Host Credentials
+config/gitlab.json
+credentials/*
+!credentials/*.template
+!credentials/README.md
 ```
 
 ---
@@ -853,6 +860,279 @@ min-similarity-lines = 6  # Minimum lines for duplicate code detection
 - Export singleton instance `aws_config`
 
 If `src/aws_config.py` exists but lacks some methods, ADD the missing methods while PRESERVING existing implementation.
+
+---
+
+## PART 6.5: GIT REPOSITORY WRAPPER SCRIPTS (GITHUB / GITLAB)
+
+Most projects are hosted on a git platform such as GitHub or GitLab. Authentication with these platforms (PATs, OAuth cookies, corporate SSO, Midway, etc.) varies by environment and is best encapsulated in a single, project-local wrapper script. Using the wrapper script everywhere — instead of ad-hoc `gh`, `glab`, or raw `curl`/`requests` invocations — gives the agent a stable, testable surface area and eliminates authentication drift between runs and between developers.
+
+This Part creates:
+1. A wrapper script in `scripts/` for the detected git host.
+2. A stub credential file in `credentials/` (or `config/`, depending on host) so it is immediately obvious where to paste real credentials.
+3. A steering file that mandates all repo operations go through the wrapper (see Part 8.25).
+
+### Migration Behavior
+
+- DETECT the git host by reading `.git/config` (look for `url = ...` in the `[remote "origin"]` section). If no origin is configured, ask the user which host to target before proceeding.
+- If `scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py` already exists, READ it first and PRESERVE all project-specific customizations (e.g., extra subcommands, custom authentication flows, organization-specific URL bases). Only ADD missing standard subcommands.
+- If `credentials/` stub files already exist, PRESERVE them. Do NOT overwrite any file that appears to contain a real token (heuristic: length > 20 chars and not matching `PASTE_…_HERE`).
+- If `config/gitlab.json` exists with a real token, PRESERVE it. Only create a template if no config exists.
+- Report which scripts and stub files were created vs preserved.
+
+### Host Detection Rules
+
+| Remote URL contains | Detected host | Wrapper script | Credential location |
+|---|---|---|---|
+| `github.com` or `github.` | GitHub | `scripts/github_wrapper.py` | `credentials/github-pat.txt` |
+| `gitlab.com` or `gitlab.` | GitLab | `scripts/gitlab_wrapper.py` | `config/gitlab.json` |
+| neither / self-hosted | ask the user | (follow closest match) | (follow closest match) |
+
+If the project uses both hosts (rare), create both wrapper scripts.
+
+### Step 1: Create `credentials/` Directory and README
+
+Create `credentials/README.md` ONLY if it doesn't exist:
+
+```markdown
+# Credentials Directory
+
+This directory holds git-host credential files that are consumed by the
+wrapper scripts in `scripts/`. The contents of this directory are gitignored
+except for template stubs and this README.
+
+## Files
+
+- `github-pat.txt` — GitHub Personal Access Token (one line, no wrapping).
+  Required scopes depend on what the wrapper is used for:
+    * `repo` — full read/write access to the repo (issues, PRs, workflows)
+    * `workflow` — trigger and inspect GitHub Actions runs
+  Create a token at https://github.com/settings/tokens and paste it into this file.
+
+## Security
+
+- NEVER commit real tokens. The `.gitignore` excludes everything in this
+  directory except `*.template` files and this README.
+- Rotate tokens periodically and after any suspected exposure.
+- Tokens in this directory are read by wrapper scripts only; they are NEVER
+  logged, echoed, or sent to any endpoint other than the documented git host.
+```
+
+### Step 2 (GitHub): Create `credentials/github-pat.txt.template` and stub
+
+If GitHub is detected and `credentials/github-pat.txt` does NOT exist, create BOTH:
+
+**`credentials/github-pat.txt.template`** (checked into git as a guide):
+```
+PASTE_YOUR_GITHUB_PAT_HERE
+```
+
+**`credentials/github-pat.txt`** (gitignored, stub for the developer to fill in):
+```
+PASTE_YOUR_GITHUB_PAT_HERE
+```
+
+The wrapper script MUST refuse to run while the file still contains the placeholder.
+
+### Step 2 (GitLab): Create `config/gitlab.json.template` and stub
+
+If GitLab is detected and `config/gitlab.json` does NOT exist, create BOTH:
+
+**`config/gitlab.json.template`** (checked into git as a guide):
+```json
+{
+  "hostname": "gitlab.com",
+  "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
+  "token": "PASTE_YOUR_GITLAB_TOKEN_HERE"
+}
+```
+
+**`config/gitlab.json`** (gitignored, stub for the developer to fill in):
+```json
+{
+  "hostname": "gitlab.com",
+  "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
+  "token": "PASTE_YOUR_GITLAB_TOKEN_HERE"
+}
+```
+
+Notes for the developer (include as a comment block at the top of `config/gitlab.json.template` in a `_comment` key, since strict JSON has no comments):
+- `hostname` — the GitLab host (e.g. `gitlab.com`, or a self-hosted host like `gitlab.example.com`).
+- `project_id` — numeric project ID, found under Settings → General in the GitLab UI.
+- `token` — a Personal Access Token or Project Access Token with at least `api` scope. Create one at `https://<hostname>/-/user_settings/personal_access_tokens`.
+
+### Step 3 (GitHub): Create `scripts/github_wrapper.py`
+
+Create ONLY if it doesn't already exist. If it exists, MERGE missing subcommands while preserving project-specific ones.
+
+The wrapper MUST:
+- Load the PAT from `credentials/github-pat.txt`, stripping whitespace.
+- Refuse to run if the file is missing or still contains the placeholder `PASTE_YOUR_GITHUB_PAT_HERE`.
+- Auto-detect `REPO_OWNER` and `REPO_NAME` from `.git/config` (parse the `[remote "origin"]` URL). Do NOT hardcode these values.
+- Use only the Python standard library (`urllib.request`, `json`, `argparse`) — no extra dependencies.
+- Expose at minimum the following subcommands:
+  * `list-workflows` — list all GitHub Actions workflows
+  * `list-runs [--workflow=NAME] [--status=STATUS] [--limit=N]` — list recent workflow runs
+  * `get-run RUN_ID` — show a single run
+  * `get-jobs RUN_ID [--failed-only]` — list jobs for a run
+  * `get-logs RUN_ID [--failed-only]` — fetch logs; must handle the 302 redirect to Azure Blob Storage WITHOUT forwarding the `Authorization` header (Azure rejects it otherwise)
+  * `rerun RUN_ID [--failed-only]`
+  * `cancel RUN_ID`
+  * `create-pr --head BRANCH [--base BRANCH] [--title TITLE] [--body TEXT]`
+  * `list-issues [--state open|closed|all] [--labels CSV] [--limit N]`
+  * `get-issue ISSUE_NUMBER`
+  * `get-issue-comments ISSUE_NUMBER`
+  * `comment-issue ISSUE_NUMBER --body TEXT`
+  * `update-issue ISSUE_NUMBER [--title ...] [--body ...] [--state open|closed] [--labels CSV]`
+  * `create-issue --title TITLE [--body TEXT] [--labels CSV]`
+- Use string constants for all JSON field names (per `coding-standards.md`).
+- Raise a custom `GitHubAPIError` exception with `status_code` and `details` fields.
+- Print machine-readable output where practical so the agent can parse it.
+
+Reference skeleton (adapt as needed; do NOT hardcode owner/name):
+
+```python
+"""GitHub API wrapper for CI/CD and issue operations.
+
+Usage:
+    python scripts/github_wrapper.py list-workflows
+    python scripts/github_wrapper.py list-runs --limit 5
+    python scripts/github_wrapper.py get-logs <run_id> --failed-only
+    python scripts/github_wrapper.py list-issues
+    python scripts/github_wrapper.py create-issue --title "..." --body "..."
+
+Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
+"""
+from __future__ import annotations
+import argparse, configparser, json, logging, re, sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+
+CREDENTIALS_FILE = Path("credentials") / "github-pat.txt"
+PLACEHOLDER = "PASTE_YOUR_GITHUB_PAT_HERE"
+
+def _detect_repo() -> tuple[str, str]:
+    """Parse .git/config to extract (owner, repo) from the origin URL."""
+    cfg_path = Path(".git") / "config"
+    if not cfg_path.exists():
+        raise RuntimeError("Not a git repository (no .git/config found).")
+    parser = configparser.ConfigParser()
+    parser.read(cfg_path)
+    url = parser['remote "origin"']["url"]
+    # Accept both https://github.com/OWNER/REPO(.git) and git@github.com:OWNER/REPO(.git)
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?/?$", url)
+    if not m:
+        raise RuntimeError(f"Could not parse GitHub owner/repo from origin URL: {url}")
+    return m.group(1), m.group(2)
+
+# ... (token loading, _api_request, subcommand implementations,
+#      and _fetch_log_content with a _NoRedirectHandler that strips
+#      Authorization before following the 302 to Azure Blob Storage)
+
+if __name__ == "__main__":
+    main()
+```
+
+### Step 3 (GitLab): Create `scripts/gitlab_wrapper.py`
+
+Create ONLY if it doesn't already exist. If it exists, MERGE missing subcommands while preserving project-specific ones (e.g., Midway/corporate SSO cookie handling must be preserved if present).
+
+The wrapper MUST:
+- Load credentials from `config/gitlab.json`.
+- Refuse to run if any required field still contains a `PASTE_..._HERE` placeholder.
+- If the target host sits behind additional authentication (e.g., corporate ALB with cookie-based SSO), include a clearly-commented extension point where the cookie jar can be wired in. A minimal public-GitLab wrapper does NOT need this.
+- Use only the Python standard library by default (`urllib.request`, `json`, `argparse`). If `curl.exe` is required for cookie-jar behavior on a specific host, document that as a host-specific extension.
+- Expose at minimum the following subcommands:
+  * `pipeline status [--count N]`
+  * `pipeline log [PIPELINE_ID]` (latest if omitted; tail of failed-job trace)
+  * `issue create --title ... [--description ...] [--labels CSV] [--confidential]`
+  * `issue list [--state opened|closed|all] [--labels CSV] [--per-page N]`
+  * `issue show ISSUE_IID`
+  * `label list`
+  * `label create --name ... --color #RRGGBB [--label-description ...]`
+- Use string constants for all JSON field names (per `coding-standards.md`).
+- Raise a custom `GitLabAPIError` exception with `status_code` and `details` fields.
+
+Reference skeleton (adapt as needed):
+
+```python
+"""GitLab API wrapper for CI/CD and issue operations.
+
+Usage:
+    python scripts/gitlab_wrapper.py pipeline status
+    python scripts/gitlab_wrapper.py pipeline log
+    python scripts/gitlab_wrapper.py issue list
+    python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
+
+Credentials: config/gitlab.json (gitignored).
+"""
+from __future__ import annotations
+import argparse, json, logging, sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+CONFIG_FILE = Path("config") / "gitlab.json"
+PLACEHOLDER_MARKER = "PASTE_"
+
+def _load_config() -> dict[str, Any]:
+    if not CONFIG_FILE.exists():
+        raise RuntimeError(f"Missing credentials file: {CONFIG_FILE}")
+    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    for key in ("hostname", "project_id", "token"):
+        if key not in config or str(config[key]).startswith(PLACEHOLDER_MARKER):
+            raise RuntimeError(f"{CONFIG_FILE} is incomplete: fill in '{key}'.")
+    return config
+
+# ... (_api_get, _api_write, subcommand implementations, dispatch table, main)
+
+if __name__ == "__main__":
+    main()
+```
+
+### Step 4: Verify the wrapper works
+
+Once the developer has pasted real credentials into the stub file:
+1. Run a safe read-only command first:
+   - GitHub: `python scripts/github_wrapper.py list-workflows`
+   - GitLab: `python scripts/gitlab_wrapper.py pipeline status --count 1`
+2. If the command returns data, authentication is working.
+3. If it errors with an auth message, check the credential file contents and the token's scopes/permissions.
+
+### Step 5: README.md updates
+
+Add a section to `README.md` (merge with existing content — do not overwrite the file):
+
+````markdown
+## Repository Operations
+
+All CI/CD, issue, PR, and label operations on this repository go through the
+wrapper script in `scripts/`. Do NOT use `gh`, `glab`, or raw `curl` for
+these operations — the wrapper handles authentication consistently.
+
+### Setup
+
+1. Paste your git-host token into the credentials stub:
+   - GitHub: `credentials/github-pat.txt`
+   - GitLab: `config/gitlab.json`
+2. Verify with a read-only command:
+   ```bash
+   # GitHub
+   python scripts/github_wrapper.py list-workflows
+   # GitLab
+   python scripts/gitlab_wrapper.py pipeline status
+   ```
+
+### Common commands
+
+See the wrapper's `--help` output for the full list. The `.kiro/steering/`
+file `use-git-wrapper-scripts.md` documents the mandatory-use policy.
+````
+
+<!-- MIGRATION: If the project uses a non-standard git host (self-hosted GitLab behind a corporate SSO, GitHub Enterprise, Gitea, Bitbucket, etc.), preserve any existing authentication code and only add the subcommand skeleton. Document the host-specific authentication behavior as a comment block at the top of the wrapper script. -->
 
 ---
 
@@ -1707,6 +1987,70 @@ The test was implemented to verify a certain behavior. Unless there is a specifi
 <!-- MIGRATION: Add any project-specific test fixing policies below -->
 ```
 
+### 8.25 `use-git-wrapper-scripts.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Git Repository Operations — Wrapper Scripts Only (CRITICAL)
+
+## Core Rule
+
+ALL operations against the project's remote git repository — including CI/CD inspection, issue and PR management, label management, and any other repository API call — MUST go through the project's wrapper script(s) in `scripts/`:
+
+- GitHub projects: `scripts/github_wrapper.py`
+- GitLab projects: `scripts/gitlab_wrapper.py`
+- Self-hosted / other: the equivalent wrapper checked into `scripts/`
+
+The wrappers exist to encapsulate authentication (PATs, cookies, corporate SSO, self-hosted URL bases) in one place so every interaction is reproducible and auth-consistent.
+
+## Forbidden Tools and Commands
+
+The following are FORBIDDEN for any repository API operation and MUST NOT be invoked by the agent:
+
+- `gh` (GitHub CLI) — `gh pr create`, `gh issue list`, `gh run view`, `gh workflow …`, etc.
+- `glab` (GitLab CLI) — `glab ci status`, `glab issue list`, `glab mr create`, etc.
+- Raw `curl` / `wget` calls to git-host APIs (`api.github.com`, `gitlab.com/api/v4/…`, etc.)
+- Direct Python `requests` / `urllib` calls to git-host APIs from anywhere outside the wrapper script
+- Any MCP tool or other integration that bypasses the wrapper's credential loading
+
+These tools fail unpredictably in this environment because:
+- They rely on their own token stores (`gh auth login`, keyring, environment variables) which are NOT populated here and which conflict with the no-environment-variables rule.
+- They do not carry any corporate-SSO / ALB session cookies that may be required for self-hosted hosts.
+- They produce inconsistent output formats that are harder for the agent to parse reliably.
+
+## What IS Allowed
+
+- Local-only `git` commands (`git status`, `git log`, `git diff`, `git add`, `git commit`, `git push`, `git fetch`, `git rebase`, etc.) — these do NOT hit the host API; they use SSH / HTTPS credentials managed outside this project.
+- Any wrapper subcommand (see wrapper `--help` output for the full list).
+- Adding new subcommands to the wrapper when an operation is not yet supported — extend the wrapper rather than bypassing it.
+
+## Extending the Wrapper
+
+When you need to perform a repo operation that the wrapper does not yet support:
+
+1. Add a new subcommand to the wrapper script in `scripts/`.
+2. Use the same authentication, error-handling, and JSON-field-constant patterns already in the file.
+3. Add a one-line usage example to the docstring at the top of the wrapper.
+4. Do not work around the missing subcommand with `gh`/`glab`/`curl`.
+
+## Credential Handling
+
+- GitHub PAT lives in `credentials/github-pat.txt` (one line, no wrapping, gitignored).
+- GitLab token lives in `config/gitlab.json` (gitignored).
+- Both files have `*.template` stub siblings checked into git.
+- If the wrapper reports a placeholder is still in the credential file, STOP and ask the user to paste a real token. Do NOT proceed with any repo operation until credentials are configured.
+- NEVER echo credential file contents back into chat, logs, or commit messages.
+
+## Integration with Other Steering Rules
+
+- **no-environment-variables**: the wrapper reads credentials from project-local files, NOT from env vars such as `GITHUB_TOKEN` or `GITLAB_TOKEN`. Do not add env-var fallbacks to the wrapper.
+- **no-guessing**: when reporting CI or issue status, run the wrapper and quote its output as evidence rather than assuming state.
+- **coding-standards**: new wrapper subcommands must use string constants for JSON field names, absolute imports, `pathlib.Path`, and named parameters.
+
+<!-- MIGRATION: If this project already has a custom wrapper with non-standard authentication (e.g., corporate ALB + cookie), keep the authentication code as-is and only extend the subcommand surface. Document the host-specific auth behavior at the top of the wrapper. -->
+```
+
 ---
 
 ## PART 9: KIRO HOOKS
@@ -2549,6 +2893,7 @@ After completing all setup:
 5. **Run Tests**: Execute pytest with coverage
 6. **Verify Steering Files**: Confirm all `.kiro/steering/` files are created/merged
 7. **Verify Hooks**: Confirm all `.kiro/hooks/` files are created/preserved
+8. **Verify Git Wrapper**: Confirm the host wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`) exists and that a credential stub is in place. If the developer has already pasted a real token, run one read-only command (e.g. `list-workflows` / `pipeline status --count 1`) to confirm auth works.
 
 ### Migration Report (REQUIRED):
 Generate a comprehensive migration report with the following sections:
@@ -2582,6 +2927,14 @@ Generate a comprehensive migration report with the following sections:
 - [List of migrations from .clinerules/ or .amazonq/]
 - For each: [Source file → Destination file, what content was migrated]
 
+## Git Repository Wrapper Scripts
+- Detected git host: [GitHub / GitLab / Self-hosted / None — from .git/config]
+- Wrapper script: [Created / Preserved / Merged] — `scripts/<host>_wrapper.py`
+- Credential file: [Created stub / Preserved existing / Already contained real token]
+- Steering file `use-git-wrapper-scripts.md`: [Created / Already existed]
+- Subcommands added to existing wrapper: [list]
+- Manual action required: [Yes / No — e.g. "paste real PAT into credentials/github-pat.txt"]
+
 ## Configuration Conflicts
 - [List any conflicts between existing config and standard template]
 - For each: [What was kept (existing) vs what was skipped (standard)]
@@ -2614,10 +2967,13 @@ project/
 ├── .vscode/               # VS Code settings
 ├── .pre-commit-config.yaml # Pre-commit hook definitions (all hooks)
 ├── cdk/                   # AWS CDK infrastructure
-├── config/                # Configuration files
+├── config/                # Configuration files (incl. gitlab.json if GitLab)
+├── credentials/           # Git host credential files (gitignored stubs)
 ├── docs/                  # Documentation
 ├── scripts/               # CLI tools
-│   └── setup-hooks.sh     # Generates .git/hooks/pre-commit with venv path
+│   ├── setup-hooks.sh     # Generates .git/hooks/pre-commit with venv path
+│   ├── github_wrapper.py  # GitHub API wrapper (if GitHub-hosted)
+│   └── gitlab_wrapper.py  # GitLab API wrapper (if GitLab-hosted)
 ├── src/                   # Production code
 ├── test/                  # Test code
 │   └── integration/       # Integration tests
@@ -2633,6 +2989,10 @@ project/
 | `scripts/setup-hooks.sh` | Generates `.git/hooks/pre-commit` with absolute venv path |
 | `src/aws_config.py` | AWS account configuration singleton |
 | `config/aws_accounts.json` | AWS account mappings |
+| `config/gitlab.json` | GitLab host, project ID, and token (gitignored, GitLab only) |
+| `credentials/github-pat.txt` | GitHub PAT (gitignored, GitHub only) |
+| `scripts/github_wrapper.py` | Mandated wrapper for all GitHub repo operations |
+| `scripts/gitlab_wrapper.py` | Mandated wrapper for all GitLab repo operations |
 | `docs/forLLMConsumption.md` | Consolidated docs for AI assistants |
 
 ### Steering File Inclusion Types:

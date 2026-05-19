@@ -1,0 +1,116 @@
+User: In line with the other custom CLI agents in cli-agents (dead-code,
+doc-review, issue-housekeeping, spec-review, ci-worker), I want an agent
+called "issue-intake-agent". This agent will receive very short
+instructions or a few sentences from me whenever I see something that may
+need improvements or fixing. When I do this, I want the agent to take this
+input and review the code of the project as well as other parts of it
+(like scripts, CDK stacks etc.) to check what this could be related to.
+The agent then also needs to use the MCP doc servers it has available as
+well as web research to find additional details that may be useful for
+recording an issue on this given input and the corresponding state of the
+project. The agent may ask questions, but should avoid doing so
+extensively. It is ok if there are some areas that are undefined. Once the
+agent has done this, it should find a way to access the repository
+(hint: usually through a wrapper script for the corresponding
+repository!) and create an issue with a description that allows picking
+this up later.
+
+Design Decisions:
+
+- Prompt structure follows the established pattern from the other agents
+  in this workspace (dead-code-removal-agent, doc-reviewer-agent,
+  issue-housekeeping-agent):
+    * Role and Identity
+    * Conventions (state directory, artifact list)
+    * Mission Statement with terminal states
+    * Evidence Requirements (with hedge-word list and permitted
+      exceptions)
+    * A minimal-interruption mandate (softened from the "non-interruption"
+      mandate used by the long-running agents, because this agent is
+      explicitly allowed to ask the user a question when ambiguity is
+      material)
+    * Scope of Permitted Changes (investigation-only; no code edits, no
+      test runs, no git mutations)
+    * Scope Indicator Classification (SCOPE_QUICK_FIX /
+      SCOPE_SPEC_REQUIRED / SCOPE_UNCLEAR) — parallel to the Type1/Type2
+      classification used by the issue-housekeeping-agent, but framed as
+      a suggestion to a later agent/human rather than a binding decision
+    * Issue Mechanism Detection (wrapper script first, per the user's
+      hint, then gh CLI, glab CLI)
+    * Discovery Phase with resumable session state (Step 0 pattern
+      borrowed from the other agents)
+    * Analysis Phase (A Interpretation / B Code Exploration / C External
+      Research / D optional Clarifying Questions)
+    * Drafting Phase with a mandatory issue-body template and a pre-file
+      validation checklist
+    * Filing Phase (F.1 pre-flight, F.2 file, F.3 verify, F.4 fatal-error
+      path that emits the drafted body inline so the user can file
+      manually)
+    * Termination Report
+    * Execution Model / Operating Principles / Anti-Patterns / Begin
+
+- State directory: .kiro/agent-state/issue-intake-agent/
+  Artifacts mirror the ones used by other agents (iteration_log.md,
+  resume_state.md, environment.md) plus intake-specific ones
+  (input_capture.md, code_evidence.md, mcp_queries.md, web_research.md,
+  open_questions.md, draft_issue.md, created_issue.md, evidence_ledger.md).
+
+- Question handling: The user explicitly stated the agent "may ask
+  questions, but should avoid doing so extensively" and that "it is ok if
+  there are some areas that are undefined." This maps to three
+  classifications of uncertainty:
+    * MATERIAL_AMBIGUITY — ask the user, but batch all questions into one
+      message, then wait.
+    * OPEN_QUESTION — record in the filed issue's "Open Questions"
+      section; do not ask the user.
+    * ADJACENT_OBSERVATION — noted in the filed issue but does NOT spawn
+      a second issue (one invocation maps to exactly one filed issue).
+
+- Issue-access mechanism: The user's hint that access is "usually through
+  a wrapper script for the corresponding repository" drives the detection
+  order: wrapper scripts are searched first (with explicit name patterns,
+  Makefile / justfile / taskfile targets, and ripgrep for 'gh issue |
+  glab issue | issue create | new issue' over scripts), then gh CLI,
+  then glab CLI. The agent records the concrete invocation interface of
+  any wrapper script it finds.
+
+- Scope: This agent does NOT fix the underlying problem and does NOT
+  modify source, tests, infrastructure code, or git state. It only writes
+  to the state directory and files one issue. This separates responsibilities
+  cleanly from the issue-housekeeping-agent (which triages and fixes) and
+  keeps the intake surface minimal and predictable.
+
+- Evidence grounding: Every claim in the filed issue is backed by a
+  concrete citation (file path + line range, MCP query response, or web
+  research citation). Hedge words are forbidden in the drafted body with
+  explicit exceptions for the verbatim "User Observation" quote block,
+  the "Open Questions" section, and the "Suggested Scope" rationale
+  (where tentative framing is the actual subject matter). The 30-word
+  verbatim-reproduction limit from the web research tool guidance is
+  carried forward into mcp_queries.md / web_research.md handling.
+
+- External references: MCP docs first, web research as fallback. The
+  research is bounded (record a gap in open_questions.md after 2–3
+  fruitless queries) so the agent does not spiral into exhaustive
+  research for minor topics.
+
+- Tools / JSON shape: Matches the JSON structure used by the other
+  agents in cli-agents/. tools, toolAliases, toolsSettings, hooks,
+  mcpServers, useLegacyMcpJson, resources, allowedTools, model. fs_write
+  is restricted to the state directory only (no source / test / script
+  paths) because this agent is investigation-only. tools and allowedTools
+  mirror the baseline used by the issue-housekeeping-agent and
+  doc-reviewer-agent.
+
+- Resumability: Discovery Step 0 checks for an existing resume_state.md
+  and handles COMPLETED / BLOCKED_ON_CLARIFICATION / IN_PROGRESS / FATAL
+  with the same pattern the other agents use. The BLOCKED_ON_CLARIFICATION
+  state is the intake-specific addition — when the agent emits a
+  clarifying-question message, it persists state so the next invocation
+  (with the user's answers) can resume at the Drafting Phase without
+  re-doing the Analysis.
+
+- Output: The agent's only user-facing output is the Termination Report
+  (with a short INVESTIGATION SUMMARY, ISSUE LINK, or
+  MANUAL-FILING-INSTRUCTIONS / CLARIFYING-QUESTIONS depending on outcome).
+  No intermediate progress chatter.

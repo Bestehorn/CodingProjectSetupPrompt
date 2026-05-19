@@ -1,0 +1,155 @@
+User: I want to have a new agent "product-management-agent" that follows
+the same design approach we have for the other agents in cli-agents,
+particularly regarding state management. Also look at the protocol for
+saving intermediate states in cli-agents/spec-review/
+KiroCLIAgent-SpecPromptAuthor.json. This agent should take the role of a
+product manager and do the following: Review the entire state of the
+current project's code. Also access the repo (likely using wrapper
+scripts) and review the open issues. The goal of the agent is to make
+3-5 proposals for work that could be either picked up from the existing
+issues (A) to improve the project or new issues that need to be
+addressed from the code review (B) or ideas for new features the agent
+has come up with during the review of the project (C). As a first step,
+the agent should try to have a review of the code base and the issues,
+but also do web research to find ideas for additional features to come
+up with a holistic list of potentially hundreds of proposals that could
+be pursued. Once it has such a list, it needs to evaluate each of the
+proposals by its impact and usefulness to the overall project to
+down-select to 5 proposals at most. The remaining work only focuses on
+these max 5 proposals, all others are discarded. In case of B and C, the
+agent must create new issues and provide a comprehensive description
+that can serve as a baseline for starting the specification work. In
+case of A, the agent must update the existing issues with additional
+findings and details from the review so that the description of the
+issue can be used to start a specification cycle. Once this has been
+done, the agent must provide a comprehensive summary of the 3-5
+proposals for work to the user. The agent should work independently and
+use the code base excessively for making detailed, comprehensive
+proposals. Furthermore, the agent must use the MCP doc servers
+excessively to identify best practice approaches for implementations and
+improvements (particularly for issues of classes A and B).
+
+Design Decisions:
+
+- Prompt structure follows the pattern established by the other agents
+  in this workspace (dead-code-removal-agent, doc-reviewer-agent,
+  issue-housekeeping-agent, issue-intake-agent, spec-prompt-author-
+  agent): Role and Identity, Conventions with a state-directory
+  artifact list, Mission Statement with terminal states, a series of
+  CRITICAL mandates, Evidence Requirements, Scope of Permitted Changes,
+  Issue Mechanism Detection, numbered phases with explicit
+  checkpoints, Execution Model, Operating Principles, Anti-Patterns,
+  and Begin.
+
+- State management borrows the append-only log + phase-checkpoint
+  pattern from the spec-prompt-author-agent's Q&A Persistence Protocol.
+  Specifically:
+    * A Progress Persistence section with five rules: append-only logs,
+      monotonic identifier discipline (C001, C002, ... never reused or
+      reset), write-before-act for tracker calls, explicit phase
+      checkpoints, and an immutable shortlist after lock.
+    * next_candidate_number recorded in resume_state.md, with
+      candidate_pool.md serving as the authoritative source on
+      disagreement (parallel to qa_log.md's authority over
+      resume_state.md in the spec-prompt-author-agent).
+    * A phase enum (PHASE_DISCOVERY, PHASE_CODE_REVIEW,
+      PHASE_ISSUE_REVIEW, PHASE_RESEARCH, PHASE_CANDIDATE_GENERATION,
+      PHASE_SCORING, PHASE_SHORTLIST_LOCKED, PHASE_DRAFTING,
+      PHASE_ACTING, PHASE_SUMMARY, PHASE_COMPLETED) so that
+      re-invocation after a crash resumes at the right boundary.
+
+- Three-class classification (A, B, C) exactly as the user described:
+    * Class A — update existing issue (comment, not destructive
+      overwrite by default)
+    * Class B — new issue from code-review findings
+    * Class C — new issue from feature ideas
+
+- Two CRITICAL mandates added that are unique to this agent:
+    * Scale Mandate — generate broadly before you narrow, but do NOT
+      impose numeric quotas. Pool size is a consequence of what the
+      code review, issue inventory, and research phase legitimately
+      surface, not a target to hit. A mature, narrowly scoped project
+      with thorough tests may yield a modest pool; a young or
+      sprawling project may yield a much larger one. The mandate
+      forbids two failure modes symmetrically: premature truncation
+      ("this is enough, let me stop") AND padding ("we need more
+      candidates, let me invent some"). The G.5 coverage check
+      requires every open issue, every unique code-review
+      observation, and every research-derived feature idea that fits
+      the project to be represented in the pool, and any small class
+      is explained in a "Coverage notes" header at the top of
+      candidate_pool.md. The user explicitly pushed back on an earlier
+      draft that required 100+/200+/30/30 counts; inventing proposals
+      to hit quotas is worse than acknowledging a small pool.
+    * Discard-Before-Act Mandate — after the shortlist is locked, all
+      non-shortlisted candidates are discarded and receive no further
+      agent effort. The user was explicit: "all others are discarded."
+
+- Scoring rubric with five dimensions: User_Value, Strategic_Fit,
+  Severity (or Opportunity Cost for class C), Feasibility (named so
+  higher is better to keep all dimensions directionally consistent),
+  Evidence_Strength. Composite is the sum (range 5-25). A tie-break
+  order is specified so scoring is deterministic.
+
+- Shortlist sizing: exactly 5 items by default, dropping to fewer only
+  when fewer than 5 candidates score >= 15, with a hard floor of 3
+  regardless of score. This enforces the user's "3-5 proposals" range
+  while providing a rule rather than agent judgment about the exact
+  number.
+
+- Proposal template is intentionally comprehensive — Executive Summary,
+  Background with three evidence subsections (code / issues /
+  external), Current State, Proposed Outcome, Scope Boundaries
+  (in/out), Key Requirements (described as "Seed for Spec Session"),
+  Constraints, Affected Components, Best-Practice References, Open
+  Questions, Risks, Estimated Impact (per-dimension scores),
+  Suggested Scope Indicator, References. This mirrors the level of
+  detail a product manager would hand to a product designer or
+  engineer before a specification cycle.
+
+- Acting phase: class-A writes prefer commenting over destructive
+  description overwrite. The original description is preserved so
+  history is not lost. The comment payload is structured and labeled
+  so a reader can distinguish agent-added content from the original
+  description. Overwrite is permitted only when the existing
+  description is empty or marked stale.
+
+- Issue mechanism detection follows the same order as the
+  issue-intake-agent and issue-housekeeping-agent, with WRAPPER_SCRIPT
+  first per the user's hint. The agent explicitly records list /
+  view / create / update / comment invocations because this agent
+  uses all five.
+
+- Scope restrictions: this agent may mutate the issue tracker but
+  MUST NOT modify source, tests, infrastructure, or git state. It
+  MUST NOT close or reassign issues (the user did not authorize
+  closures, and closing an issue the user may still want to keep
+  open would be a destructive action outside the authorized scope).
+  fs_write is accordingly locked to the state directory only — tracker
+  mutations go through the shell tool via the wrapper script / CLI.
+
+- MCP and web research: explicit research rules frame MCP as primary
+  and web as fallback/enrichment. A dedicated research sub-rule
+  covers class-C feature-idea research with concrete seed queries.
+  The "Use Heavily" sub-rule reinforces the user's instruction to
+  use MCP excessively for classes A and B.
+
+- Non-Interruption Mandate mirrors the issue-housekeeping-agent's
+  version exactly (no asking for scope reductions, no progress
+  chatter). The only user-facing output is the termination summary
+  at PHASE_SUMMARY or a fatal-error report.
+
+- Anti-Patterns section explicitly forbids the known failure modes:
+  small pool, scoring before minima, class-C filtering during
+  generation, post-lock work on discarded candidates, filing a new
+  issue for a class-A candidate, closing or reassigning issues, code
+  or test mutation, hedge language, inventing labels, overwriting
+  descriptions when commenting would preserve history, rewriting any
+  append-only artifact, restarting identifier numbering on resume,
+  and re-opening scoring after PHASE_SHORTLIST_LOCKED.
+
+- JSON shape mirrors the other agents in cli-agents/: name,
+  description, prompt, welcomeMessage, tools, toolAliases,
+  toolsSettings.fs_write.allowedPaths (restricted to
+  .kiro/agent-state/product-management-agent/**), hooks, mcpServers,
+  useLegacyMcpJson, resources, allowedTools, model.
