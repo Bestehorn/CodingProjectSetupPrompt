@@ -1,0 +1,267 @@
+ATS Reviewer Agent — Discussion / Design Notes
+
+Canonical name: cv-ats-reviewer
+Config file:    KiroCLIAgent-ATSReviewer.json   ("name": "cv-ats-reviewer")
+Prompt file:    prompt.md                        (referenced as file://prompt.md)
+
+Maps to Requirement 7 (ATS Reviewer Agent), plus R14 (resumability), R15.3/15.4
+(scoped tools + shell allowedCommands/deniedCommands) and R16.3/16.4/16.5
+(canonical name, explicit name field, required files). Authored in task 12.
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+Simulates how automated applicant tracking systems (ATS) parse and score the
+application package, so parser quirks do not silently disqualify the candidate
+before a human reads the documents [R7]. It is the 4th reviewer in the
+per-iteration REVIEW order (after spell/format, language/content, and JD
+alignment Phase 1; before the hiring manager) — design Component 6 control
+flow:
+  [cv-spell-format-reviewer, cv-language-content-reviewer,
+   cv-jd-alignment-reviewer(Phase1), cv-ats-reviewer, cv-hiring-manager-reviewer]
+
+It is a HYBRID reviewer (decision D-6), the only reviewer besides the editor
+that has a shell tool:
+  1. Deterministic structural checks — runs shared/scripts/ats_structural.py
+     (task 6) via the script-in-tmp + shell pattern to find ATS-hostile
+     STRUCTURE in each Working Copy .docx: text boxes (w:txbxContent), images/
+     drawings with text, multi-column sections (w:cols w:num>1), header/footer
+     content, layout tables, non-standard heading styles, parser-hostile
+     Unicode. The script emits schema-valid candidate Findings (category=ats,
+     status=open) that the agent ADOPTS verbatim.
+  2. LLM keyword-matching — the agent itself compares the package against the
+     Job_Description (jd.normalized.md) and flags JD keywords/terms an ATS
+     keyword-matcher would look for that are missing, worded as a non-matching
+     synonym, or buried. [R7.1, R7.2]
+Both modes emit category=ats Findings, merged into one
+findings/cv-ats-reviewer/iteration-<n>.json. Gate passes when no open ats
+Findings remain after the editor's most recent pass, per Working Copy [R7.7].
+
+------------------------------------------------------------------------------
+Why the shell tool + the thin-wrapper pattern (R7.3, R7.4, D-6)
+------------------------------------------------------------------------------
+R7.3 says the agent SHALL PREFER deterministic Python tooling for the
+structural / parser-quirk subset of its checks, and MAY use the LLM for the
+keyword-matching subset. R7.4 says when it uses Python tooling it SHALL invoke
+it by writing a script to tmp/cv-ats-reviewer/<iso>/ and executing it via the
+shell tool, IN THE SAME PATTERN USED BY THE CV EDITOR, with allowedCommands
+scoped to permit only that pattern.
+
+So this agent mirrors the editor (task 8) exactly:
+  - It writes a THIN wrapper tmp/cv-ats-reviewer/<iso>/ats_checks.py that only
+    wires paths (STRUCTURAL_SCRIPT, the working .docx paths, ITERATION, out dir)
+    and calls ats_structural.build_findings_document(...) / write_findings(...)
+    in-process — no detection logic in the wrapper.
+  - It runs that wrapper via shell with the single permitted command pattern.
+  - It archives the wrapper + stdout/stderr to its state dir scripts/<iso>/
+    (R14 reconstructability; mirrors editor R3.9).
+The reusable structural logic lives in ats_structural.py (owned by no single
+agent per design "Shared Python utilities"); the agent just adopts its output.
+ats_structural.py already emits the full unified Finding schema with
+deterministic stable ids (ATS-<TYPECODE>-<hash8>), object anchors carrying the
+shared paragraph_key, severities, and rationales — so the agent must NOT re-id,
+re-anchor, or second-guess them. This keeps the LLM's structural job to "run the
+checker and adopt", not "invent docx XML inspection", matching the editor's
+"fill in parameters, not invent docx manipulation" philosophy.
+
+The wrapper calls build_findings_document() once per document (CV, and letter
+when present) so a single shell invocation covers both Working Copies; the
+public API (detect_hazards / build_findings_document / write_findings) is
+exported by ats_structural.py and is what the prompt's wrapper skeleton uses.
+The CLI form (python ats_structural.py <docx> --out ... --target ... --iteration
+N) is mentioned as an alternative but the in-process call is preferred so the
+agent controls both documents in one script.
+
+------------------------------------------------------------------------------
+Keyword-matching vs. true skill gaps — the crucial boundary (R7 contract, R6)
+------------------------------------------------------------------------------
+Design Component 6 contract: "defers true skill gaps to JD Alignment". The
+prompt draws a hard line:
+  - ATS Reviewer (keyword matching): the candidate PLAUSIBLY HAS the skill and
+    it is present in their material, but the WORDING does not literally match
+    the JD's term (CV says "container orchestration", JD says "Kubernetes"), or
+    a JD-critical term is buried. The agent proposes a wording/surfacing change
+    so an ATS literal keyword match succeeds. It NEVER invents a skill.
+  - JD Alignment Reviewer (true skill gap): the JD requires a skill the package
+    + database genuinely DO NOT contain. That needs candidate input or an
+    Accepted_Gap and is entirely cv-jd-alignment-reviewer's job (R6). The ATS
+    agent must NOT emit an ats Finding to paper over it and must NOT ask the
+    candidate (it has no way to — only the orchestrator talks to the user).
+If the agent cannot tell which it is, the prompt instructs it to treat it as a
+true skill gap and stay silent (JD Alignment runs before ATS in the same
+iteration and has already had its pass). This prevents the ATS reviewer from
+duplicating or contradicting JD-gap Findings and keeps the dedup/conflict logic
+in the orchestrator clean.
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write, shell.  NO subagent (reviewers never spawn agents). NO user
+prompts (only the orchestrator talks to the candidate; non-interactive
+subagent).
+
+toolsSettings.write.allowedPaths [R7.4, R15.3]:
+  - .kiro/agent-state/cv-workflow/findings/cv-ats-reviewer/**
+        its Findings file (iteration-<n>.json), persisted for audit + resume (R9.2)
+  - .kiro/agent-state/cv-ats-reviewer/**
+        its own per-agent state dir: resume_state.md (R14) + archived wrapper
+        script and logs under scripts/<iso>/ (R14 reconstructability)
+  - tmp/cv-ats-reviewer/**
+        its thin wrapper script + the structural checker's captured output for
+        this invocation
+  Task 12 phrased the write scope as "findings/cv-ats-reviewer/** +
+  tmp/cv-ats-reviewer/**"; the agent's own per-agent state dir
+  .kiro/agent-state/cv-ats-reviewer/** is added so R14 resume state and the R7.4
+  / design "archived ats_checks.py + logs under its state dir" are in-scope.
+  The agent has write to NOTHING else: not the Working Copies, not the originals,
+  not the JD, not the DB/sidecar, not another agent's state. This matches the
+  design permissions matrix row:
+    cv-ats-reviewer | read, write, shell | own state dir +
+      findings/cv-ats-reviewer/** + tmp/cv-ats-reviewer/** |
+      python tmp/cv-ats-reviewer/.*/ats_checks\.py .* | no
+
+toolsSettings.shell.allowedCommands:
+  - python tmp/cv-ats-reviewer/.*/ats_checks\.py.*
+  - python\.exe tmp/cv-ats-reviewer/.*/ats_checks\.py.*   (Windows interpreter form)
+  - py tmp/cv-ats-reviewer/.*/ats_checks\.py.*            (Windows py launcher form)
+  Scoped to ONLY running the wrapper script the agent itself writes in its tmp
+  dir, exactly matching the design matrix entry
+  "python tmp/cv-ats-reviewer/.*/ats_checks\.py .*". The wrapper is what invokes
+  ats_structural.py in-process, so the checker runs transitively without needing
+  its own allowedCommands entry — same arrangement as the editor's wrapper
+  driving docx_edit.py. The three interpreter spellings mirror the editor config
+  (python / python.exe / py) for Windows portability.
+
+toolsSettings.shell.deniedCommands (global denylist for all shell-capable
+agents, per design "Global denied commands" [R15.5, R15.6]):
+  pip install .* | pip3 install .* | python -m pip .* | npm .* | npx .* |
+  git .* | rm .* | del .* | rmdir .* | curl .* | wget .*
+  No installers (the checker's libraries are assumed installed; a missing dep
+  makes ats_structural.py exit non-zero naming the package, which the agent
+  surfaces as FATAL — it does not try to install), no git, no network, no
+  destructive deletes. Identical denylist to the editor for consistency.
+
+No environment variables are referenced anywhere in the config or prompt
+[global steering rule + R15.1]: every path is workspace-relative or an explicit
+argument the orchestrator supplies at invocation (CV_WORKING_DOCX,
+LETTER_WORKING_DOCX, CV_NORMALIZED, LETTER_NORMALIZED, JD_NORMALIZED,
+STRUCTURAL_SCRIPT, ITERATION). The STRUCTURAL_SCRIPT absolute path is supplied
+by the orchestrator/installer, never read from the environment.
+
+------------------------------------------------------------------------------
+Inputs (provided by the orchestrator, never from the environment)
+------------------------------------------------------------------------------
+  CV_WORKING_DOCX      working/cv.working.docx       [required — structural input]
+  LETTER_WORKING_DOCX  working/letter.working.docx   [only when a letter exists; R1.8]
+  CV_NORMALIZED        inputs/cv.normalized.md (+ cv.anchors.json)   [keyword surface]
+  LETTER_NORMALIZED    inputs/letter.normalized.md (+ letter.anchors.json) [if letter]
+  JD_NORMALIZED        inputs/jd.normalized.md       [keyword matching only; R7.2]
+  STRUCTURAL_SCRIPT    absolute installed path to ats_structural.py (orchestrator-
+                       supplied; authoring-relative ../shared/scripts/ats_structural.py)
+  ITERATION            current iteration n (filename + resume state)
+Structural checks run against the .docx (the XML hazards live in the binary, not
+the normalized text). Keyword matching runs against the normalized text, anchored
+by the shared paragraph_key coordinate system from docx_normalize.py (task 2) so
+the editor can resolve keyword Findings precisely.
+
+------------------------------------------------------------------------------
+Finding ids: structural vs. keyword (no collisions)
+------------------------------------------------------------------------------
+  Structural (from ats_structural.py): ATS-<TYPECODE>-<hash8>, e.g.
+    ATS-TXB-1a2b3c4d (TXB/IMG/COL/HDR/FTR/TBL/HDG/UNI), deterministic + stable.
+  Keyword (authored by the agent):     ATS-KW-<iteration>-<seq>, e.g. ATS-KW-1-003.
+The KW- infix guarantees keyword ids never collide with the structural hash ids.
+All ATS Findings use category=ats regardless of source, so the orchestrator
+treats the whole set as one gate.
+
+------------------------------------------------------------------------------
+Severity guidance
+------------------------------------------------------------------------------
+blocking is reserved for a hazard that would cause an ATS to DROP or SCRAMBLE
+substantive content (e.g. a skills section trapped in a text box or header) —
+consistent with the design note that blocking is for the ATS and hiring-manager
+gates, and the conflict-priority order placing ats (blocking) at the top
+(ats > hiring_manager_concern > jd_gap > spelling/formatting > language > length).
+ats_structural.py assigns high to text-box/image/multi-column hazards and medium
+to header/footer/table/heading/unicode; the agent keeps those verbatim. A missing
+high-priority JD keyword is typically high; a terminology polish is medium/low.
+
+------------------------------------------------------------------------------
+Gate + anti-oscillation [R7.7, R10.3]
+------------------------------------------------------------------------------
+Gate passes per Working Copy when no open ats Findings remain after the editor's
+most recent pass. The prompt requires RE-RUNNING ats_structural.py against the
+CURRENT Working Copy each iteration (never reuse stale structural output) so a
+hazard the editor already removed does not get re-flagged — this is the agent's
+contribution to the orchestrator's oscillation detection (R10.3): review current
+state, emit [] when clean. The empty array [] is the explicit "gate passes"
+signal, same convention as the other reviewers.
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Hybrid two-mode design: Part 1 (structural via thin wrapper + shell) and
+  Part 2 (LLM keyword matching) clearly separated; both merge into one
+  schema-valid output.
+- Thin-wrapper: minimal ats_checks.py skeleton given; explicit ban on detection
+  logic in the wrapper or reimplementing XML inspection.
+- Adopt-verbatim: structural Findings kept exactly as the checker emits them
+  (id/anchor/severity/rationale untouched).
+- Keyword boundary: dedicated "Defer True Skill Gaps to JD Alignment" section +
+  anti-patterns; never invent a skill; stay silent when unsure.
+- Read-only on documents: writes limited to findings + state + tmp dirs;
+  forbids editing Working Copies/originals/DB/other agents' state.
+- Schema-valid Findings: enumerates required fields, fixes source_agent =
+  cv-ats-reviewer, category = ats, status = open, non-empty paragraph_key
+  anchor; instructs validation against finding.schema.json; [] is "gate passes".
+- Resume protocol: resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; input_hash includes the working-doc + JD content so
+  an edited document forces a fresh run; resume when hash matches and
+  IN_PROGRESS, else archive + restart [R14.1-R14.4].
+- FATAL on missing input/dependency: non-zero checker exit (missing .docx or
+  missing python-docx) surfaced prominently, never silently swallowed, never
+  "fixed" with an installer.
+- No env vars / no installers / no git / no network / no subagents / no user
+  prompts: stated in identity, scope, principles, and anti-patterns.
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption (IMPORTANT)
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/ats-reviewer/. Per design
+"Installation and discovery" [R16.6-R16.10, D-12]:
+  - In the authoring tree, prompt is referenced as the relative URI
+    "file://prompt.md", and the shared checker is referenced by its
+    authoring-relative path ../shared/scripts/ats_structural.py.
+  - install_agents.py (task 15) copies the whole cli-agents/cv/ tree to a fixed
+    installed root (.kiro/cv-suite/ for a workspace install, ~/.kiro/cv-suite/
+    for a global install) and generates a discovery config at
+    .kiro/agents/cv-ats-reviewer.json whose "prompt" is rewritten to an ABSOLUTE
+    file:// URI, and whose shared-script references (the STRUCTURAL_SCRIPT path
+    passed in the prompt/by the orchestrator) resolve to the ABSOLUTE installed
+    path under <install-root>/cv-suite/shared/scripts/ats_structural.py.
+So the ATS reviewer never hard-codes the checker path: the orchestrator/
+installer passes the resolved STRUCTURAL_SCRIPT path in at invocation, and the
+prompt instructs the agent to use that path verbatim. The authoring config
+intentionally keeps the relative forms; do not bake machine-specific absolute
+paths into this tree (the generated .kiro/agents/cv-*.json and .kiro/cv-suite/
+are gitignored, per C2).
+
+Windows note: the installer emits host-correct strings — the absolute file://
+URI as file:///D:/.../prompt.md. The authoring allowedCommands below use
+forward-slash, workspace-relative tmp paths because the agent's own tmp dir is
+always workspace-relative (tmp/cv-ats-reviewer/...), independent of where the
+suite is installed — same arrangement as the editor's allowedCommands.
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 12)
+------------------------------------------------------------------------------
+- Task 14 (orchestrator) must spawn this reviewer 4th in the REVIEW order, pass
+  CV_WORKING_DOCX / LETTER_WORKING_DOCX / CV_NORMALIZED / LETTER_NORMALIZED /
+  JD_NORMALIZED / STRUCTURAL_SCRIPT / ITERATION explicitly, and fold its ats
+  Findings into the Change_List under the conflict-priority rules (ats wins over
+  language preferences, R9.4; ats is highest priority).
+- Task 15 (install_agents.py) must rewrite this config's prompt URI to an
+  absolute file:// path and resolve the STRUCTURAL_SCRIPT reference to the
+  absolute installed ats_structural.py path; allowedCommands tmp patterns stay
+  workspace-relative and need no rewriting.

@@ -1,0 +1,185 @@
+Language and Content Reviewer Agent — Discussion / Design Notes
+
+Canonical name: cv-language-content-reviewer
+Config file:    KiroCLIAgent-LanguageContentReviewer.json   ("name": "cv-language-content-reviewer")
+Prompt file:    prompt.md                                   (referenced as file://prompt.md)
+
+Maps to Requirement 5 (Language and Content Reviewer Agent) and Requirement
+11.5 (length reduction sourced from this reviewer), plus R14 (resumability),
+R15.3 (scoped tools, read-only on documents), and R16.3/16.4/16.5 (canonical
+name, explicit name field, required files). Authored in task 10.
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+A read-only, LLM-only reviewer that critiques the PROSE of the Working Copies
+in isolation from the Job_Description [R5.1, R5.4]:
+  - weak action verbs
+  - vague / unquantified claims
+  - redundant phrasing
+  - inappropriate passive voice (active is stronger)
+  - missing / weak professional-summary content (CV)
+  - parallelism across bullets
+  - cover-letter structure: opening hook, paragraph balance, closing
+    call-to-action, narrative flow (letter)
+  - other prose-level improvements [R5.2]
+Emits schema-valid Findings (category: language) tagged per target_document
+into findings/cv-language-content-reviewer/iteration-<n>.json. Gate passes when
+no open Findings remain after the editor's most recent pass, evaluated
+independently per Working Copy [R5.3, R5.6].
+
+It is the 2nd reviewer in the per-iteration REVIEW order (after spell/format,
+before JD alignment), so it cleans the prose BEFORE any job-specific tailoring
+builds on it.
+
+------------------------------------------------------------------------------
+Why no Job_Description (the "in isolation" contract) [R5.1]
+------------------------------------------------------------------------------
+This reviewer deliberately does not read the JD. Job-specific terminology,
+gap-filling, and emphasis re-balancing are the JD Alignment Reviewer's job
+(Component 5, R6). Keeping the two concerns separate means:
+  - prose quality is judged on its own merits, not bent to a single posting;
+  - the JD reviewer inherits already-tight writing to tailor, not raw text;
+  - conflicts between "good prose" and "JD keyword" are resolved later, by the
+    orchestrator's conflict-priority rules, not silently here.
+The prompt forbids reading jd.normalized.md or any JD file and bans jd_gap
+Findings, mirroring the spell/format reviewer's same no-JD stance.
+
+------------------------------------------------------------------------------
+Length-reduction mode (category: length) [R11.5]
+------------------------------------------------------------------------------
+Requirement 11.5 says that when a Working Copy exceeds its Page_Constraint, the
+orchestrator produces length-reduction Change_List entries "sourced from the
+Language and Content Reviewer's existing Findings or by re-invoking that
+reviewer with explicit instructions to suggest reductions." This agent is that
+reviewer. The prompt therefore has two modes:
+
+  Standard mode (no LENGTH_DIRECTIVE): full prose critique, category=language.
+  Length mode (LENGTH_DIRECTIVE present): the orchestrator passes the
+    over-length document, its measured page count, and its limit (in the spawn
+    task and via workflow_state.md). The agent emits category=length Findings
+    that propose concrete reductions anchored by paragraph_key.
+
+The binding contract from design Component 4: "length-reduction findings must
+preserve content that resolves higher-priority findings (conflict priority
+places `length` last)." The design's conflict order (highest wins) is:
+  1. ats (blocking)
+  2. hiring_manager_concern (blocking | high)
+  3. jd_gap
+  4. spelling / formatting
+  5. language
+  6. length  <-- applied LAST, never deletes content resolving a higher item
+So the prompt instructs: prefer tightening rewrites over deletion; check the
+current findings on disk before cutting; steer cuts toward filler/redundancy
+and away from any text an ATS keyword, JD-gap fill-in, spelling/formatting fix,
+or hiring-manager concern depends on; rank cuts by value-per-line and stop once
+the overage is comfortably covered. Goal: get under the limit losing the least
+signal, not strip the document.
+
+Note: this reviewer only PROPOSES reductions as Findings. It never edits the
+document — the orchestrator turns the Findings into a Change_List and the
+cv-editor applies them, same as every other reviewer's output. category=length
+is in the finding.schema.json enum (task 7), so length Findings validate
+against the same schema.
+
+------------------------------------------------------------------------------
+Categories: language vs length only
+------------------------------------------------------------------------------
+This agent emits exactly two of the schema's category values: `language`
+(standard mode) and `length` (length-reduction mode). It does NOT emit:
+  - spelling / formatting  -> Spell and Formatting Reviewer (cv-spell-format-reviewer)
+  - jd_gap                 -> JD Alignment Reviewer (cv-jd-alignment-reviewer)
+  - ats                    -> ATS Reviewer (cv-ats-reviewer)
+  - hiring_manager_concern -> Hiring Manager Reviewer (cv-hiring-manager-reviewer)
+  - package_coherence target -> Hiring Manager Reviewer (cross-document)
+Severity is never `blocking` here; blocking is reserved for the ATS and
+hiring-manager gates. The prompt's anti-patterns section restates these lane
+boundaries to keep findings clean and dedup-friendly for the orchestrator.
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write.  NO shell (LLM-only analysis, no external libraries) [R5.4].
+NO subagent (reviewers never spawn agents). NO user prompts (only the
+orchestrator talks to the candidate).
+
+toolsSettings.write.allowedPaths [R15.3, R5.5]:
+  - .kiro/agent-state/cv-workflow/findings/cv-language-content-reviewer/**
+        its Findings file (iteration-<n>.json), persisted for audit + resume (R9.2)
+  - .kiro/agent-state/cv-language-content-reviewer/**
+        its own per-agent state dir (resume_state.md, archives)
+This is identical in shape to the spell/format reviewer's config, with the only
+difference being the agent's own canonical-name directories — exactly as task 10
+specifies ("as the spell/format reviewer but its own
+findings/cv-language-content-reviewer/** dir"). The agent has write to NOTHING
+else: not the Working Copies, not the originals, not the JD, not the DB/sidecar,
+not another agent's state. This matches the design permissions matrix row:
+  cv-language-content-reviewer | read, write | own state dir +
+    findings/cv-language-content-reviewer/** | (none) | no
+and the design note that the three pure reviewers get `write` ONLY to persist
+Findings.
+
+No environment variables are referenced anywhere in the config or prompt
+[global steering rule + R15.1]: every path is workspace-relative or an explicit
+argument the orchestrator supplies at invocation (CV_NORMALIZED,
+LETTER_NORMALIZED, ITERATION, optional LENGTH_DIRECTIVE).
+
+------------------------------------------------------------------------------
+Inputs (provided by the orchestrator, never from the environment)
+------------------------------------------------------------------------------
+  CV_NORMALIZED      inputs/cv.normalized.md (+ cv.anchors.json)   [required]
+  LETTER_NORMALIZED  inputs/letter.normalized.md (+ letter.anchors.json)
+                     [only when a Motivational_Letter was provided; R1.8]
+  ITERATION          current iteration n (filename + resume state)
+  LENGTH_DIRECTIVE   optional; present only in EVALUATE-phase length mode;
+                     names over-length doc + current pages + page limit (R11.5)
+The agent reads the normalized text as its primary surface and MAY open the
+.docx for formatting context. Anchors use the shared paragraph_key coordinate
+system from docx_normalize.py (task 2) so the editor can resolve them precisely.
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Read-only on documents: prompt forbids editing any Working Copy/original/DB
+  and limits writes to its findings + state dirs.
+- No JD: identity, scope, principles, and anti-patterns all restate it.
+- Schema-valid Findings: prompt enumerates every required field, fixes
+  source_agent = cv-language-content-reviewer, status = open, category in
+  {language, length}, severity in {low, medium, high}, and requires a non-empty
+  paragraph_key anchor; instructs validation against finding.schema.json before
+  finishing; empty array [] is the explicit "gate passes" signal.
+- Length mode: separate section spells out the preserve-higher-priority rule,
+  tighten-over-delete preference, and rank-by-value-per-line guidance [R11.5].
+- No fabricated metrics: vague-claim Findings propose the SHAPE of a quantified
+  claim (<X>%) and flag that the real number must come from the candidate.
+- Don't oscillate: review current text; never re-flag an applied+correct issue
+  (supports the orchestrator's oscillation detection, R10.3).
+- Resume protocol: resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; input_hash includes the LENGTH_DIRECTIVE so a switch
+  into length mode forces a fresh run; resume when hash matches and IN_PROGRESS,
+  else archive + restart [R14.1-R14.4].
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/language-content-reviewer/.
+Per design "Installation and discovery" [R16.6-R16.10, D-12], prompt is
+referenced here as the relative URI "file://prompt.md"; install_agents.py
+(task 15) copies the tree to a fixed installed root and generates a discovery
+config at .kiro/agents/cv-language-content-reviewer.json whose "prompt" is an
+ABSOLUTE file:// URI. This reviewer has no shell, so it has no script paths to
+rewrite (unlike the editor and ATS reviewer). The authoring config keeps the
+relative form; do not bake machine-specific absolute paths into this tree (the
+generated .kiro/agents/cv-*.json and .kiro/cv-suite/ are gitignored, per C2).
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 10)
+------------------------------------------------------------------------------
+- Task 14 (orchestrator) must spawn this reviewer 2nd in the REVIEW order,
+  pass CV_NORMALIZED / LETTER_NORMALIZED / ITERATION, and — during EVALUATE
+  when a doc is over its page limit — re-invoke it with a LENGTH_DIRECTIVE,
+  then translate its language/length Findings into the Change_List under the
+  conflict-priority rules (length applied last).
+- Task 15 (install_agents.py) rewrites this config's prompt URI to an absolute
+  file:// path at install time.

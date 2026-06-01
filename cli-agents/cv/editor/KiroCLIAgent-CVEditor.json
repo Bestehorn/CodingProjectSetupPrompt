@@ -1,0 +1,51 @@
+{
+    "name": "cv-editor",
+    "description": "CV Editor Agent — the sole agent with write authority over the CV and motivational-letter Working Copies. Consumes a structured Change_List targeting ONE Working Copy per invocation, writes a thin wrapper script under tmp/cv-editor/<iso-timestamp>/apply_changes.py that drives the shared deterministic edit engine (docx_edit.py), runs it via shell, then archives the wrapper plus its stdout/stderr to its per-agent state directory. Reports per-entry results (verified | failed_to_apply | already_satisfied | formatting_normalized) honestly and never silently skips a failed entry. Never spawns subagents, never reads the job description, never acts as a reviewer.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write",
+        "shell"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                "tmp/cv-editor/**",
+                ".kiro/agent-state/cv-workflow/**",
+                ".kiro/agent-state/cv-workflow/working/**",
+                ".kiro/agent-state/cv-editor/**"
+            ]
+        },
+        "shell": {
+            "allowedCommands": [
+                "python tmp/cv-editor/.*/apply_changes\\.py.*",
+                "python\\.exe tmp/cv-editor/.*/apply_changes\\.py.*",
+                "py tmp/cv-editor/.*/apply_changes\\.py.*"
+            ],
+            "deniedCommands": [
+                "pip install .*",
+                "pip3 install .*",
+                "python -m pip .*",
+                "npm .*",
+                "npx .*",
+                "git .*",
+                "rm .*",
+                "del .*",
+                "rmdir .*",
+                "curl .*",
+                "wget .*"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write",
+        "shell"
+    ],
+    "model": null
+}

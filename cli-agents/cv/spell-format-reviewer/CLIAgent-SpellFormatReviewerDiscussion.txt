@@ -1,0 +1,212 @@
+Spell and Formatting Reviewer Agent — Discussion / Design Notes
+
+Canonical name: cv-spell-format-reviewer
+Config file:    KiroCLIAgent-SpellFormatReviewer.json   ("name": "cv-spell-format-reviewer")
+Prompt file:    prompt.md                               (referenced as file://prompt.md)
+
+Maps to Requirement 4 (Spell and Formatting Reviewer Agent), plus R14
+(resumability), R15.3 (scoped tools, read-only on documents), and
+R16.3/16.4/16.5 (canonical name, explicit name field, required files). Authored
+in task 9.
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+A read-only, LLM-only reviewer that catches the COSMETIC/correctness errors in
+the Working Copies in isolation from the Job_Description [R4.1, R4.4]:
+  - spelling errors (incl. wrong proper nouns / product names — credibility risk)
+  - grammatical errors
+  - punctuation errors
+  - capitalization inconsistencies
+  - tense inconsistencies
+  - date-format inconsistencies
+  - number-format inconsistencies
+  - visible formatting defects (inconsistent bullet/heading styles, stray/empty
+    paragraphs, likely-orphaned trailing content) [R4.2]
+Emits schema-valid Findings tagged per target_document into
+findings/cv-spell-format-reviewer/iteration-<n>.json. Gate passes when no open
+Findings remain after the editor's most recent pass, evaluated independently
+per Working Copy [R4.3, R4.6].
+
+It is the 1ST reviewer in the per-iteration REVIEW order (before
+language/content, JD alignment, ATS, hiring manager), so it cleans the
+orthographic + visible-format surface BEFORE any prose critique or job-specific
+tailoring builds on it (design "Per-iteration control flow").
+
+------------------------------------------------------------------------------
+Why no Job_Description (the "in isolation" contract) [R4.1]
+------------------------------------------------------------------------------
+This reviewer deliberately does not read the JD. Like the Language and Content
+Reviewer, it judges the document on its own terms; JD terminology, gap-filling,
+and emphasis re-balancing are the JD Alignment Reviewer's job (Component 5, R6),
+and keyword matching is the ATS Reviewer's (R7). The prompt forbids reading
+jd.normalized.md or any JD file and bans jd_gap/ats Findings. This keeps lanes
+clean so the orchestrator's dedup + conflict-priority rules (design "Conflict
+resolution") operate on non-overlapping finding sets.
+
+------------------------------------------------------------------------------
+Why LLM-only (no spell-check library) [R4.4, D-5]
+------------------------------------------------------------------------------
+Requirement 4.4 and decision D-5 fix this: spell/format analysis is performed
+by the underlying LLM, matching the original notebook's working approach. No
+external spell-checking library is required or permitted. Consequently the
+agent has NO shell tool at all (unlike the editor and ATS reviewer, which use
+the script-in-tmp + shell pattern). There is no script for this agent to call;
+it reasons over the Normalized_Text directly. This also means there are no
+shared-script paths to rewrite at install time (cf. the language-content
+reviewer's identical situation) — only the prompt file:// URI is rewritten by
+install_agents.py (task 15).
+
+------------------------------------------------------------------------------
+Category mapping: 8 defect types -> 2 schema categories
+------------------------------------------------------------------------------
+The finding.schema.json (task 7) category enum is the closed suite-wide set:
+  spelling | formatting | language | jd_gap | ats | hiring_manager_concern | length
+There is NO dedicated enum value for grammar/punctuation/caps/tense/date/number.
+Rather than widen the shared schema (which every agent and the orchestrator
+depend on), this agent maps its eight defect types onto the two values it owns:
+
+  category: spelling   -> ALL textual-correctness defects:
+                          spelling, grammar, punctuation, capitalization,
+                          tense, date-format, number-format
+  category: formatting -> visible formatting defects:
+                          inconsistent bullet/heading styles, stray/empty
+                          paragraphs + spacing artifacts, likely-orphaned
+                          trailing content
+
+To keep the precise sub-type auditable WITHOUT adding non-schema fields (the
+schema sets additionalProperties:false on a Finding), the prompt instructs the
+agent to lead the `rationale` with the specific defect type, e.g.
+  "Punctuation: ...", "Tense inconsistency: ...", "Date-format inconsistency: ...",
+  "Capitalization: ...", "Spelling: ...".
+This is a deliberate design choice for task 9; if a future spec revision wants
+first-class grammar/punctuation categories, that is a schema change (task 7) and
+must go through the design doc, not be smuggled in as ad-hoc Finding fields.
+
+Severity: low | medium | high only. NEVER blocking — blocking is reserved for
+the ATS and hiring-manager gates (mirrors the language reviewer's stance).
+A misspelled proper noun / product name (e.g. a wrong AWS product name) is high
+because it is a direct credibility risk — this exact case is the design's
+worked Finding example (SF-003, "QuickSuite" -> "Amazon Q").
+
+------------------------------------------------------------------------------
+Lane boundaries vs the Language and Content Reviewer
+------------------------------------------------------------------------------
+The two no-JD reviewers run back-to-back and must not overlap:
+  THIS agent (spell/format): orthographic + visible-format correctness.
+    - parallel PUNCTUATION / CASING across bullets IS yours.
+  Language reviewer: prose quality — weak verbs, vague/unquantified claims,
+    redundancy, passive voice, parallel GRAMMATICAL STRUCTURE / phrasing,
+    professional-summary content, cover-letter structure, and length reduction.
+The prompt's "Stay in your lane" paragraph and the anti-patterns section draw
+this line explicitly so dedup stays clean.
+
+------------------------------------------------------------------------------
+Reading surface and anchors
+------------------------------------------------------------------------------
+Primary surface: inputs/cv.normalized.md (+ inputs/letter.normalized.md when a
+letter exists) and their *.anchors.json companions, produced by
+docx_normalize.py (task 2). The agent MAY also open the .docx directly for
+formatting context (allowed by R4.1 "or the .docx directly").
+
+The anchors sidecar's `paragraphs[]` entries each carry:
+  index, key (paragraph_key), section (nearest heading), style (raw Word style
+  name, e.g. "List Bullet" / "List Number" / "Heading 2" / "Normal"),
+  is_heading, text.
+The `style` field is the concrete evidence for formatting Findings (e.g.
+detecting a section that mixes "List Bullet" and "List Number"), and the
+normalized Markdown's #/##/### depth reflects heading levels (to_markdown emits
+heading hashes at _heading_level+1). Findings anchor on paragraph_key (+
+match_text for substring fixes) so the editor's replace_run_text /
+replace_paragraph_text / set_paragraph_style operations (docx_edit.py, task 5)
+can locate them precisely even after earlier edits in the same pass.
+
+Note on pagination: this agent has NO renderer and cannot measure page count.
+For "orphaned single-line trailing page" defects (named in R4.2) it flags the
+STRUCTURAL pattern that risks orphaning and explicitly does NOT assert a page
+number — the orchestrator's render-based page_count.py (task 4) owns the hard
+page gate (R11). The prompt forbids asserting "pushes to page 3"-style claims.
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write.  NO shell (LLM-only analysis, no external libraries) [R4.4].
+NO subagent (reviewers never spawn agents). NO user prompts (only the
+orchestrator talks to the candidate).
+
+toolsSettings.write.allowedPaths [R15.3, R4.5]:
+  - .kiro/agent-state/cv-workflow/findings/cv-spell-format-reviewer/**
+        its Findings file (iteration-<n>.json), persisted for audit + resume (R9.2)
+  - .kiro/agent-state/cv-spell-format-reviewer/**
+        its own per-agent state dir (resume_state.md, archives)
+The agent has write to NOTHING else: not the Working Copies, not the originals,
+not the JD, not the DB/sidecar, not another agent's state. This matches the
+design permissions matrix row:
+  cv-spell-format-reviewer | read, write | own state dir +
+    findings/cv-spell-format-reviewer/** | (none) | no
+and the design note that the three pure reviewers (spell/format,
+language/content, hiring-manager) get `write` ONLY to persist Findings. The
+config is identical in shape to the language-content reviewer's, differing only
+in the agent's own canonical-name directories — as task 9/10 intend.
+
+No environment variables are referenced anywhere in the config or prompt
+[global steering rule + R15.1]: every path is workspace-relative or an explicit
+argument the orchestrator supplies at invocation (CV_NORMALIZED,
+LETTER_NORMALIZED, ITERATION).
+
+------------------------------------------------------------------------------
+Inputs (provided by the orchestrator, never from the environment)
+------------------------------------------------------------------------------
+  CV_NORMALIZED      inputs/cv.normalized.md (+ cv.anchors.json)   [required]
+  LETTER_NORMALIZED  inputs/letter.normalized.md (+ letter.anchors.json)
+                     [only when a Motivational_Letter was provided; R1.8]
+  ITERATION          current iteration n (filename + resume state)
+There is deliberately NO JD input and NO length directive for this agent (those
+are the ATS/JD-alignment reviewers' and the language reviewer's respectively).
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Read-only on documents: prompt forbids editing any Working Copy/original/DB
+  and limits writes to its findings + state dirs.
+- No JD: identity, scope, principles, and anti-patterns all restate it.
+- LLM-only: no shell tool; prompt bans spell-check libraries and installers.
+- Schema-valid Findings: prompt enumerates every required field, fixes
+  source_agent = cv-spell-format-reviewer, status = open, category in
+  {spelling, formatting}, severity in {low, medium, high}, requires a non-empty
+  paragraph_key anchor (+ match_text for substring fixes), and instructs
+  validation against finding.schema.json before finishing; empty array [] is the
+  explicit "gate passes" signal.
+- Drop-in fixes: current/proposed are mechanical replacements so the editor can
+  apply replace_run_text / replace_paragraph_text without interpretation.
+- Don't oscillate: review current text; never re-flag an applied+correct issue
+  (supports the orchestrator's oscillation detection, R10.3).
+- Resume protocol: resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; input_hash includes normalized-input content + the
+  iteration number so an edited document or new iteration forces a fresh run;
+  resume when hash matches and IN_PROGRESS, else archive + restart [R14.1-R14.4].
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/spell-format-reviewer/.
+Per design "Installation and discovery" [R16.6-R16.10, D-12], prompt is
+referenced here as the relative URI "file://prompt.md"; install_agents.py
+(task 15) copies the tree to a fixed installed root and generates a discovery
+config at .kiro/agents/cv-spell-format-reviewer.json whose "prompt" is an
+ABSOLUTE file:// URI. This reviewer has no shell, so it has no script paths to
+rewrite (unlike the editor and ATS reviewer). The authoring config keeps the
+relative form; machine-specific absolute paths are never baked into this tree
+(the generated .kiro/agents/cv-*.json and .kiro/cv-suite/ are gitignored, C2).
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 9)
+------------------------------------------------------------------------------
+- Task 14 (orchestrator) must spawn this reviewer 1ST in the REVIEW order, pass
+  CV_NORMALIZED / LETTER_NORMALIZED / ITERATION, then translate its
+  spelling/formatting Findings into the Change_List under the conflict-priority
+  rules (spelling/formatting sit at priority 4, above language and length,
+  below ats/hiring_manager/jd_gap).
+- Task 15 (install_agents.py) rewrites this config's prompt URI to an absolute
+  file:// path at install time.

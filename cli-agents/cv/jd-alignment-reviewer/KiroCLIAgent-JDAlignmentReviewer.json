@@ -1,0 +1,32 @@
+{
+    "name": "cv-jd-alignment-reviewer",
+    "description": "JD Alignment Reviewer Agent — a non-interactive, two-phase reviewer that compares the application package against the Job_Description and identifies skill/experience gaps, terminology swaps, and emphasis re-balancing. In Phase 1 (Analysis) it consumes the CV_Working_Copy, Job_Description, Letter_Working_Copy (when present), and Bullet_Point_Database (when present), emits Findings it can produce without user input (including database-sourced fill-ins) to findings/cv-jd-alignment-reviewer/, and writes any clarification needs to jd_alignment/pending_questions.json — it never prompts the candidate. In Phase 2 (Integration) it consumes jd_alignment/answered_questions.json, emits fill-in Findings from candidate evidence, records declined gaps as accepted_gap in accepted_gaps.md with the verbatim response, writes elicited content back to the user Bullet_Point_Database in place (only when .md/.txt) or to database_sidecar.md (when .docx/.pdf or absent) with provenance, and may append new pending_questions to repeat the cycle. It never edits any Working Copy, never spawns subagents, and has no shell.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/findings/cv-jd-alignment-reviewer/**",
+                ".kiro/agent-state/cv-workflow/jd_alignment/**",
+                ".kiro/agent-state/cv-workflow/accepted_gaps.md",
+                ".kiro/agent-state/cv-workflow/database_sidecar.md",
+                ".kiro/agent-state/cv-jd-alignment-reviewer/**",
+                "**/*.md",
+                "**/*.txt"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write"
+    ],
+    "model": null
+}

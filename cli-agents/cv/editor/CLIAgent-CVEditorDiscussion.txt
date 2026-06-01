@@ -1,0 +1,157 @@
+CV Editor Agent — Discussion / Design Notes
+
+Canonical name: cv-editor
+Config file:    KiroCLIAgent-CVEditor.json   ("name": "cv-editor")
+Prompt file:    prompt.md                    (referenced as file://prompt.md)
+
+Maps to Requirement 3 (CV Editor Agent — Exclusive Write Authority), plus
+R14 (resumability), R15.3/15.4 (scoped tools), and R16.3/16.4/16.5 (canonical
+name, explicit name field, required files). Authored in task 8.
+
+------------------------------------------------------------------------------
+Why exactly ONE writer (single-writer invariant)
+------------------------------------------------------------------------------
+The suite gives write authority over the CV_Working_Copy and the
+Letter_Working_Copy to this agent alone [R3.1]. Reviewers are read-only with
+respect to documents (they only persist their own Findings). Concentrating all
+document mutation in one agent makes edits:
+  - auditable     — every edit pass leaves a wrapper script + stdout/stderr in
+                    .kiro/agent-state/cv-editor/scripts/<iso>/ [R3.9];
+  - reversible    — the orchestrator snapshots a backup before each pass, so a
+                    corrupt pass can be rolled back [R3.4];
+  - attributable  — a regression maps to exactly one Change_List + result.json.
+This mirrors Property 2 (single-writer holds) in the design's correctness
+properties.
+
+Per invocation the editor edits exactly ONE Working Copy. If a run needs both
+the CV and the letter edited, the orchestrator invokes the editor twice (once
+per document). Change_List entries carry a target_document tag, but routing CV
+vs. letter to separate invocations is the orchestrator's job; the editor just
+applies the list it is handed to the single TARGET_DOCX it is given.
+
+------------------------------------------------------------------------------
+The thin-wrapper pattern
+------------------------------------------------------------------------------
+All edit logic lives in the shared deterministic engine
+shared/scripts/docx_edit.py (task 5): the closed operation set, anchor
+re-resolution against the live doc, idempotency / already_satisfied checks,
+run-formatting preservation, and re-read-based verification that emits
+iteration-<n>.result.json. The editor does NOT reimplement any of this.
+
+Instead it writes a THIN wrapper at tmp/cv-editor/<iso>/apply_changes.py that
+only wires paths (ENGINE, CHANGE_LIST, TARGET_DOCX, ITERATION) and calls the
+engine's public apply_change_list(...) entry point (or the equivalent CLI:
+  python docx_edit.py <change_list.json> <target.docx> [--result <p>] [--iteration N]
+), then runs the wrapper via the shell tool. Rationale: keep the LLM's job at
+edit time to "fill in parameters", not "invent docx manipulation" (design
+"Edit-Application Layer"). The wrapper-in-tmp + shell pattern is the same one
+the ATS reviewer uses for ats_checks.py.
+
+The engine writes iteration-<n>.result.json next to the Change_List (under
+.kiro/agent-state/cv-workflow/change_list/). The editor reads that file as the
+authoritative per-entry status; it does not re-derive status by inspecting the
+docx itself.
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption (IMPORTANT)
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/editor/. Per design
+"Installation and discovery" [R16.6–R16.10, D-12]:
+  - In the authoring tree, prompt is referenced as the relative URI
+    "file://prompt.md", and the shared engine is referenced by its
+    authoring-relative path ../shared/scripts/docx_edit.py.
+  - install_agents.py (task 15) copies the whole cli-agents/cv/ tree to a fixed
+    installed root (.kiro/cv-suite/ for a workspace install, ~/.kiro/cv-suite/
+    for a global install) and generates a discovery config at
+    .kiro/agents/cv-editor.json whose "prompt" is rewritten to an ABSOLUTE
+    file:// URI, and whose shared-script references (in allowedCommands and in
+    the prompt's ENGINE path) are rewritten to ABSOLUTE installed paths under
+    <install-root>/cv-suite/shared/scripts/.
+So the editor never hard-codes the engine path: the orchestrator/installer
+passes the resolved ENGINE path in at invocation, and the prompt instructs the
+agent to use that path verbatim. The authoring config intentionally keeps the
+relative forms; do not bake machine-specific absolute paths into this tree (the
+generated .kiro/agents/cv-*.json and .kiro/cv-suite/ are gitignored, per C2).
+
+Windows note: the installer emits host-correct strings — absolute file:// URIs
+as file:///D:/.../prompt.md and allowedCommands with backslash paths correctly
+regex-escaped. The authoring allowedCommands below use forward-slash,
+workspace-relative tmp paths because the editor's own tmp dir is always
+workspace-relative (tmp/cv-editor/...), independent of where the suite is
+installed.
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write, shell.  NO subagent (the editor never spawns agents [R3.8]).
+
+toolsSettings.write.allowedPaths [R3.7, R15.3]:
+  - tmp/cv-editor/**                              wrapper script + captured logs
+  - .kiro/agent-state/cv-workflow/**              Workflow_State_Directory,
+                                                  which contains:
+      .kiro/agent-state/cv-workflow/working/**    the Working Copies it edits
+      .kiro/agent-state/cv-workflow/change_list/  where the engine writes
+                                                  iteration-<n>.result.json
+  - .kiro/agent-state/cv-workflow/working/**      listed explicitly for clarity
+                                                  (subsumed by the line above)
+  - .kiro/agent-state/cv-editor/**                its own per-agent state, for
+                                                  archived scripts/logs (R3.9)
+                                                  and resume_state.md (R14)
+  Task 8 phrased the patterns as tmp/cv-editor/**, Workflow_State_Directory/**,
+  working/** — these are translated to the design's concrete runtime paths
+  above (Workflow_State_Directory = .kiro/agent-state/cv-workflow/; the
+  working/ and change_list/ trees live under it). The editor's own per-agent
+  state dir .kiro/agent-state/cv-editor/** is added so R3.9 archiving and R14
+  resume state are in-scope. The editor is NOT given write to backups/ — the
+  orchestrator owns backups [R3.4].
+
+toolsSettings.shell.allowedCommands:
+  - python tmp/cv-editor/.*/apply_changes\.py.*
+  - python\.exe tmp/cv-editor/.*/apply_changes\.py.*   (Windows interpreter form)
+  - py tmp/cv-editor/.*/apply_changes\.py.*            (Windows py launcher form)
+  Scoped to ONLY running the wrapper script the agent itself writes in its tmp
+  dir, matching the design matrix entry "python tmp/cv-editor/.*/apply_changes\.py .*".
+  The wrapper is what invokes docx_edit.py in-process, so the engine runs
+  transitively without needing its own allowedCommands entry.
+
+toolsSettings.shell.deniedCommands (global denylist, per design "Global denied
+commands for all shell-capable agents" [R15.5, R15.6]):
+  pip install .* | pip3 install .* | python -m pip .* | npm .* | npx .* |
+  git .* | rm .* | del .* | rmdir .* | curl .* | wget .*
+  No installers, no git, no network, no destructive deletes outside the agent's
+  own tmp dir (the agent does not delete; the orchestrator clears tmp scratch
+  at successful termination).
+
+No environment variables are referenced anywhere in the config or prompt
+[global steering rule + R15.1]: every path is workspace-relative or an
+explicit argument (the ENGINE absolute path is supplied by the
+orchestrator/installer, not read from the environment).
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Single-writer: prompt forbids editing anything but the one TARGET_DOCX, and
+  forbids touching the other Working Copy, the originals, or other agents'
+  state. Backups are explicitly the orchestrator's job.
+- Thin-wrapper: prompt gives the minimal wrapper skeleton and explicitly bans
+  edit logic in the wrapper or reimplementing anchor/idempotency/verification.
+- result.json honesty: prompt enumerates verified | already_satisfied |
+  formatting_normalized | failed_to_apply, requires surfacing EVERY
+  failed_to_apply with id/operation/reason, and bans silent skips, blind
+  retries, and inflating success [R3.6].
+- Resume protocol: prompt specifies resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; resume when input_hash matches and Status is
+  IN_PROGRESS, else archive + restart [R14.1–R14.4].
+- No JD, no reviewers, no subagents: stated in identity, scope, and
+  anti-patterns.
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 8)
+------------------------------------------------------------------------------
+- Task 15 (install_agents.py) must rewrite this config's prompt URI to an
+  absolute file:// path and resolve the ENGINE/script references to absolute
+  installed paths; it must also emit host-correct allowedCommands strings.
+- Task 14 (orchestrator) must pass ENGINE, CHANGE_LIST, TARGET_DOCX, and
+  ITERATION explicitly on each cv-editor invocation, snapshot the backup
+  first, and collect iteration-<n>.result.json afterward.

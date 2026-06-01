@@ -1,0 +1,253 @@
+Hiring Manager Reviewer Agent — Discussion / Design Notes
+
+Canonical name: cv-hiring-manager-reviewer
+Config file:    KiroCLIAgent-HiringManagerReviewer.json   ("name": "cv-hiring-manager-reviewer")
+Prompt file:    prompt.md                                 (referenced as file://prompt.md)
+
+Maps to Requirement 8 (Hiring Manager Reviewer Agent) and Requirement 12.4
+(accepted-gaps register as supporting context, may downgrade recommendation),
+plus R14 (resumability), R15.3 (scoped tools, read-only on documents), and
+R16.3/16.4/16.5 (canonical name, explicit name field, required files). Authored
+in task 13.
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+A read-only, LLM-only reviewer that performs a critical END-TO-END review of
+the whole application package against the Job_Description and emits a binary
+hiring recommendation [R8.1, R8.2]:
+  - Reads the JD (unlike the spell/format and language/content reviewers, which
+    deliberately do not) and judges fit the way a hiring manager would.
+  - Evaluates the package AS A WHOLE: when a Motivational_Letter is present the
+    CV alone is insufficient; the agent verifies CV<->letter coherence and
+    coherence with the JD [R8.1].
+  - Produces a structured review: a list of STRENGTHS (each cited to specific
+    content), a list of CONCERNS (as schema-valid Findings), and a final binary
+    recommendation INVITE | DO_NOT_INVITE [R8.2].
+It is the 5th and LAST reviewer in the per-iteration REVIEW order (after
+spell/format, language/content, JD alignment, ATS), so it judges the package
+after the other reviewers' issues for the pass are on disk.
+
+------------------------------------------------------------------------------
+The binary recommendation: where it is recorded (design decision in task 13)
+------------------------------------------------------------------------------
+R8.2 requires a final binary recommendation INVITE | DO_NOT_INVITE, and the
+orchestrator's convergence predicate (Property 6, R2.9, R8.6) must read it. The
+findings file for every reviewer is a JSON array of Findings validating against
+finding.schema.json — the recommendation is NOT a Finding (it has no category /
+anchor / target_document the way a Finding does), so stuffing it into the
+findings array would break the schema.
+
+Decision: the agent writes TWO artifacts per iteration into its own findings
+subtree (both inside its allowed write scope):
+  1. findings/cv-hiring-manager-reviewer/iteration-<n>.json
+        -> the JSON array of concern Findings (category hiring_manager_concern),
+           [] when there are no concerns. Schema-valid against finding.schema.json.
+  2. findings/cv-hiring-manager-reviewer/iteration-<n>.recommendation.json
+        -> a single JSON object carrying the binary recommendation plus the
+           cited strengths and a one-line rationale:
+           { iteration, source_agent, recommendation: "INVITE"|"DO_NOT_INVITE",
+             open_concern_count, accepted_gaps_considered, strengths[], rationale }
+The recommendation is ALSO stated as the headline of the returned summary so the
+orchestrator can read it either from the deterministic JSON record or from the
+subagent summary. The design's Component 7 interface says the agent "Writes:
+findings/cv-hiring-manager-reviewer/iteration-<n>.json (concerns + a
+recommendation record); Returns: the recommendation and open-concern counts" —
+the companion .recommendation.json file is the concrete shape of "a
+recommendation record", kept separate so the Findings file stays a pure
+schema-valid Finding array.
+
+The recommendation enum is exactly INVITE | DO_NOT_INVITE (uppercase). The
+record's open_concern_count MUST be 0 whenever recommendation == INVITE, keeping
+the verdict and the concern set internally consistent.
+
+------------------------------------------------------------------------------
+package_coherence target_document (cross-document concerns) [R8.3]
+------------------------------------------------------------------------------
+This agent is the ONLY agent in the suite that emits the package_coherence
+target_document. It is used for a cross-document inconsistency between the CV
+and the letter — e.g. contradictory titles/dates/employers/scope, a letter
+claiming strengths the CV doesn't back up, or mismatched positioning for the
+JD. The finding.schema.json anchor is intentionally permissive (anyOf with
+additionalProperties: true), so a package_coherence anchor can carry a
+paragraph_key for one document plus match_text/section for the other; the prompt
+requires the anchor + rationale to name BOTH ends of the inconsistency so the
+orchestrator knows both locations.
+
+package_coherence is only possible when a letter is present. When no letter was
+provided (LETTER_NORMALIZED absent), the prompt forbids package_coherence
+concerns and tells the agent not to invent a letter [R1.8]. This mirrors the
+finding.schema.json target_document enum which includes package_coherence, and
+Property 3's "target_document consistent with whether a letter exists".
+
+------------------------------------------------------------------------------
+category: hiring_manager_concern (the only category it emits)
+------------------------------------------------------------------------------
+Every concern Finding uses category = hiring_manager_concern (the schema enum
+value). The agent does NOT re-run the earlier reviewers' jobs:
+  - spelling / formatting  -> Spell and Formatting Reviewer
+  - language               -> Language and Content Reviewer
+  - jd_gap                 -> JD Alignment Reviewer
+  - ats                    -> ATS Reviewer
+  - length                 -> Language and Content Reviewer (length mode)
+Its concerns are hiring-manager-level judgments: fit to core JD must-haves,
+impact/credibility of claims, CV<->letter coherence, and positioning for the
+role. The prompt allows escalating a lower-level issue to a hiring_manager_concern
+only when it is glaring enough to damage credibility for the role, but prefers to
+let the owning reviewer handle mechanics — this keeps findings dedup-friendly for
+the orchestrator.
+
+Severity: this agent MAY emit `blocking` (it is one of two agents permitted to,
+alongside the ATS reviewer). `blocking` is for a concern that on its own makes
+the package un-interview-worthy (unmet core must-have, credibility-destroying
+claim, hard CV/letter contradiction). high/medium/low for lesser concerns.
+
+------------------------------------------------------------------------------
+Gate semantics [R8.5, R8.6, D-8] — necessary but NOT sufficient
+------------------------------------------------------------------------------
+Gate passes when ALL hold after the editor's most recent pass:
+  (1) recommendation == INVITE, AND
+  (2) no open concern Findings remain (other than accepted_gap).
+Signalled by writing the INVITE recommendation record + an empty ([]) concern
+findings file.
+
+CRITICAL: the hiring-manager gate is necessary but NOT sufficient for
+convergence. Per R8.6 / D-8 / Property 6, convergence requires EVERY reviewer's
+gate to pass independently AND every Working Copy within its page limit. An
+INVITE does NOT unblock convergence while any other gate is still failing or any
+document is over its page limit. The prompt repeats this explicitly and warns
+the agent NOT to soften its verdict "to help the loop converge" — it recommends
+honestly and the orchestrator combines the gates. This is the whole point of
+D-8 (resolved): the INVITE alone never short-circuits the global predicate.
+
+The prompt ties recommendation to concerns operationally: whenever the agent
+emits ANY open concern this pass, the recommendation is DO_NOT_INVITE (an open
+concern is by definition a reason to hesitate). INVITE is reserved for a pass
+with zero open concerns and credible coverage of the role's core requirements.
+
+------------------------------------------------------------------------------
+accepted_gaps.md as supporting context [R12.4]
+------------------------------------------------------------------------------
+The agent READS .kiro/agent-state/cv-workflow/accepted_gaps.md (path passed as
+ACCEPTED_GAPS) but NEVER writes it (that register is the JD Alignment Reviewer's
+to maintain, R12.1/R12.2). Two uses:
+  - Do NOT re-raise an accepted gap as a fresh concern (it is excluded from
+    every gate, R12.3).
+  - MAY weigh the CUMULATIVE accepted gaps when forming the recommendation: if
+    together they materially weaken fit for THIS role, that is legitimate
+    grounds for DO_NOT_INVITE [R12.4]. The recommendation record's
+    accepted_gaps_considered field records how many were weighed.
+A missing/empty register (early iterations) is treated as "no accepted gaps yet".
+
+------------------------------------------------------------------------------
+No user questions [R8.7] — distinct from JD Alignment
+------------------------------------------------------------------------------
+Unlike the JD Alignment Reviewer (the ONLY agent whose workflow produces
+clarification questions, R6.9), the hiring manager NEVER contributes user
+questions. A concern that would benefit from clarification is emitted as a
+Finding for the orchestrator / other agents to address [R8.7]. The prompt bans
+asking the candidate anything and reserves BLOCKED_ON_CLARIFICATION in the
+resume state strictly for a true inability to proceed (e.g. a required input is
+absent), never for "I want to ask the candidate something".
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write.  NO shell (LLM-only analysis, no scripts) — matches the
+design per-agent tool matrix row:
+  cv-hiring-manager-reviewer | read, write | own state dir +
+    findings/cv-hiring-manager-reviewer/** | (none) | no
+NO subagent (reviewers never spawn agents). NO user prompts (only the
+orchestrator talks to the candidate).
+
+toolsSettings.write.allowedPaths [R15.3, R8.4]:
+  - .kiro/agent-state/cv-workflow/findings/cv-hiring-manager-reviewer/**
+        its concern Findings file (iteration-<n>.json) AND its recommendation
+        record (iteration-<n>.recommendation.json); both live in this subtree so
+        the single glob covers both, persisted for audit + resume (R9.2)
+  - .kiro/agent-state/cv-hiring-manager-reviewer/**
+        its own per-agent state dir (resume_state.md, archives)
+This is identical in shape to the spell/format and language/content reviewers'
+configs — the three "pure" reviewers per the design note ("have write ONLY to
+enable persisting Findings; toolsSettings.write.allowedPaths restricts each to
+its own findings/<canonical-name>/ subtree and its own state dir"). The only
+difference is the agent's own canonical-name directories. The agent has write to
+NOTHING else: not the Working Copies, not the originals, not the JD, not the
+accepted_gaps register (read-only context), not another agent's state. This
+matches the design permissions matrix and Property 2 (single writer of Working
+Copies) and Property 10 (permission containment).
+
+No environment variables are referenced anywhere in the config or prompt
+[global steering rule + R15.1]: every path is workspace-relative or an explicit
+argument the orchestrator supplies at invocation (CV_NORMALIZED, JD_NORMALIZED,
+LETTER_NORMALIZED, ACCEPTED_GAPS, ITERATION).
+
+------------------------------------------------------------------------------
+Inputs (provided by the orchestrator, never from the environment)
+------------------------------------------------------------------------------
+  CV_NORMALIZED      inputs/cv.normalized.md (+ cv.anchors.json)        [required]
+  JD_NORMALIZED      inputs/jd.normalized.md                            [required]
+  LETTER_NORMALIZED  inputs/letter.normalized.md (+ letter.anchors.json)
+                     [only when a Motivational_Letter was provided; R1.8]
+  ACCEPTED_GAPS      accepted_gaps.md (supporting context; may be absent/empty)
+  ITERATION          current iteration n (filenames + resume state)
+The agent reads the normalized text as its primary surface and MAY open the
+.docx for presentation context. Anchors use the shared paragraph_key coordinate
+system from docx_normalize.py (task 2) so the editor can resolve concern
+locations precisely. Missing CV_NORMALIZED or JD_NORMALIZED -> FATAL with a
+clear message; do not guess content.
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Whole-package, JD-in-hand: identity + "How You Review" require reading the JD
+  first, then judging fit; CV<->letter coherence assessed when a letter exists.
+- Strengths cited: each strength names target_document + paragraph_key + a
+  verbatim quote; uncited strengths are forbidden (opinion, not evidence).
+- Concerns as schema-valid Findings: prompt enumerates every required field,
+  fixes source_agent = cv-hiring-manager-reviewer, category =
+  hiring_manager_concern, status = open, requires a non-empty anchor, and (for
+  package_coherence) requires both documents' locations in the anchor+rationale.
+- Binary recommendation: exactly INVITE | DO_NOT_INVITE, recorded in
+  iteration-<n>.recommendation.json with open_concern_count == 0 iff INVITE, and
+  echoed as the summary headline.
+- Gate semantics: INVITE + zero open concerns; explicitly necessary-but-not-
+  sufficient; do-not-soften-to-converge warning.
+- accepted_gaps: read-only context; never re-raise; may downgrade recommendation
+  on cumulative material weakening [R12.4].
+- No user questions [R8.7]; no working-copy edits [R8.4]; no shell/subagents.
+- Resume protocol: resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; input_hash includes the accepted-gaps content + the
+  iteration so a new iteration or changed gaps/package/JD forces a fresh run;
+  resume when hash matches and IN_PROGRESS, else archive + restart [R14.1-R14.4].
+- Don't oscillate: review the CURRENT package; the gate passes when a fresh pass
+  finds zero new open concerns and recommends INVITE.
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/hiring-manager-reviewer/.
+Per design "Installation and discovery" [R16.6-R16.10, D-12], prompt is
+referenced here as the relative URI "file://prompt.md"; install_agents.py
+(task 15) copies the tree to a fixed installed root and generates a discovery
+config at .kiro/agents/cv-hiring-manager-reviewer.json whose "prompt" is an
+ABSOLUTE file:// URI. This reviewer has no shell, so it has no script paths to
+rewrite (unlike the editor and ATS reviewer). The authoring config keeps the
+relative form; do not bake machine-specific absolute paths into this tree (the
+generated .kiro/agents/cv-*.json and .kiro/cv-suite/ are gitignored, per C2).
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 13)
+------------------------------------------------------------------------------
+- Task 14 (orchestrator) must spawn this reviewer 5th/last in the REVIEW order,
+  pass CV_NORMALIZED / JD_NORMALIZED / LETTER_NORMALIZED / ACCEPTED_GAPS /
+  ITERATION, read both iteration-<n>.json (concerns) and
+  iteration-<n>.recommendation.json (the binary recommendation), and feed the
+  recommendation into the convergence predicate (Property 6) — where INVITE is
+  necessary but not sufficient: every other gate + page constraint must also
+  hold. Concern Findings flow into the Change_List under the conflict-priority
+  rules (hiring_manager_concern ranks just below ats; see design Component 4
+  conflict order).
+- Task 15 (install_agents.py) rewrites this config's prompt URI to an absolute
+  file:// path at install time.

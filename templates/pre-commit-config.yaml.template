@@ -1,0 +1,30 @@
+# All available pre-commit hooks. The git hook in .git/hooks/pre-commit
+# selectively runs only the fast ones (ruff + ruff-format). Slow ones
+# (mypy, pytest) are available via `pre-commit run <id>` or in CI.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
+      - id: ruff-format
+        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.0
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports]
+        exclude: ^(test/|old/|workspace/|tmp/|venv/|scripts/)
+        additional_dependencies: [types-requests, types-python-dateutil]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        args: [--cov=src, --cov-fail-under=80]
+        pass_filenames: false
+        always_run: true

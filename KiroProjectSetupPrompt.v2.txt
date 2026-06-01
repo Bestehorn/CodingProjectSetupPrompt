@@ -1,0 +1,2395 @@
+# Kiro Project Setup Prompt — v2 (Migration-Aware)
+# =================================================
+# Drop this prompt into a new or existing project to set up a
+# professional Python development environment with Kiro-native
+# configuration. It works for both new projects and projects
+# already configured with Cline, Amazon Q, or ad-hoc rules.
+#
+# v2 changes over v1:
+#   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
+#   - Aligns every MCP server config with the canonical install snippet from
+#     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,
+#     `uvx --from pkg pkg.exe` form on Windows). The mismatched `uv tool run`
+#     form was a common source of "MCP server not reachable" errors.
+#   - Adds MCP_USER_AGENT to AWS Doc MCP for corporate proxy/firewall environments.
+#   - Adds explicit MCP startup verification that fails loudly if a server is
+#     unreachable, instead of letting the error surface mid-task.
+#   - New steering file no-output-shortening.md prevents Kiro from piping
+#     command output through `Select-Object -Last`, `tail`, `head`, etc.
+#   - New steering file no-cli-temp-variables.md prevents the agent from
+#     inventing per-command variable names ($touched, $f, $pyFiles, ...)
+#     that force constant re-approvals and pollute the allowed-commands
+#     list. Allowed inline names are restricted to $v1..$v3 / $l1..$l3.
+#   - Strengthened tests-must-not-fail.md: explicitly forbids the
+#     "pre-existing failure" / "out of scope" excuses that have been used
+#     to ship code with red tests. Documents the baseline assumption
+#     (suite is green at task start), enumerates forbidden claims, and
+#     lays out the only allowed path: investigate, research, fix, verify,
+#     loop. Environmental failures are explicitly not an exit condition.
+#   - Drops pylint (Ruff covers PLR0401/PLR0801/PLR0912/3/4/5 + C901).
+#   - Drops deprecated python.formatting.provider; uses Ruff as the formatter.
+#   - Fixes setuptools-scm key (write_to -> version_file).
+#   - Consolidates four near-identical use-X-doc-mcp.md steering files into one.
+#   - Hoists migration-behavior boilerplate to a single top-level rule.
+#   - Removes the embedded Kiro hook JSON schema (it is already in Kiro's
+#     runtime context).
+#   - Deduplicates the git-commit / git-rebase / git-push hooks.
+#   - Moves embedded Python skeletons (wrappers, AWS config, setup-hooks.sh)
+#     into a `templates/` directory referenced by path. The agent copies
+#     and adapts them; this prompt does not duplicate their contents.
+
+---
+
+## GLOBAL EXECUTION RULES
+
+### Rule 1: Migration-aware merge (applies to EVERY part of this prompt)
+
+For every file or directory this prompt mentions:
+
+1. DETECT  - check whether the target path already exists.
+2. ANALYZE - if it exists, read it and identify project-specific content
+             (custom rules, custom CI jobs, custom dependencies, custom
+             interpreter paths, custom coverage thresholds, etc.).
+3. MERGE   - keep all existing content; add only what is missing from the
+             standard. When the standard introduces new keys/sections,
+             add them. When the standard would change an existing value,
+             keep the existing value.
+4. PRESERVE - never silently overwrite project-specific configuration.
+5. REPORT   - in the final migration report, list (a) what was preserved,
+              (b) what was added, (c) any conflicts that need user review.
+
+When the standard and existing config conflict on a value (different
+Python version, different coverage threshold, different line length,
+different test command), KEEP the existing value and FLAG the conflict.
+
+Do not delete legacy config until the corresponding migration has
+completed successfully and the agent has verified the new config works.
+
+### Rule 2: No environment variables in shell sessions
+
+This system hosts multiple projects. Setting shell environment variables
+(AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID, GITHUB_TOKEN, GITLAB_TOKEN,
+etc.) leaks state across projects and causes cross-project breakage.
+
+- Never `set`, `setx`, `export`, or `$env:VAR=...` an environment variable.
+- Pass profile/region explicitly to boto3 sessions and CLI commands.
+- Read credentials from project-local files (config/, credentials/).
+
+CLARIFICATION: The `env` block inside `.kiro/settings/mcp.json` and the
+`terminal.integrated.env.*` block inside editor settings are NOT shell
+environment variables. They are scoped configuration consumed by a
+specific subprocess (the MCP server, the editor's integrated terminal).
+They do not pollute global shell state. Leave those blocks intact.
+
+### Rule 3: Read complete output
+
+When running a shell command, never truncate, tail, head, or paginate
+its output. See `.kiro/steering/no-output-shortening.md` (created by
+this prompt) for the full rule and the list of forbidden patterns.
+
+### Rule 4: Paths
+
+The prompt assumes the agent is running with the project root as cwd.
+Adjust path examples to the host OS (Windows uses `\`, *nix uses `/`).
+Use `pathlib.Path` in Python code; never `os.path`.
+
+### Rule 5: No ad-hoc temporary variables in CLI commands
+
+Inventing per-command shell variables (`$touched`, `$f`, `$pyFiles`, ...)
+forces the user to approve a brand-new command pattern every time and
+pollutes the allowed-commands list with names that won't reappear. See
+`.kiro/steering/no-cli-temp-variables.md` for the full rule. Short
+version: rewrite to a pipeline; if a variable is unavoidable, use
+`$v1`/`$v2`/`$v3` for scalars and `$l1`/`$l2`/`$l3` for collections;
+if you'd need more than three, write a real script in `tmp/`.
+
+---
+
+## PART 0 — MCP SERVERS (CONFIGURE AND VERIFY)
+
+This part configures the MCP servers Kiro needs and VERIFIES each one
+is reachable. If a server cannot be reached after configuration, stop
+and surface the error — do NOT continue with the rest of the setup.
+
+### Part 0.1 — Configure `.kiro/settings/mcp.json`
+
+Apply Rule 1 (migration-aware merge). Read the existing file first;
+preserve every existing server entry; only ADD the entries below if the
+matching server name is not already present.
+
+The configurations below are taken from the canonical install snippets
+on awslabs.github.io/mcp/servers/* and the official Strands Agents MCP
+README. Use the Windows form on Windows, the Linux/macOS form elsewhere.
+
+#### A) AWS Documentation MCP — `awslabs.aws-documentation-mcp-server`
+
+Linux/macOS:
+```json
+"awslabs.aws-documentation-mcp-server": {
+  "command": "uvx",
+  "args": ["awslabs.aws-documentation-mcp-server@latest"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR",
+    "AWS_DOCUMENTATION_PARTITION": "aws",
+    "MCP_USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["search_documentation", "read_documentation", "read_sections", "recommend"]
+}
+```
+
+Windows:
+```json
+"awslabs.aws-documentation-mcp-server": {
+  "command": "uvx",
+  "args": ["--from", "awslabs.aws-documentation-mcp-server@latest", "awslabs.aws-documentation-mcp-server.exe"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR",
+    "AWS_DOCUMENTATION_PARTITION": "aws",
+    "MCP_USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["search_documentation", "read_documentation", "read_sections", "recommend"]
+}
+```
+
+Why `MCP_USER_AGENT`: AWS documents this explicitly as the workaround
+for corporate networks where proxies/firewalls block the default
+user agent. Many "MCP server not reachable" reports trace back to this.
+
+#### B) AWS IaC MCP — `awslabs.aws-iac-mcp-server` (replaces deprecated CDK MCP)
+
+The previous `awslabs.cdk-mcp-server` is deprecated on PyPI and is being
+removed. Use the AWS IaC MCP Server, which provides all CDK functionality
+plus CloudFormation support.
+
+Linux/macOS:
+```json
+"awslabs.aws-iac-mcp-server": {
+  "command": "uvx",
+  "args": ["awslabs.aws-iac-mcp-server@latest"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": [
+    "read_iac_documentation_page",
+    "search_cloudformation_documentation",
+    "search_cdk_documentation",
+    "search_cdk_samples_and_constructs",
+    "cdk_best_practices",
+    "validate_cloudformation_template",
+    "check_cloudformation_template_compliance",
+    "get_cloudformation_pre_deploy_validation_instructions"
+  ]
+}
+```
+
+Windows:
+```json
+"awslabs.aws-iac-mcp-server": {
+  "command": "uvx",
+  "args": ["--from", "awslabs.aws-iac-mcp-server@latest", "awslabs.aws-iac-mcp-server.exe"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": [
+    "read_iac_documentation_page",
+    "search_cloudformation_documentation",
+    "search_cdk_documentation",
+    "search_cdk_samples_and_constructs",
+    "cdk_best_practices",
+    "validate_cloudformation_template",
+    "check_cloudformation_template_compliance",
+    "get_cloudformation_pre_deploy_validation_instructions"
+  ]
+}
+```
+
+Do NOT include `AWS_PROFILE` in the `env` block. The IaC server's
+documentation-search tools do not need AWS credentials. The
+deployment-troubleshoot tool does, but this project supplies credentials
+explicitly via `src/aws_config.py` and named profiles, not via env vars.
+
+If a project already has `awslabs.cdk-mcp-server` configured: REMOVE
+that entry and add the IaC server entry above. Add a note to the
+migration report that the CDK MCP server was retired and replaced.
+
+#### C) AWS API MCP — `awslabs.aws-api-mcp-server`
+
+Linux/macOS:
+```json
+"awslabs.aws-api-mcp-server": {
+  "command": "uvx",
+  "args": ["awslabs.aws-api-mcp-server@latest"],
+  "env": {
+    "READ_OPERATIONS_ONLY": "true"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["suggest_aws_commands", "call_aws"]
+}
+```
+
+Windows:
+```json
+"awslabs.aws-api-mcp-server": {
+  "command": "uvx",
+  "args": ["--from", "awslabs.aws-api-mcp-server@latest", "awslabs.aws-api-mcp-server.exe"],
+  "env": {
+    "READ_OPERATIONS_ONLY": "true"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["suggest_aws_commands", "call_aws"]
+}
+```
+
+`READ_OPERATIONS_ONLY=true` enforces a read-only allow-list on top of
+your IAM permissions. Mutating AWS infrastructure goes through CDK, not
+this MCP server (see `cdk-deployment-only.md` steering rule).
+
+Do NOT set `AWS_API_MCP_PROFILE_NAME` here. Profiles are resolved
+through `src/aws_config.py` at boto3 session creation time. The MCP
+server will use boto3's default credentials chain; if you need a
+specific profile for diagnostics, pass it explicitly in your prompt.
+
+#### D) Strands Agents MCP — `strands-agents-mcp-server`
+
+(Project package: https://pypi.org/project/strands-agents-mcp-server/)
+
+Linux/macOS and Windows (single form — the package ships a console
+script that uvx resolves correctly on both platforms):
+```json
+"strands-agents-mcp-server": {
+  "command": "uvx",
+  "args": ["strands-agents-mcp-server"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "INFO"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["search_docs", "fetch_doc"]
+}
+```
+
+#### E) Amazon Bedrock AgentCore MCP — `awslabs.amazon-bedrock-agentcore-mcp-server`
+
+Linux/macOS:
+```json
+"awslabs.amazon-bedrock-agentcore-mcp-server": {
+  "command": "uvx",
+  "args": ["awslabs.amazon-bedrock-agentcore-mcp-server@latest"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["search_agentcore_docs", "fetch_agentcore_doc"]
+}
+```
+
+Windows:
+```json
+"awslabs.amazon-bedrock-agentcore-mcp-server": {
+  "command": "uvx",
+  "args": ["--from", "awslabs.amazon-bedrock-agentcore-mcp-server@latest", "awslabs.amazon-bedrock-agentcore-mcp-server.exe"],
+  "env": {
+    "FASTMCP_LOG_LEVEL": "ERROR"
+  },
+  "disabled": false,
+  "timeout": 60,
+  "type": "stdio",
+  "autoApprove": ["search_agentcore_docs", "fetch_agentcore_doc"]
+}
+```
+
+### Part 0.2 — Verify each MCP server is reachable
+
+Run a documented tool call against each newly-configured server and
+confirm a non-error response. If any call fails:
+
+1. Confirm `uv` and `uvx` are on PATH (`uvx --version`).
+2. Run the underlying command manually with the exact args from the
+   config to surface the real error (e.g.,
+   `uvx awslabs.aws-documentation-mcp-server@latest --help` on Linux).
+   Apply Rule 3 — read the full output, do not pipe it to `Select-Object`,
+   `tail`, etc.
+3. If the failure is a network/proxy error on the AWS Doc server,
+   confirm that `MCP_USER_AGENT` is set and matches a browser UA your
+   network allows.
+4. If the failure is `command not found` on Windows for the
+   `awslabs.X.exe` console-script form, confirm uv version is recent
+   enough; the `--from` form requires uv >= 0.4.
+
+The standard verification calls:
+
+| Server | Tool to call | Argument |
+|---|---|---|
+| awslabs.aws-documentation-mcp-server | search_documentation | "S3 bucket" |
+| awslabs.aws-iac-mcp-server | search_cdk_documentation | "Lambda Function" |
+| awslabs.aws-api-mcp-server | suggest_aws_commands | "list S3 buckets" |
+| strands-agents-mcp-server | search_docs | "agent" |
+| awslabs.amazon-bedrock-agentcore-mcp-server | search_agentcore_docs | "memory" |
+
+DO NOT skip verification. A server that is silently broken will fail
+mid-task with confusing errors; the steering files mandate consulting
+these servers during design and implementation.
+
+---
+
+## PART 1 — DIRECTORY STRUCTURE
+
+Apply Rule 1. Create only what is missing. Never delete existing dirs.
+
+```
+.kiro/
+  steering/        # Kiro steering files (replaces .clinerules / .amazonq)
+  hooks/           # Kiro agent hooks
+  settings/        # MCP and other settings
+  specs/
+    templates/     # Reusable spec templates
+.vscode/           # Editor settings
+cdk/               # AWS CDK infrastructure
+config/            # Config files (incl. gitlab.json, aws_accounts.json)
+credentials/       # Git host credential files (gitignored, except .template)
+docs/              # Project documentation
+scripts/           # CLI tools and utilities
+src/               # Production source code
+test/              # Unit tests (mirrors src/)
+test/integration/  # Integration tests requiring external systems
+tmp/               # Temporary files (gitignored)
+```
+
+### Migration from Cline / Amazon Q (only if those directories exist)
+
+| Source | Destination |
+|---|---|
+| `.clinerules/use-venv.md` | `.kiro/steering/use-venv.md` |
+| `.clinerules/coding-rules.md` | `.kiro/steering/coding-standards.md` |
+| `.clinerules/design-rules.md` | `.kiro/steering/design-principles.md` |
+| `.clinerules/file-rules.md` | `.kiro/steering/file-organization.md` |
+| `.clinerules/pre-work.md` | `.kiro/steering/pre-work.md` |
+| `.clinerules/post-activity.md` | `.kiro/steering/post-activity.md` |
+| `.clinerules/test-rule.md` | `.kiro/steering/testing.md` |
+| `.clinerules/manage-dependencies.md` | `.kiro/steering/dependencies.md` |
+| `.clinerules/aws-config-rule.md` | `.kiro/steering/aws-config.md` |
+| anything else under `.clinerules/` | `.kiro/steering/project-specific.md` |
+| `.clinerules/workflows/*.md` | `.kiro/hooks/<same-name>.kiro.hook` (one-to-one, see Part 10) |
+| `.amazonq/*` | merge into `.kiro/steering/project-specific.md` |
+
+Only delete `.clinerules/` and `.amazonq/` after every file has been
+migrated and the migration report lists each conversion. Verify by
+counting source files vs created destination files (the count must
+match exactly for workflow→hook conversion).
+
+---
+
+## PART 2 — VIRTUAL ENVIRONMENT AND PRE-COMMIT HOOK
+
+### Part 2.1 — venv (mandatory; everything below assumes it exists)
+
+1. If `venv/` does not exist:
+   - `python -m venv venv`
+   - Activate: `venv\Scripts\activate` (Windows) or `source venv/bin/activate` (*nix)
+   - `pip install -e ".[dev,cdk]"` (the [cdk] extra is optional for non-AWS projects)
+2. If `venv/` exists, verify it works (`venv/Scripts/python --version` or
+   `venv/bin/python --version`) and `pip install -e ".[dev,cdk]"` to
+   bring deps current.
+3. STOP all further setup if the venv cannot be activated.
+
+### Part 2.2 — Pre-commit hook (project-local, venv-bound)
+
+The hook hardcodes the absolute path to the venv `pre-commit`
+executable, so it works regardless of how git is invoked (terminal,
+IDE, GUI client) and regardless of PATH state. Each developer
+generates their own hook by running the setup script — `.git/hooks/`
+is not version-controlled.
+
+1. If `.pre-commit-config.yaml` does not exist, copy
+   `templates/pre-commit-config.yaml.template` to the project root as
+   `.pre-commit-config.yaml`. If it exists, apply Rule 1: preserve
+   existing repos and hooks, add the ruff/ruff-format hooks if no
+   ruff hooks are configured, preserve existing `exclude` patterns
+   and pinned `rev` values.
+2. If `scripts/setup-hooks.sh` does not exist, copy
+   `templates/setup-hooks.sh.template` to `scripts/setup-hooks.sh`.
+   If it exists, preserve it.
+3. After the venv is set up and dev deps are installed, run
+   `bash scripts/setup-hooks.sh` to generate `.git/hooks/pre-commit`.
+4. README.md (merge — do not overwrite):
+   ````markdown
+   ### Git hooks setup
+
+   After installing dev dependencies, install the pre-commit hook:
+
+   ```bash
+   bash scripts/setup-hooks.sh
+   ```
+
+   This generates `.git/hooks/pre-commit` with the absolute path to
+   the project's venv. The hook runs ruff lint and format on every
+   commit. Slow checks (mypy, pytest, bandit) are left for CI.
+   ````
+
+What runs where:
+
+| When | What runs | Why |
+|---|---|---|
+| pre-commit hook | ruff + ruff-format | fast (<1 s), auto-fixes most issues |
+| CI pipeline | ruff + mypy + bandit + pytest | full validation, slower is fine |
+| manual | `pre-commit run mypy` etc. | opt-in pre-push checks |
+
+---
+
+## PART 3 — .gitignore
+
+Apply Rule 1. Read existing entries, add only those that are missing:
+
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
+
+# Virtual environment
+venv/
+.venv/
+ENV/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+
+# AWS CDK
+cdk/cdk.out/
+cdk/*.js
+cdk/*.d.ts
+
+# Generated
+src/_version.py
+
+# Security scan output
+bandit-report.json
+bandit_results.json
+
+# Temp
+tmp/
+
+# Sensitive config
+config/aws_accounts.json
+config/gitlab.json
+
+# Git host credentials (allow templates and README)
+credentials/*
+!credentials/*.template
+!credentials/README.md
+```
+
+---
+
+## PART 4 — DEPENDENCY MIGRATION AND pyproject.toml
+
+### Part 4.1 — Migrate legacy formats to pyproject.toml (PEP 621)
+
+If `pyproject.toml` already has `[project.dependencies]`, you're done
+with migration; jump to Part 4.2.
+
+Otherwise, detect and migrate:
+
+| Source | Target section in pyproject.toml |
+|---|---|
+| `requirements.txt`, `requirements-prod.txt` | `[project.dependencies]` |
+| `requirements-dev.txt`, `dev-requirements.txt` | `[project.optional-dependencies.dev]` |
+| `requirements-test.txt`, `test-requirements.txt` | `[project.optional-dependencies.test]` |
+| `requirements-cdk.txt` | `[project.optional-dependencies.cdk]` |
+| `requirements-{custom}.txt` | `[project.optional-dependencies.{custom}]` |
+| `setup.py` `install_requires` | `[project.dependencies]` |
+| `setup.py` `extras_require` | `[project.optional-dependencies]` |
+| `setup.cfg` `[options] install_requires` | `[project.dependencies]` |
+| `setup.cfg` `[options.extras_require]` | `[project.optional-dependencies]` |
+| `Pipfile` `[packages]` | `[project.dependencies]` |
+| `Pipfile` `[dev-packages]` | `[project.optional-dependencies.dev]` |
+| `[tool.poetry.dependencies]` | `[project.dependencies]` |
+| `[tool.poetry.group.<name>.dependencies]` | `[project.optional-dependencies.<name>]` |
+| conda `environment.yml` pip section | `[project.dependencies]` (flag conda-only packages for review) |
+
+Migration rules:
+
+- Preserve exact version pins (`==`, `>=`, `<=`, `~=`, `!=`).
+- Preserve environment markers (`; python_version >= "3.10"`).
+- Preserve transitive dependencies — do not filter.
+- Resolve `-r other.txt` includes; do not duplicate.
+- Flag for manual review: `-e` editable installs, `--index-url`,
+  `--extra-index-url`, local wheels, `git+https://...` URLs,
+  conda-only packages.
+
+After migration:
+
+- Update `README.md`, `CONTRIBUTING.md`, `docs/forLLMConsumption.md`,
+  `docs/*.md`, CI workflows, Makefile, Dockerfiles. Replace
+  `pip install -r requirements*.txt` with `pip install -e ".[dev,cdk]"`
+  (or the appropriate extras).
+- Delete the legacy files (`requirements*.txt`, `setup.py`, `setup.cfg`,
+  `Pipfile`, `Pipfile.lock`, `environment.yml`) only after verifying
+  the new install works (`pip install -e ".[dev,cdk]"` succeeds and
+  `pytest` runs). Do not delete `pyproject.toml` or `poetry.lock`
+  (poetry.lock can stay as a reference but is no longer authoritative).
+
+### Part 4.2 — pyproject.toml content
+
+Apply Rule 1: preserve existing sections; add only missing ones; never
+overwrite existing values.
+
+#### Build system + setuptools-scm
+```toml
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_file = "src/_version.py"
+```
+
+`version_file` is the current setuptools-scm 8+ key; `write_to` is the
+older spelling.
+
+#### Project metadata
+- `name`, `dynamic = ["version"]`, `description`, `authors`, `license`
+- `requires-python = ">=3.10"` (preserve existing if stricter)
+- Analyze `src/`, `cdk/`, `scripts/`, `test/` to identify all imports
+  and add corresponding dependencies.
+
+#### Dependencies (merge with existing)
+- `[project.dependencies]`: production deps
+- `[project.optional-dependencies.dev]`: pytest, pytest-cov, hypothesis,
+  ruff, mypy, bandit, pre-commit, boto3-stubs (if AWS project)
+- `[project.optional-dependencies.cdk]`: aws-cdk-lib>=2.0.0, constructs>=10.0.0
+- `[project.optional-dependencies.test]`: any extra test-only deps
+
+NOTE: pylint is NOT in this list. Ruff covers every check the previous
+setup used (PLR0401 cyclic-import, PLR0801 duplicate-code, PLR0912
+too-many-branches, PLR0913 too-many-arguments, PLR0914 too-many-locals,
+PLR0915 too-many-statements, C901 mccabe-complexity).
+
+#### Tool configuration
+
+```toml
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["src/_version.py", "venv", ".venv", "cdk.out"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes, I = isort, C90 = mccabe,
+# PL = pylint-equivalent rules
+select = ["E", "F", "W", "I", "C90", "PLR0401", "PLR0801", "PLR0912", "PLR0913", "PLR0914", "PLR0915"]
+ignore = ["E203"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-branches = 15
+max-returns = 6
+max-statements = 50
+max-locals = 20
+
+[tool.ruff.format]
+# black-compatible defaults
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+exclude = ["src/_version.py", "venv", ".venv", "cdk.out"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "--cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=80"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.bandit]
+exclude_dirs = ["test", "venv", ".venv", "cdk.out"]
+skips = ["B101"]
+```
+
+If existing config sets a different `line-length`, `target-version`,
+`python_version`, `cov-fail-under`, or `exclude` set, KEEP existing
+values; merge only the keys that are absent.
+
+---
+
+## PART 5 — AWS ACCOUNT CONFIGURATION
+
+Apply Rule 1.
+
+1. If `config/aws_accounts.json.template` does NOT exist, copy
+   `templates/aws_accounts.json.template` to it.
+2. If `config/aws_accounts.json` does NOT exist, also copy the template
+   to that path so the developer has a stub to fill in. (The real file
+   is gitignored; the template is checked in.)
+3. If `src/aws_config.py` does NOT exist, copy
+   `templates/aws_config.py.template` to `src/aws_config.py`.
+4. If `src/aws_config.py` exists but lacks `get_account`,
+   `get_account_id`, `get_profile`, `get_region`, or `list_environments`,
+   ADD the missing methods using the template as a reference.
+   Do not overwrite the existing implementation.
+
+---
+
+## PART 6 — GIT REPOSITORY WRAPPER SCRIPTS
+
+Most projects are hosted on GitHub or GitLab. Authentication varies
+(PATs, OAuth cookies, corporate SSO) and is best encapsulated in one
+project-local wrapper. The wrapper is the only sanctioned entry point
+for repo API operations (see steering rule `use-git-wrapper-scripts.md`).
+
+### Part 6.1 — Detect the host
+
+Read `.git/config` `[remote "origin"]` `url`. Match:
+
+| URL contains | Host | Wrapper | Credential file |
+|---|---|---|---|
+| `github.com` or `github.` | GitHub | `scripts/github_wrapper.py` | `credentials/github-pat.txt` |
+| `gitlab.com` or `gitlab.` | GitLab | `scripts/gitlab_wrapper.py` | `config/gitlab.json` |
+| neither | ask user | (closest match) | (closest match) |
+
+If the project uses both (rare), create both wrappers.
+
+### Part 6.2 — Stub credentials and wrappers
+
+For each detected host, create the following files only if they do
+not already exist. Apply Rule 1: never overwrite a file that contains
+a real (non-placeholder) token.
+
+- `credentials/README.md` — explains the directory's purpose.
+- GitHub:
+  - `credentials/github-pat.txt.template` (checked in): one line
+    containing `PASTE_YOUR_GITHUB_PAT_HERE`.
+  - `credentials/github-pat.txt` (gitignored): same content as the
+    template, for the developer to overwrite.
+  - `scripts/github_wrapper.py`: copy from
+    `templates/github_wrapper.py.template`.
+- GitLab:
+  - `config/gitlab.json.template` (checked in): copy from
+    `templates/gitlab.json.template`.
+  - `config/gitlab.json` (gitignored): same content for the developer
+    to fill in.
+  - `scripts/gitlab_wrapper.py`: copy from
+    `templates/gitlab_wrapper.py.template`.
+
+The template wrapper scripts are skeletons. The agent should extend
+them with the subcommands needed for the current project (see the
+docstring in each template). Required minimum subcommands:
+
+GitHub: `list-workflows`, `list-runs`, `get-run`, `get-jobs`,
+`get-logs` (must strip `Authorization` header before following the
+302 redirect to Azure Blob Storage), `rerun`, `cancel`, `create-pr`,
+`list-issues`, `get-issue`, `get-issue-comments`, `comment-issue`,
+`update-issue`, `create-issue`.
+
+GitLab: `pipeline status`, `pipeline log`, `issue create`,
+`issue list`, `issue show`, `label list`, `label create`.
+
+Wrappers MUST:
+- Use string constants for JSON field names.
+- Auto-detect owner/repo from `.git/config` (GitHub) or read host /
+  project_id from `config/gitlab.json` (GitLab).
+- Refuse to run while a credential file still contains the placeholder.
+- Use only the Python standard library (`urllib.request`, `json`,
+  `argparse`).
+- Raise `GitHubAPIError` / `GitLabAPIError` with `status_code` and
+  `details`.
+
+### Part 6.3 — Verify the wrapper
+
+After the developer pastes a real token, run a read-only command:
+
+- GitHub: `python scripts/github_wrapper.py list-workflows`
+- GitLab: `python scripts/gitlab_wrapper.py pipeline status --count 1`
+
+If the command returns data, auth is working. Apply Rule 3 — read the
+full output, do not pipe to `Select-Object -Last`, `tail`, etc.
+
+### Part 6.4 — README.md note
+
+Append (do not overwrite):
+
+````markdown
+## Repository operations
+
+All CI/CD, issue, PR, and label operations on this repo go through
+the wrapper script in `scripts/`. Do NOT use `gh`, `glab`, or raw
+`curl` for these operations — the wrapper handles authentication
+consistently.
+
+### Setup
+
+1. Paste your token into the credentials stub:
+   - GitHub: `credentials/github-pat.txt`
+   - GitLab: `config/gitlab.json`
+2. Verify with a read-only command:
+   ```bash
+   python scripts/github_wrapper.py list-workflows
+   # or
+   python scripts/gitlab_wrapper.py pipeline status
+   ```
+````
+
+---
+
+## PART 7 — CI / CD WORKFLOW
+
+Apply Rule 1. CI workflows are heavily customized; preserve everything
+existing. Add missing standard jobs only when they have no equivalent.
+
+### Part 7.1 — GitLab (`.gitlab-ci.yml`)
+
+If no CI exists, create a baseline with `test`, `quality`, `security`
+stages. If CI exists, only add jobs whose purpose is missing:
+
+```yaml
+.python-setup: &python-setup
+  image: python:3.10  # preserve existing image
+  before_script:
+    - pip install -e ".[dev,cdk]"
+
+test:
+  <<: *python-setup
+  stage: test
+  script:
+    - pytest test/ --cov=src --cov-report=term-missing --cov-fail-under=80
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+quality:
+  <<: *python-setup
+  stage: quality
+  script:
+    - ruff check src/ test/ scripts/ cdk/
+    - ruff format --check src/ test/ scripts/ cdk/
+    - mypy src/ --exclude="src/_version.py" --ignore-missing-imports
+
+security:
+  <<: *python-setup
+  stage: security
+  script:
+    - bandit -r src/ scripts/ -x "src/_version.py" -f json -o bandit-report.json || true
+    - bandit -r src/ scripts/ -x "src/_version.py"
+```
+
+### Part 7.2 — GitHub Actions (`.github/workflows/`)
+
+Apply the same logic. If a workflow exists, preserve it; add the
+missing standard checks (ruff, mypy, bandit, pytest) only if no
+equivalent step exists.
+
+### Part 7.3 — Migration from black/isort/flake8
+
+If existing CI invokes black, isort, or flake8 separately, replace:
+
+- `black --check <paths>` -> `ruff format --check <paths>`
+- `isort --check-only <paths>` -> `ruff check --select I <paths>`
+- `flake8 <paths>` -> `ruff check <paths>`
+
+Update `pyproject.toml`: remove `[tool.black]`, `[tool.isort]`, and
+flake8 configs (if any). Remove black, isort, flake8 from dev deps.
+
+If existing CI uses pylint with the same rule set this prompt's Ruff
+config covers (PLR0401, PLR0801, PLR0912/3/4/5, C901), replace it with
+`ruff check`. Otherwise keep existing pylint usage and report the
+overlap in the migration report.
+
+### Part 7.4 — Conflict handling
+
+- Preserve existing Python version, coverage threshold, additional
+  tools, deployment stages.
+- Flag conflicts; do not silently change existing values.
+
+---
+
+
+## PART 8 — KIRO STEERING FILES
+
+Apply Rule 1. For each file below, if it already exists, merge: keep
+existing project-specific content, add missing standard sections.
+Place all files in `.kiro/steering/`.
+
+### 8.1 `tech-stack.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Technology Stack
+
+## Core
+- Python 3.10+ with type hints and dataclasses
+- AWS CDK v2 + boto3 (for AWS projects)
+- pytest + hypothesis for testing
+
+## Quality
+- ruff (lint + format, line-length 120, includes pylint and mccabe rules)
+- mypy (type checking)
+- bandit (security)
+
+## Preferred libraries
+- dataclasses for models (not pydantic unless needed)
+- logging (not print)
+- pathlib (not os.path)
+- typing for all type hints
+
+<!-- MIGRATION: add project-specific tech choices below -->
+```
+
+### 8.2 `pre-work.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Pre-Work Requirements
+
+Before any task:
+1. Read project context:
+   - #[[file:docs/forLLMConsumption.md]]
+   - #[[file:docs/ProjectDesign.md]]
+   - #[[file:docs/lessons-learned.md]]
+2. Review existing code in the directories you will touch.
+3. Flag any conflicts with documentation or design before coding.
+
+<!-- MIGRATION: add project-specific pre-work below -->
+```
+
+### 8.3 `coding-standards.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Coding Standards (NO EXCEPTIONS)
+
+1. **JSON field access via constants**, not string literals.
+   - BAD: `obj["content"]`
+   - GOOD: `FIELD_CONTENT = "content"; obj[FIELD_CONTENT]`
+
+2. **Absolute imports only.** Resolve path issues by fixing the package
+   layout in `pyproject.toml`, not by using relative imports.
+
+3. **Logging, not print.** Use the `logging` module. Keep success-case
+   logging minimal.
+
+4. **Named parameters at all call sites.**
+   - BAD: `f(5, "abc")`
+   - GOOD: `f(a=5, b="abc")`
+
+5. **Errors are exceptions.** Do not signal errors with empty lists,
+   sentinel values, or zero. Custom exceptions take a `details=None`
+   default kwarg.
+
+6. **Group related exceptions** under a base class.
+
+7. **Line length: 120.** Configured in `[tool.ruff]`.
+
+8. **`pathlib.Path` for filesystem.** Never `os.path.join`.
+
+9. **OOP with abstractions.** Group related classes in a module. Use
+   inheritance to avoid duplication. Inheritance hierarchy must be
+   visible from class names.
+
+10. **Modular functions.** Decompose into reusable, testable units.
+
+<!-- MIGRATION: add project-specific standards below -->
+```
+
+### 8.4 `design-principles.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Design Principles
+
+1. Re-read `docs/ProjectDesign.md` before any design work.
+2. Modularize: prefer composition; reuse before adding new abstractions.
+3. Avoid breaking changes. If unavoidable, flag explicitly.
+4. Use established patterns (Factory, Strategy, Repository, etc.) for
+   maintainability.
+
+<!-- MIGRATION: add project-specific principles below -->
+```
+
+### 8.5 `file-organization.md` (always)
+```markdown
+---
+inclusion: always
+---
+# File Organization
+
+1. Root: only global config files (README.md, pyproject.toml, etc.).
+2. Directory purposes:
+   - `src/` — production code only
+   - `test/` — pytest tests, mirroring src/ structure
+   - `test/integration/` — tests that require external systems
+   - `cdk/` — AWS CDK infrastructure
+   - `scripts/` — CLI tools, manual test scripts
+   - `docs/` — human/LLM documentation
+   - `tmp/` — temporary files (gitignored, cleaned at end of task)
+3. No temp files in `src/`. Use `tmp/`.
+4. Deleting `tmp/` must never break the solution.
+5. Every package directory under `src/` MUST contain `__init__.py`.
+
+<!-- MIGRATION: add project-specific organization below -->
+```
+
+### 8.6 `post-activity.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Post-Activity Checklist
+
+Before marking any activity complete:
+
+1. **Run all tests:** `pytest test/`. Fix every failure (see
+   `tests-must-not-fail.md`).
+2. **Run CI checks locally:**
+   ```bash
+   ruff check src/ test/ scripts/ cdk/
+   ruff format --check src/ test/ scripts/ cdk/
+   mypy src/ --exclude="src/_version.py" --ignore-missing-imports
+   bandit -r src/ scripts/ -x "src/_version.py"
+   ```
+   Apply Rule 3 (no output shortening) and Rule 5 (no ad-hoc variables —
+   keep each command on its own line as shown). Fix every issue before continuing.
+3. **Update docs** in `docs/` for any changes. Keep `docs/forLLMConsumption.md`
+   current.
+4. **Flag deviations** between docs and implementation.
+5. **Clean `tmp/`** — remove all files created during the task.
+
+<!-- MIGRATION: add project-specific post-activity below -->
+```
+
+### 8.7 `testing.md` (conditional, file match)
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "test/**/*.py"
+---
+# Testing Standards
+
+1. Unit tests in `test/`, mirroring `src/`. Integration tests in
+   `test/integration/`.
+2. Coverage target: 80% minimum, 100% for critical paths.
+3. `test/package/test_x.py` covers `src/package/x.py`. Use pytest
+   fixtures and hypothesis where useful.
+4. Run: `pytest test/ --cov=src --cov-report=term-missing`.
+
+<!-- MIGRATION: add project-specific testing rules below -->
+```
+
+### 8.8 `cdk-rules.md` (conditional, CDK files)
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "cdk/**/*.py"
+---
+# CDK Rules
+
+1. Prefer L2 constructs over L1 (Cfn*).
+2. AWS account IDs / profiles / regions come from `src/aws_config.py`.
+3. One stack per file. Clear naming.
+4. Consult the AWS IaC MCP server (`search_cdk_documentation`,
+   `cdk_best_practices`, `search_cdk_samples_and_constructs`) before
+   designing or implementing CDK constructs.
+
+<!-- MIGRATION: add project-specific CDK rules below -->
+```
+
+### 8.9 `aws-config.md` (always)
+```markdown
+---
+inclusion: always
+---
+# AWS Configuration (CRITICAL)
+
+1. Single source of truth: `src/aws_config.py` reading
+   `config/aws_accounts.json`. ALL AWS account IDs, profiles, and
+   regions come from this module.
+2. **No hardcoded AWS values anywhere else** — flag as a critical
+   violation.
+3. Usage:
+   ```python
+   from src.aws_config import aws_config
+   account = aws_config.get_account(env="dev")
+   session = boto3.Session(profile_name=account.profile, region_name=account.region)
+   ```
+4. To add an environment, edit `config/aws_accounts.json` only.
+
+<!-- MIGRATION: add project-specific AWS rules below -->
+```
+
+### 8.10 `dependencies.md` (conditional, Python files)
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "**/*.py"
+---
+# Dependency Management
+
+When adding/removing imports:
+
+1. Review `pyproject.toml` for needed changes.
+2. Locations:
+   - Production -> `[project.dependencies]`
+   - Dev tools -> `[project.optional-dependencies.dev]`
+   - CDK / infra -> `[project.optional-dependencies.cdk]`
+3. Flag every dependency change explicitly.
+4. After changes: `pip install -e ".[dev,cdk]"`.
+
+<!-- MIGRATION: add project-specific rules below -->
+```
+
+### 8.11 `lambda-rules.md` (conditional, Lambda handlers)
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "src/lambda_handlers/**/*.py"
+---
+# Lambda Handler Rules
+
+1. Minimize cold start — minimize imports, lazy-load heavy modules.
+2. Validate input, process, return — clear three-phase structure.
+3. Return error responses; never let exceptions escape.
+4. Structured logging with request IDs.
+
+<!-- MIGRATION: add project-specific Lambda rules below -->
+```
+
+### 8.12 `project-specific.md` (auto-populated during migration)
+```markdown
+---
+inclusion: always
+---
+# Project-Specific Rules
+
+This file holds rules that were:
+- Migrated from `.clinerules/` or `.amazonq/` and didn't fit a standard
+  category, or
+- Custom to this project.
+
+<!-- MIGRATION: auto-populated -->
+```
+
+### 8.13 `use-venv.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Virtual Environment Enforcement
+
+1. Activate venv before any CLI command:
+   - Windows: `venv\Scripts\activate`
+   - Linux/Mac: `source venv/bin/activate`
+2. If venv is missing or broken, recreate immediately:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # or venv\Scripts\activate
+   pip install -e ".[dev,cdk]"
+   ```
+3. STOP all work if the venv cannot be activated.
+4. Never `pip install` without a venv active.
+```
+
+### 8.14 `no-environment-vars.md` (always)
+```markdown
+---
+inclusion: always
+---
+# No Environment Variables (CRITICAL)
+
+This system runs multiple projects on shared hardware. Setting shell
+environment variables leaks state between projects.
+
+1. Never `set`, `setx`, `export`, or `$env:VAR=...` for ANY variable,
+   including:
+   - `AWS_PROFILE`, `AWS_REGION`, `AWS_DEFAULT_REGION`
+   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
+   - `GITHUB_TOKEN`, `GITLAB_TOKEN`
+   - any custom config var
+2. Instead:
+   - AWS: read from `config/aws_accounts.json` via `src/aws_config.py`,
+     pass `profile_name=` and `region_name=` to every boto3 session.
+   - Git hosts: read from `credentials/` and `config/` via the project's
+     wrapper scripts.
+   - Application config: load from config files at startup.
+3. CLI calls always pass profile and region explicitly:
+   `aws --profile <profile> --region <region> s3 ls` (NEVER rely on
+   `AWS_PROFILE`).
+
+CLARIFICATION: The `env` block inside `.kiro/settings/mcp.json` and the
+`terminal.integrated.env.*` block inside editor settings are NOT shell
+environment variables. They are scoped configuration consumed by a
+specific subprocess. They do not pollute global state. Leave them alone.
+```
+
+### 8.15 `no-output-shortening.md` (always) — NEW IN v2
+```markdown
+---
+inclusion: always
+---
+# Read Complete Command Output (CRITICAL)
+
+When you run a shell command, you MUST read its complete, unabbreviated
+output. Truncating, tailing, or paginating output causes two failure
+modes that have repeatedly broken this project:
+
+1. **Stalled commands.** A command that prompts for input (a credential,
+   a confirmation, a missing parameter) holds the terminal until input
+   arrives. If the prompt is in lines you discarded, you wait forever
+   while the command waits for you.
+2. **Hidden errors and warnings.** The relevant error is rarely on the
+   last 30 lines. Truncation hides root causes and forces blind retries.
+
+## Forbidden patterns
+
+Do NOT pipe a command's output through any of these on PowerShell, cmd,
+bash, zsh, or fish:
+
+- `| Select-Object -Last <N>` / `| Select-Object -First <N>`
+- `| Select -Last <N>` / `| Select -First <N>`
+- `| tail [-n <N>]` / `| tail -<N>`
+- `| head [-n <N>]` / `| head -<N>`
+- `| more`, `| less`, `| less +F`
+- `| Out-Host -Paging`
+- `| sed -n '1,30p'` or any `sed`/`awk` invocation that drops lines
+- `2>&1 > /dev/null`, `2>&1 > NUL`, `*> $null`, `2>&1 | Out-Null`
+- Redirecting stderr/stdout to a file you then read partially
+- Any wrapper that limits output by line count, byte count, or page
+
+## Forbidden command shapes (examples)
+
+These exact shapes have caused stalls or hidden errors in this project:
+
+```powershell
+& venv\Scripts\Activate.ps1 ; python tmp\local_build_test.py 2>&1 | Select-Object -Last 30
+```
+
+```bash
+pytest test/ 2>&1 | tail -50
+cdk deploy 2>&1 | head -100
+npm run build | less
+```
+
+## Required behavior
+
+1. Run the command without any output filter.
+2. Wait for the command to complete (exit code returned).
+3. Read 100% of stdout and stderr.
+4. If the output is too large to skim, read it in full anyway —
+   relevant errors are often in the middle, not the tail. Use search
+   on the captured output rather than truncation.
+
+## When the output really is enormous
+
+If a single command genuinely emits megabytes of output (rare — usually
+indicates a missing log level, a debug flag left on, or a verbose-mode
+bug), the correct response is to:
+
+1. Reduce verbosity at the source (log level flag, `--quiet`,
+   `-v` removed) so the next run produces complete but smaller output.
+2. Or write the full output to a file in `tmp/` and read the file.
+   Reading the file is fine because the file is the COMPLETE output;
+   you just choose where to look. Do not write a truncated file.
+
+Never use a truncating pipe to "make output more manageable." That
+discards information you have not yet decided is irrelevant.
+
+## Why this matters more here than elsewhere
+
+Multiple Kiro tools (file-reading tools, search tools, command runners)
+have built-in pruning to keep context manageable. That is FINE — those
+tools cap *displayed* output, not *executed* output, and the agent can
+ask for more. The forbidden patterns above operate at the SHELL level
+and discard data before any tool sees it. Once shell-level truncation
+happens, the data is gone.
+```
+
+### 8.16 `no-cli-temp-variables.md` (always) — NEW IN v2
+```markdown
+---
+inclusion: always
+---
+# No Ad-Hoc Temporary Variables in CLI Commands (CRITICAL)
+
+When you run a shell command, do NOT introduce per-command temporary
+variables with descriptive names (`$touched`, `$f`, `$pyFiles`,
+`$logPath`, `$matches`, etc.). Every new variable name forces the user
+to approve a brand-new command pattern, halts the work, and pollutes
+the allowed-commands list with names that will never appear again.
+
+## Why this matters
+
+Kiro's command approval system pattern-matches on the literal command
+text. The two snippets below look very similar to a human, but the
+approval system sees two unrelated commands:
+
+```powershell
+$touched = git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' }
+```
+```powershell
+$changed = git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' }
+```
+
+Each new descriptive name (`$touched`, `$changed`, `$pyOnly`, `$mod`)
+triggers a fresh approval prompt. Across a multi-step task this adds
+up to dozens of unnecessary interruptions and a long list of one-off
+patterns the user has approved that will never be reused.
+
+## Required behavior
+
+### 1. First, try to eliminate the variable entirely
+
+Most temp variables exist because the agent broke a pipeline up
+mentally. Stitch it back together. If the input to step B is the
+output of step A, pipe step A directly into step B.
+
+WRONG (PowerShell):
+```powershell
+$touched = git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' -and -not ($_ -like 'test/*') }
+"Files I touched:"
+$touched | ForEach-Object { "  $_" }
+"----"
+"Pylint findings:"
+Select-String -Path tmp/pylint.log -Pattern '^[A-Za-z].*\.py:\d+:.*: [RC]\d{4}:' |
+    Where-Object { $line = $_; $touched | Where-Object { $line -like "*$_*" } }
+```
+
+RIGHT — split into two independent commands, neither needing variables:
+```powershell
+git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' -and -not ($_ -like 'test/*') }
+```
+```powershell
+Select-String -Path tmp/pylint.log -Pattern '^[A-Za-z].*\.py:\d+:.*: [RC]\d{4}:'
+```
+Then read both outputs (per `no-output-shortening.md`) and reason about
+the intersection in the agent's own response. Shell isn't the right
+place to compute set intersections of structured data.
+
+WRONG (PowerShell, single-use variable):
+```powershell
+$f = 'D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json'
+Move-Item $f ($f + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+```
+
+RIGHT — inline the path; no variable needed:
+```powershell
+Move-Item 'D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json' ('D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+```
+
+Yes, the path is repeated. That is the correct trade-off here: a
+duplicated literal triggers no approval prompt, while a one-off
+variable name does.
+
+WRONG (bash, single-use variable):
+```bash
+f="config/aws_accounts.json"; cp "$f" "${f}.bak"
+```
+
+RIGHT — inline:
+```bash
+cp config/aws_accounts.json config/aws_accounts.json.bak
+```
+
+### 2. If a variable is genuinely unavoidable, use the canonical names
+
+If, after honest effort, you cannot eliminate a variable (e.g. you
+need to capture the result of an expensive command and reuse it in
+two places that cannot be expressed as one pipeline), use ONLY these
+names:
+
+- Single values (paths, IDs, counts, strings): `$v1`, `$v2`, `$v3`
+- Lists / arrays / collections: `$l1`, `$l2`, `$l3`
+
+These names are pre-approved as a stable pattern. The user approves
+the *shape* `$v1 = ...` once and never again.
+
+```powershell
+$v1 = git rev-parse HEAD
+git tag "release-$v1"
+git push origin "release-$v1"
+```
+
+```bash
+l1=$(git diff --name-only master..HEAD)
+ruff check $l1
+mypy $l1
+```
+
+### 3. Forbidden variable names (incomplete list)
+
+Any descriptive name. Examples that are explicitly forbidden:
+`$f`, `$file`, `$files`, `$path`, `$dir`, `$name`, `$id`, `$arg`,
+`$result`, `$output`, `$tmp`, `$x`, `$y`, `$line`, `$content`,
+`$data`, `$count`, `$touched`, `$changed`, `$modified`, `$pyFiles`,
+`$logPath`, `$matches`, `$items`, `$entries`, `$buf`, `$buffer`.
+
+The list is illustrative, not exhaustive — anything other than
+`$v1`/`$v2`/`$v3`/`$l1`/`$l2`/`$l3` is forbidden inline.
+
+### 4. If you'd need more than three variables, write a script
+
+If a single command would require more than three temporary variables
+to express, the command is too complex for the shell. Stop. Write a
+script in `tmp/`:
+
+- Python: `tmp/<descriptive_name>.py`
+- PowerShell: `tmp/<descriptive_name>.ps1`
+- Bash: `tmp/<descriptive_name>.sh`
+
+Inside a script file, normal variable naming applies (descriptive
+names are encouraged, per `coding-standards.md`). The shell
+invocation is then a single, stable, approval-friendly command:
+
+```powershell
+python tmp/intersect_pylint_with_diff.py
+```
+```bash
+python tmp/intersect_pylint_with_diff.py
+```
+
+Per `file-organization.md`, `tmp/` is gitignored and cleaned at the
+end of the task — these scripts are disposable.
+
+## Decision flow
+
+Before issuing any shell command that includes a `$name = ...` (PowerShell)
+or `name=...` followed by `$name` (bash), ask:
+
+1. Can this be expressed as a single pipeline with no variable?
+   YES -> rewrite as a pipeline.
+2. Can the literal value be inlined at each use site?
+   YES -> inline it.
+3. Do I genuinely need to capture and reuse a value?
+   YES -> use `$v1`/`$v2`/`$v3` or `$l1`/`$l2`/`$l3`.
+4. Would I need more than three such variables?
+   YES -> write a script in `tmp/` and invoke it.
+
+## Integration
+
+- `no-output-shortening.md`: when you split a pipeline into separate
+  commands to avoid a variable, read the FULL output of each command,
+  not a tail.
+- `coding-standards.md`: applies to code files in `src/`, `test/`,
+  `cdk/`, `scripts/`, and `tmp/` scripts. CLI invocations are
+  governed by THIS rule, not by `coding-standards.md` (the two have
+  intentionally opposite naming policies because the constraints
+  differ).
+- `file-organization.md`: scripts in `tmp/` may be deleted at any
+  time; do not depend on them across tasks.
+```
+
+### 8.17 `cdk-deployment-only.md` (conditional, CDK)
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "cdk/**/*.py"
+---
+# CDK Deployment Only (CRITICAL)
+
+All AWS infrastructure changes go through CDK code. Direct CLI
+modification of infrastructure causes drift and is not tracked.
+
+1. FORBIDDEN AWS CLI commands (anything that mutates infrastructure):
+   - `aws cloudformation create-stack/update-stack/delete-stack`
+   - `aws s3api create-bucket/delete-bucket`
+   - `aws lambda create-function/update-function-configuration`
+   - any other resource-creation, modification, or deletion call
+2. ALLOWED: read-only AWS CLI calls (`describe-*`, `list-*`, `get-*`,
+   `aws s3 ls`, etc.).
+3. Workflow: edit `cdk/` -> `cdk diff` -> `cdk synth` -> deploy via
+   project's deploy script.
+
+<!-- MIGRATION: applies only when cdk/ exists -->
+```
+
+### 8.18 `use-lessons-learned.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Lessons Learned
+
+When the user interrupts or corrects you:
+1. Identify the lesson — what went wrong or could improve.
+2. Append to `docs/lessons-learned.md`:
+   - Date
+   - Context (what you were doing)
+   - Lesson (what you learned)
+   - Action (what you'll do differently)
+3. Apply the lesson immediately to the current task.
+4. Read `docs/lessons-learned.md` at the start of every new task
+   (also enforced by `pre-work.md`).
+```
+
+### 8.19 `use-doc-mcp-servers.md` (always) — replaces 4 separate files
+```markdown
+---
+inclusion: always
+---
+# Documentation MCP Servers (MANDATORY)
+
+This project provides MCP servers for several documentation domains.
+Before designing or implementing code that uses any of these
+technologies, consult the corresponding MCP server. Do not assume
+APIs, parameters, or behavior — every claim about a function or
+construct must be backed by a documentation lookup.
+
+| Domain | MCP server | Use when |
+|---|---|---|
+| AWS services & APIs | `awslabs.aws-documentation-mcp-server` | importing or using any boto3 / AWS SDK construct, or designing AWS service interactions |
+| AWS CDK | `awslabs.aws-iac-mcp-server` | writing CDK constructs, validating CloudFormation templates, troubleshooting deployments |
+| AWS API CLI / commands | `awslabs.aws-api-mcp-server` | suggesting or running AWS CLI commands |
+| Strands Agents SDK | `strands-agents-mcp-server` | importing strands_agents, designing agent loops, configuring models/tools |
+| Bedrock AgentCore | `awslabs.amazon-bedrock-agentcore-mcp-server` | designing or deploying AgentCore Runtime / Gateway / Memory components |
+
+## Required behavior
+
+1. Before adding an import, calling a function, or referencing a class
+   from one of these domains, search the corresponding MCP server for
+   the relevant documentation.
+2. Cite the source in code comments, design docs, or commit messages
+   when the choice is non-obvious.
+3. If the MCP server is unreachable, STOP and surface the error rather
+   than guessing at the API. See Part 0.2 of the setup prompt for
+   verification steps.
+4. The "must consult before any work" rule is scoped to features that
+   actually USE the technology. A bug fix in unrelated business logic
+   does not require an AWS doc lookup.
+```
+
+### 8.20 `document-user-prompts.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Document User Prompts in Spec Sessions
+
+For spec sessions (any directory under `.kiro/specs/`), preserve the
+conversation:
+
+1. `requirements.md` and `design.md` each have a "User Prompts" section
+   that captures the verbatim prompts that drove the current state of
+   the document — including the first prompt that initiated the spec.
+2. `prompts.md` in the same spec directory captures the full chronological
+   conversation: every user message and every assistant response.
+3. When the user asks for updates, append the new prompts to "User
+   Prompts" in `requirements.md` and `design.md`, and to `prompts.md`.
+```
+
+### 8.21 `no-guessing.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Evidence-Based Statements Only (CRITICAL)
+
+Every claim you make to the user must be backed by verifiable evidence:
+log output, command output, API response, file contents, test results.
+If you cannot cite evidence, do not make the claim.
+
+## Trigger phrases that demand evidence
+
+Before stating any of the following, verify with concrete data:
+- "should work", "may work", "probably", "likely", "I think", "I believe"
+- "now works", "is fixed", "will trigger", "will pick up"
+- "the correct approach is" (without a doc citation)
+
+If you catch yourself about to use one of these without evidence, stop
+and gather the evidence first. State the evidence alongside the claim.
+
+## What counts as evidence
+
+- Command output (pytest, ruff, git log, aws CLI, etc.)
+- API responses (CI status, AWS API, GitHub/GitLab API)
+- Log file contents (CloudWatch, CI logs, application logs)
+- Test results with explicit pass/fail counts
+- Documentation quotes from the MCP doc servers
+
+## What does NOT count as evidence
+
+- Your own reasoning without supporting data
+- "Usually" / "in most cases"
+- Predictions about future behavior without monitoring
+- "The code looks correct" without running it
+
+## Examples
+
+WRONG: "The Lambda now works."
+RIGHT: "Tests pass: `47 passed, 0 failed` from `pytest test/`. The
+previously-failing `test_lambda_handler_augmentation` now succeeds."
+
+WRONG: "The pipeline should pass with this fix."
+RIGHT: "Pipeline #326 status from `glab ci status`: `running (stage:
+deploy)`. Triggered by commit a1b2c3d which contains the fix."
+
+WRONG: "This approach should fix the issue."
+RIGHT: "The error in the log says `TypeError: expected str, got
+NoneType` at `processor.py:142`. The AWS Lambda docs (search hit
+[link]) confirm `event['body']` can be None for certain invocation
+types. I'll add a None check and verify with a unit test."
+
+## When you violate this rule
+
+Acknowledge it, gather the evidence, restate the claim with evidence
+or retract it. Add an entry to the violation log below so future
+sessions can learn.
+
+## Violation log
+
+<!-- Append entries: date, statement, what should have been done,
+     corrective action -->
+```
+
+### 8.22 `always-test-e2e.md` (always)
+```markdown
+---
+inclusion: always
+---
+# End-to-End Test on Every Spec / Bug Fix (MANDATORY)
+
+Every spec session, bug fix session, or task list MUST end with an
+end-to-end (E2E) test as the final task. The list is incomplete
+without it.
+
+## What the E2E test must do
+
+1. **Deploy/run** the modified code through the project's standard
+   mechanism (deploy script, CI pipeline, local run, etc.).
+2. **Wait** for completion. Don't assume success — actively monitor.
+3. **Verify** results match expectations. Use logs, API responses,
+   test output. Cite evidence (per `no-guessing.md`).
+4. **Debugging loop** if anything fails:
+   a. Investigate root cause (logs, errors).
+   b. Consult MCP doc servers and `docs/` for guidance.
+   c. Fix.
+   d. Repeat from step 1.
+5. **Exit** only when execution succeeded AND results are as expected.
+   This is the only way out of the loop.
+
+## Adapt to the project type
+
+| Project type | Deploy/run | Verify |
+|---|---|---|
+| AWS Lambda / CDK | `python cdk/deploy.py dev` | CloudWatch logs, Step Functions console |
+| Web app | deploy to dev/staging | smoke tests, health endpoints |
+| CLI tool / library | run with test inputs | compare stdout to expected |
+| Data pipeline | trigger pipeline run | compare output data to expected |
+| Local-only | run pytest / scripts | verify results match |
+
+## Pre-deployment data snapshot (when applicable)
+
+For changes that affect a running system with live data, capture the
+data state before deploying so you can compare after. Skip for purely
+additive or UI-only changes.
+
+## Integration
+
+- Follows `no-guessing.md` (every success/failure claim has evidence).
+- Follows `no-environment-vars.md` (no AWS_PROFILE, etc.).
+- Follows `use-venv.md` (commands run inside the venv).
+- Follows `cdk-deployment-only.md` (infra changes through CDK only).
+```
+
+### 8.23 `tests-must-not-fail.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Tests Must Not Fail (CRITICAL)
+
+## The baseline assumption
+
+Every implementation starts from a baseline where 100% of tests pass.
+This is enforced by:
+- The pre-commit hook (`.pre-commit-config.yaml` — see Part 2.2 of the
+  setup prompt) which runs ruff before every commit.
+- The CI pipeline (`.gitlab-ci.yml` / `.github/workflows/`) which runs
+  the full test suite before every merge.
+- The post-activity checklist in `post-activity.md` which mandates
+  green tests before any task is marked complete.
+
+If the project's working tree currently has failing tests, the
+baseline has been broken — by a previous task that should not have
+been marked complete. Fixing that breakage is part of starting the
+current task; it is not optional, it is not deferrable, and it is
+not someone else's problem.
+
+## What this means in practice
+
+When you run the test suite during or after an implementation and see
+ANY failure:
+
+1. The failure IS your problem. Whether the failing test exercises
+   code you touched or code you didn't, you are the agent currently
+   holding the work, and the work cannot be considered done while
+   the suite is red.
+2. You MUST investigate the root cause to evidence (per
+   `no-guessing.md`) and FIX it.
+3. You MUST NOT stop, defer, or hand off because a failure looks
+   "unrelated."
+
+## Forbidden claims (the "pre-existing / out of scope" excuse)
+
+The following claims are FORBIDDEN. They have repeatedly been used to
+justify shipping broken code in this project, and they are wrong on
+the facts as well as on the policy:
+
+- "This test was already failing before my change."
+- "This failure is pre-existing."
+- "This is unrelated to my implementation."
+- "This is out of scope for this task."
+- "This is a flaky test."
+- "This is an environment issue, not a code issue."
+- "I'll fix this in a follow-up."
+- "Let's track this separately."
+
+Why these claims are wrong on the facts: see "The baseline
+assumption" above. The suite was green when this task started.
+A failure now means either (a) your change broke it, (b) a
+dependency or environment shift broke it AND your task is the one
+that has to absorb the fix, or (c) the test is genuinely flaky AND
+fixing the flakiness is part of your task. There is no fourth option
+in which the failure is "not yours."
+
+Why these claims are wrong on the policy: even in the rare case where
+a failure pre-dates your work, the policy says: fix it. The cost of
+unblocking the build NOW is always smaller than the cost of letting
+red tests accumulate, masking new regressions, and eroding trust in
+the suite.
+
+## Forbidden actions
+
+- `@pytest.mark.skip` / `pytest.skip()`
+- `@pytest.mark.xfail`
+- commenting out the test
+- deleting the test
+- excluding the test file from a test config (`pyproject.toml`
+  `[tool.pytest.ini_options]`, `pytest.ini`, `conftest.py` collect
+  hooks)
+- adding a `pytest.mark` filter that excludes the test from the
+  default run
+- any other mechanism that prevents the test from executing or from
+  failing the build when it fails
+
+The test exists because someone designed a behavior and wrote a check
+for it. Unless a spec change has explicitly removed that behavior
+(documented in `.kiro/specs/<feature>/` with the spec change visible),
+the test must keep running and must keep enforcing the behavior.
+
+## The only allowed path
+
+There is exactly one way out of a red suite:
+
+### Step 1: Understand
+
+- Read the failing test, the source it exercises, fixtures, conftest,
+  helpers, and any module imported transitively. Skip nothing.
+- Run the failing test in isolation to capture the full error and
+  stack trace. Apply `no-output-shortening.md` — read the full
+  output, do not tail.
+- Trace the test's intent through docstrings, comments, the spec
+  document if any, and recent commit history of the test file
+  (`git log -p -- <test-file>`).
+- State, with evidence, what behavior the test is supposed to verify
+  and what behavior it is currently observing.
+
+### Step 2: Research the right fix
+
+- Consult the relevant MCP doc servers (per `use-doc-mcp-servers.md`):
+  AWS Doc, AWS IaC, Strands, AgentCore, AWS API.
+- Consult `docs/` for project-specific design.
+- Consult `docs/lessons-learned.md` for prior fixes of similar issues.
+- Consider at least two candidate fixes. Compare them on
+  maintainability, correctness, and alignment with `design-principles.md`.
+
+### Step 3: Apply the fix
+
+- Default location: the SOURCE code under test.
+- Exception: if the test itself has a bug in its TEST LOGIC (not in
+  its assertion expectations — assertion expectations encode the
+  required behavior and must not be relaxed to make tests pass), fix
+  the test logic.
+- Apply `coding-standards.md`, `design-principles.md`, and
+  `file-organization.md` to the fix.
+
+### Step 4: Verify and re-run the WHOLE suite
+
+- Re-run the previously-failing test alone. Confirm pass with full
+  output captured.
+- Re-run the FULL suite (`pytest test/`). Confirm zero failures.
+  Fixing one test sometimes breaks another; you don't get to stop
+  until every test in the full suite passes.
+
+### Step 5: Document
+
+- If the failure mode was non-obvious, append a lesson to
+  `docs/lessons-learned.md` per `use-lessons-learned.md`.
+
+### Step 6: Loop if needed
+
+If anything is still red after Step 4, you have NOT understood the
+root cause. Go back to Step 1. Repeat until the suite is green.
+
+## When the failure really is environmental
+
+Sometimes a test fails because of a missing dependency, a stale venv,
+a missing credentials file, or a network-dependent service that's
+unreachable. These are still YOUR problem to resolve before the task
+is done:
+
+- Missing dependency: add it to `pyproject.toml` and `pip install -e
+  ".[dev,cdk]"`. The original test author assumed the dep would be
+  present; if it isn't, the project's dependency setup is broken.
+- Stale venv: rebuild it per `use-venv.md`.
+- Missing credentials: confirm the test is supposed to require them
+  (read the test). If yes, document the credential setup in
+  `docs/forLLMConsumption.md`. If no, the test is over-coupled to
+  external state and needs to be refactored to use mocks/fixtures.
+- Network flakiness: convert to a mock/fixture so the test no longer
+  depends on the network. Don't `xfail` and don't add retries — fix
+  the root cause.
+
+In none of these cases is "the test is flaky" or "the env is
+broken" a stopping condition. Each is a fixable problem that falls
+inside the scope of the current task by virtue of having surfaced
+during the current task.
+
+## Integration
+
+- `no-guessing.md`: every claim about a test failure ("this fails
+  because X") needs evidence — the actual error message, the line of
+  code that produced it, the doc reference that confirms expected
+  behavior.
+- `no-output-shortening.md`: read full pytest output, not the tail.
+- `coding-standards.md` + `design-principles.md`: govern HOW you fix.
+- `post-activity.md`: the post-activity checklist re-runs the full
+  suite as the gate; this rule is what governs your behavior when
+  that gate is red.
+- `use-lessons-learned.md`: document non-obvious failures so the
+  next agent doesn't repeat the same root cause.
+```
+
+### 8.24 `use-git-wrapper-scripts.md` (always)
+```markdown
+---
+inclusion: always
+---
+# Repo Operations: Wrapper Scripts Only (CRITICAL)
+
+ALL operations against the project's remote git repository — CI/CD
+inspection, issue/PR/label management, any other API call — go through
+the wrapper in `scripts/`:
+- GitHub: `scripts/github_wrapper.py`
+- GitLab: `scripts/gitlab_wrapper.py`
+
+## Forbidden
+
+- `gh` CLI (any subcommand)
+- `glab` CLI (any subcommand)
+- raw `curl` or `wget` against `api.github.com`, `gitlab.com/api/v4`, etc.
+- direct `requests` / `urllib` calls to git-host APIs from anywhere
+  outside the wrapper
+- any MCP tool that bypasses the wrapper's credential loading
+
+These tools fail unpredictably in this environment because they rely
+on their own token stores (often via env vars), don't carry corporate-
+SSO cookies for self-hosted instances, and produce inconsistent
+output formats.
+
+## Allowed
+
+- Local-only `git` commands (`git status`, `git log`, `git diff`,
+  `git add`, `git commit`, `git push`, `git fetch`, `git rebase`).
+  These don't hit the host API.
+- Any subcommand the wrapper exposes.
+- Adding new subcommands to the wrapper when needed — extend, do not
+  bypass.
+
+## Credentials
+
+- GitHub PAT: `credentials/github-pat.txt` (one line, gitignored).
+- GitLab token: `config/gitlab.json` (gitignored).
+- Templates with `*.template` are checked in.
+- If the wrapper reports a placeholder is still present, STOP and ask
+  the user to paste a real token. Do not proceed.
+- NEVER echo credential contents into chat, logs, or commit messages.
+
+## Integration
+
+- `no-environment-vars.md`: wrappers read from project files, never
+  from `GITHUB_TOKEN`/`GITLAB_TOKEN`. Do not add env-var fallbacks.
+- `no-guessing.md`: when reporting CI/issue status, run the wrapper
+  and quote its output as evidence.
+- `coding-standards.md`: new subcommands use string constants for
+  JSON fields, absolute imports, `pathlib.Path`, named parameters.
+```
+
+---
+
+
+## PART 9 — KIRO HOOKS
+
+The hook JSON schema (top-level `enabled`, `name`, `description`,
+`version`, `when`, `then`; trigger types `fileEdited` / `agentStop` /
+`userTriggered` / `promptSubmit` / `preToolUse` / `postToolUse` /
+`preTaskExecution` / `postTaskExecution`; action types `askAgent` /
+`runCommand`) is documented in Kiro's runtime context. Follow that
+schema when creating or modifying hooks. Do not duplicate it here.
+
+### Migration from `.clinerules/workflows/`
+
+If `.clinerules/workflows/` exists, convert each `.md` workflow file
+to ONE corresponding `.kiro.hook` file in `.kiro/hooks/`:
+
+1. Walk the workflow directory; count files.
+2. For each workflow file:
+   a. Read the COMPLETE content (no abbreviation).
+   b. Default trigger type: `userTriggered` (safest; user can change later).
+   c. Hook filename: `<workflow-basename>.kiro.hook`.
+   d. Create the hook with `enabled: true`, `version: "1"`, `name`
+      derived from filename in Title Case, `description` derived from
+      content/filename, `then.type: "askAgent"`, `then.prompt` set to
+      the COMPLETE workflow content (preserve every step, code block,
+      conditional, and reporting requirement).
+3. Verify count: number of `.md` files in workflows/ must equal
+   number of `.kiro.hook` files just created.
+4. Only after verification, delete `.clinerules/workflows/`.
+
+DO NOT combine multiple workflows into one hook. DO NOT abbreviate.
+The hook prompt is the agent's only context when the hook fires.
+
+### Standard hooks to create (only if not already present)
+
+The hook prompts below assume the steering files in Part 8 exist;
+they reference those files rather than duplicating their content.
+
+#### 9.1 `run-ci-workflow.kiro.hook`
+- name: "Run Full CI Workflow"
+- description: "Trigger all CI checks locally (ruff, mypy, bandit, pytest)."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Run the project's full CI workflow locally:
+  1. Read `.gitlab-ci.yml` (or `.github/workflows/*.yml`) to confirm
+     which checks CI runs.
+  2. Run each one inside the venv. Apply the no-output-shortening rule.
+  3. Fix every issue before continuing.
+  4. Report which checks passed, which failed, and what was fixed.
+  Continue until every check passes."
+
+#### 9.2 `test-coverage.kiro.hook`
+- name: "Check Test Coverage"
+- description: "Run coverage analysis and add tests until the configured threshold is met."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Analyze and improve test coverage:
+  1. `pytest test/ --cov=src --cov-report=term-missing --cov-report=html`.
+  2. Read the configured threshold from
+     `[tool.pytest.ini_options]` in pyproject.toml.
+  3. Identify uncovered files and lines, prioritizing critical paths.
+  4. Add tests until the threshold is met (use hypothesis where
+     property-based testing fits).
+  5. Report initial vs final coverage, tests added, and any remaining
+     gaps with justification."
+
+#### 9.3 `sync-documentation.kiro.hook`
+- name: "Sync Documentation"
+- description: "Reconcile docs/ with current implementation."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Synchronize documentation:
+  1. Read everything in docs/ and README.md.
+  2. Walk src/, cdk/, scripts/ to identify components, classes,
+     entry points.
+  3. List discrepancies (docs missing components, docs describing
+     removed components, outdated examples).
+  4. Update docs to match current implementation.
+  5. Refresh `docs/forLLMConsumption.md` so it provides complete
+     context for an AI assistant.
+  6. Report files updated and changes made."
+
+#### 9.4 `git-workflow-shared.md` (steering — supports the next 3 hooks)
+Place under `.kiro/steering/git-workflow-shared.md` with
+`inclusion: manual` (referenced by hooks via `#[[file:...]]`):
+```markdown
+---
+inclusion: manual
+---
+# Shared Git Workflow Steps
+
+These steps are referenced by the git-commit, git-rebase, and git-push
+hooks. The hooks share this content rather than each duplicating it.
+
+## Step A: .gitignore compliance
+
+Run `git status`. For each changed/untracked file decide whether it
+belongs in the repository:
+- DOES NOT belong: build artifacts, compiled output, cache dirs,
+  IDE-specific files, temp files, secrets, credentials, env-specific
+  files.
+- DOES belong: source, configuration files (pyproject.toml,
+  .pre-commit-config.yaml), docs, tests, scripts, CDK code, steering,
+  hooks.
+
+For each file that doesn't belong, add an entry to .gitignore (preserve
+existing). Verify `git status` no longer lists ignored files.
+
+## Step B: Integrate remote changes
+
+`git fetch origin`. Compare local branch with origin: `git log HEAD..origin/<branch> --oneline`.
+If remote changes exist:
+1. Stash local uncommitted changes if any: `git stash`.
+2. `git rebase origin/<branch>`.
+3. On conflict: identify with `git diff --name-only --diff-filter=U`,
+   read both versions of each file, produce a merged version that
+   preserves both intents, `git add <file>`, `git rebase --continue`.
+   Repeat until rebase completes.
+4. If rebase becomes too tangled: `git rebase --abort`, fall back to
+   `git merge origin/<branch>`.
+5. Restore stash if applicable: `git stash pop` (resolve any conflicts
+   the same way).
+
+## Step C: Stage and commit
+
+1. `git status` to review.
+2. `git add <files>` for each file that should be committed.
+3. `git diff --cached` — review what's about to be committed.
+4. Generate a commit message:
+   - subject in imperative mood, max 72 chars
+   - blank line
+   - body describing changes by component or purpose
+5. `git commit -m "<message>"`.
+
+## Step D: Pre-commit hook handling
+
+`git commit` triggers the pre-commit hook (ruff lint + format).
+- Exit code 0: hook passed; proceed.
+- Non-zero exit: fix every reported issue. Then go back to Step B
+  (there may be new remote changes), Step C (stage fixes), Step D
+  (commit again).
+- NEVER use `--no-verify` to bypass the hook.
+
+## Step E: Push (only used by git-push)
+
+`git push origin <branch>`. If rejected (non-fast-forward), go back
+to Step B and retry. If a new branch needs upstream tracking:
+`git push --set-upstream origin <branch>`.
+
+## Step F: Monitor CI (only used by git-push)
+
+Determine host from `git remote get-url origin`. Use the project's
+wrapper script (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
+to fetch CI status — never `gh`/`glab`/`curl` (see
+`use-git-wrapper-scripts.md`).
+
+Wait for the pipeline to terminate. Apply the no-output-shortening rule
+to every command. If the pipeline failed, fix the cause (consult MCP
+doc servers and project docs as appropriate) and loop back to Step B.
+```
+
+#### 9.5 `git-commit.kiro.hook`
+- name: "Git Commit"
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Execute the git-commit workflow. Reference
+  `.kiro/steering/git-workflow-shared.md`. Run Steps A, B, C, D in
+  order. Loop within Step D until the pre-commit hook passes. End
+  with a summary listing files committed, the commit message, gitignore
+  changes, remote integration details, and pre-commit fixes."
+
+#### 9.6 `git-rebase.kiro.hook`
+- name: "Git Rebase"
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Execute the git-rebase workflow. Reference
+  `.kiro/steering/git-workflow-shared.md`. Run Step B (fetch and
+  rebase onto origin/<current-branch>; if no upstream, rebase onto
+  origin/main). Then run the git-commit hook (Steps A, B, C, D)."
+
+#### 9.7 `git-push.kiro.hook`
+- name: "Git Push"
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Execute the git-push workflow. Reference
+  `.kiro/steering/git-workflow-shared.md`.
+  1. Run Step B for current branch and (if not main) for main.
+  2. Run Steps C and D.
+  3. Run Step E (push).
+  4. Run Step F (monitor CI). If CI fails, identify root causes,
+     fix, and loop back to Step C.
+  Exit only when CI passes. End with a summary listing files committed,
+  commit message(s), conflicts resolved, pre-commit fixes, CI status,
+  and the final commit hash from `git log --oneline -1`."
+
+---
+
+## PART 10 — SPEC TEMPLATES
+
+Apply Rule 1. Create only what's missing under `.kiro/specs/templates/`.
+
+### 10.1 `new-lambda/requirements.md`
+```markdown
+# Requirements: [Lambda Name]
+
+## Introduction
+[Brief description.]
+
+## Glossary
+- **Lambda_Handler**: The AWS Lambda entry point.
+
+## Requirements
+
+### Requirement 1: Core Functionality
+**User Story:** As a [role], I want [Lambda to do X], so that [benefit].
+
+#### Acceptance Criteria
+1. WHEN [trigger event] THEN the Lambda_Handler SHALL [response]
+2. WHEN [error condition] THEN the Lambda_Handler SHALL [error handling]
+```
+
+### 10.2 `new-model/requirements.md`
+```markdown
+# Requirements: [Model Name]
+
+## Introduction
+[Brief description.]
+
+## Glossary
+- **Model_Name**: [Definition]
+
+## Requirements
+
+### Requirement 1: Data Structure
+**User Story:** As a developer, I want [model to represent X], so that [benefit].
+
+#### Acceptance Criteria
+1. THE Model_Name SHALL contain fields: [list]
+2. WHEN serializing Model_Name THEN the system SHALL produce valid JSON
+3. WHEN deserializing JSON THEN the system SHALL produce a valid Model_Name instance
+```
+
+---
+
+## PART 11 — EDITOR SETTINGS (VS CODE + KIRO)
+
+Apply Rule 1. The two settings files share most content; configure both.
+
+### Standard `.vscode/settings.json` content
+
+```json
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.env.windows": {
+    "PATH": "${workspaceFolder}/venv/Scripts;${env:PATH}"
+  },
+  "terminal.integrated.env.linux": {
+    "PATH": "${workspaceFolder}/venv/bin:${env:PATH}"
+  },
+  "terminal.integrated.env.osx": {
+    "PATH": "${workspaceFolder}/venv/bin:${env:PATH}"
+  },
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["test/"],
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.rulers": [120],
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  }
+}
+```
+
+Notes:
+- `python.formatting.provider`, `python.formatting.blackArgs`, and
+  `python.sortImports.args` are removed from the official Microsoft
+  Python extension. Do NOT add them.
+- The formatter is the Ruff extension (`charliermarsh.ruff`). Black
+  is no longer a dependency of this project.
+- On Linux/macOS, change the interpreter path to
+  `${workspaceFolder}/venv/bin/python`.
+
+### `.kiro/settings.json`
+
+If it doesn't exist, create it with the same `python.*` and
+`terminal.integrated.env.*` keys above (test config and editor
+formatter keys are not relevant to Kiro). If `.vscode/settings.json`
+already exists, copy the relevant subset.
+
+The `terminal.integrated.env.*` block is a per-process configuration,
+not a shell env var (Rule 2 clarification).
+
+---
+
+## PART 12 — DOCUMENTATION
+
+Apply Rule 1. Preserve existing content; add missing sections.
+
+### `docs/forLLMConsumption.md`
+
+Required sections (add only those that are missing):
+- Project overview and purpose
+- Architecture and design patterns
+- Directory structure
+- Key components and their responsibilities
+- AWS configuration usage (if AWS project)
+- Testing strategy
+- Common commands
+
+### `docs/ProjectPlan.md`
+Required sections:
+- Overall plan with milestones
+- TODOs and open issues
+
+### `docs/ProjectDesign.md`
+Required sections:
+- Main design principles
+- Overall architecture
+- Component interactions
+
+### `docs/lessons-learned.md`
+If missing, create:
+```markdown
+# Lessons Learned
+
+This file documents lessons learned during development. The AI
+assistant reads this before starting any new task to avoid repeating
+past mistakes.
+
+## Format
+
+- **Date**: when the lesson was learned
+- **Context**: what was being worked on
+- **Lesson**: what was learned
+- **Action**: what to do differently going forward
+
+## Lessons
+
+<!-- Add entries below -->
+```
+
+---
+
+## PART 13 — FINAL VERIFICATION AND MIGRATION REPORT
+
+After completing all parts:
+
+### Verification checklist
+1. **MCP servers** — every server in Part 0.2 returns data on its
+   verification call. Apply Rule 3 to each verification command.
+2. **Virtual environment** — `venv/` activated, deps installed.
+3. **Pre-commit hook** — `scripts/setup-hooks.sh` ran successfully;
+   `.git/hooks/pre-commit` exists; `pre-commit run ruff --config .pre-commit-config.yaml`
+   succeeds.
+4. **CI checks** — `ruff check`, `ruff format --check`, `mypy`,
+   `bandit` all pass on the existing codebase (or only fail on
+   pre-existing issues; flag those).
+5. **Tests** — `pytest test/ --cov=src` runs (failures must be fixed
+   per `tests-must-not-fail.md`).
+6. **Steering files** — every file in Part 8 exists in
+   `.kiro/steering/`.
+7. **Hooks** — every hook in Part 9 exists in `.kiro/hooks/`.
+8. **Git wrapper** — for the detected host, the wrapper exists and
+   credential stub is in place. If a real token is configured, run
+   one read-only command to confirm auth.
+
+### Migration report
+
+Generate the following report:
+
+```markdown
+# Migration Report
+
+## Summary
+- Project type: [New / Existing with Cline / Existing with Amazon Q / Existing without assistant config]
+- Host OS: [Windows / macOS / Linux]
+- Migration date: [date]
+
+## MCP Servers
+| Server | Status | Action taken |
+|---|---|---|
+| awslabs.aws-documentation-mcp-server | [Verified / Configured / Failed] | [details] |
+| awslabs.aws-iac-mcp-server | ... | ... |
+| awslabs.aws-api-mcp-server | ... | ... |
+| strands-agents-mcp-server | ... | ... |
+| awslabs.amazon-bedrock-agentcore-mcp-server | ... | ... |
+
+If `awslabs.cdk-mcp-server` was previously configured: removed and
+replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
+
+## Files created
+- [list]
+
+## Files preserved (existing)
+- [list]
+
+## Files merged
+- [list, with what was preserved vs added]
+
+## Migrations performed
+- From `.clinerules/`: [source -> destination, content migrated]
+- From `.amazonq/`: [source -> destination, content migrated]
+- From legacy dependency formats: [source -> pyproject.toml section, package count]
+
+## Git wrapper
+- Host detected: [GitHub / GitLab / both / none]
+- Wrapper: [created / preserved / merged]
+- Credential stub: [created / preserved / contains real token]
+- Manual action required: [list]
+
+## Configuration conflicts
+- [list, with what was kept vs skipped]
+
+## Warnings
+- [issues needing user attention]
+- [manual steps required]
+
+## Deleted files
+- [list, with confirmation that content was migrated first]
+
+## Recommendations
+- [follow-up actions]
+```
+
+---
+
+## APPENDIX — QUICK REFERENCE
+
+### Standard directory structure
+```
+project/
+├── .kiro/
+│   ├── steering/                # rules
+│   ├── hooks/                   # automation
+│   ├── settings/                # MCP and other settings
+│   └── specs/templates/         # spec templates
+├── .vscode/
+├── .pre-commit-config.yaml
+├── cdk/                         # AWS CDK (if used)
+├── config/
+│   └── aws_accounts.json        # gitignored
+├── credentials/                 # gitignored stubs
+├── docs/
+├── scripts/
+│   ├── setup-hooks.sh
+│   ├── github_wrapper.py        # if GitHub
+│   └── gitlab_wrapper.py        # if GitLab
+├── src/
+│   └── aws_config.py            # if AWS
+├── test/
+│   └── integration/
+└── tmp/                         # gitignored
+```
+
+### Key files
+| File | Purpose |
+|---|---|
+| `pyproject.toml` | metadata, deps, tool config |
+| `.gitlab-ci.yml` / `.github/workflows/` | CI pipeline |
+| `.pre-commit-config.yaml` | hook definitions (ruff, mypy, pytest) |
+| `scripts/setup-hooks.sh` | generates `.git/hooks/pre-commit` with venv path |
+| `src/aws_config.py` | AWS account singleton |
+| `config/aws_accounts.json` | account / profile / region mappings |
+| `docs/forLLMConsumption.md` | consolidated docs for AI assistants |
+
+### Steering inclusion types
+| Type | Applied when |
+|---|---|
+| `inclusion: always` | every interaction |
+| `inclusion: fileMatch` | matching files are open |
+| `inclusion: manual` | explicitly referenced with `#` or `#[[file:...]]` |
+
+### Hook trigger types (default to `userTriggered` unless automation is needed)
+| Trigger | Fires when |
+|---|---|
+| `fileEdited` | a matching file is saved |
+| `agentStop` | Kiro finishes a task |
+| `userTriggered` | the user invokes the hook |
+| `promptSubmit` | a prompt is submitted |
+| `preToolUse` / `postToolUse` | before / after a tool runs |
+| `preTaskExecution` / `postTaskExecution` | before / after a spec task |
+
+### Dependency migration quick map
+| Legacy | pyproject.toml section |
+|---|---|
+| `requirements.txt` | `[project.dependencies]` |
+| `requirements-dev.txt` | `[project.optional-dependencies.dev]` |
+| `requirements-test.txt` | `[project.optional-dependencies.test]` |
+| `requirements-cdk.txt` | `[project.optional-dependencies.cdk]` |
+| `setup.py` `install_requires` | `[project.dependencies]` |
+| `setup.py` `extras_require` | `[project.optional-dependencies]` |
+| `Pipfile` `[packages]` | `[project.dependencies]` |
+| `Pipfile` `[dev-packages]` | `[project.optional-dependencies.dev]` |
+| `[tool.poetry.dependencies]` | `[project.dependencies]` |
+| `[tool.poetry.group.dev.dependencies]` | `[project.optional-dependencies.dev]` |
+
+### Install commands
+| Purpose | Command |
+|---|---|
+| Production | `pip install .` |
+| Development | `pip install -e ".[dev]"` |
+| CDK / infra | `pip install -e ".[cdk]"` |
+| Full development | `pip install -e ".[dev,cdk]"` |
+| All optional deps | `pip install -e ".[dev,cdk,test,docs]"` |
+
+### Templates referenced by this prompt
+All under `templates/` in the prompt repository:
+- `aws_config.py.template`
+- `aws_accounts.json.template`
+- `setup-hooks.sh.template`
+- `pre-commit-config.yaml.template`
+- `gitlab.json.template`
+- `gitlab_wrapper.py.template`
+- `github_wrapper.py.template`
+
+# END OF PROMPT

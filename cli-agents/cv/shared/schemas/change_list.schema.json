@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kiro.dev/specs/cv-customizer-agents/change_list.schema.json",
+  "title": "Change_List",
+  "description": "A Change_List as consumed by docx_edit.py. Per the engine's accepted shapes a Change_List is EITHER a bare JSON array of entries OR an object with an 'entries' array and an optional top-level 'iteration'. Each entry conforms to '$defs/entry'.",
+  "oneOf": [
+    {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      },
+      "description": "A bare list of Change_List entries."
+    },
+    {
+      "type": "object",
+      "required": [
+        "entries"
+      ],
+      "properties": {
+        "iteration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional iteration number for the whole Change_List."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          },
+          "description": "The Change_List entries."
+        }
+      },
+      "additionalProperties": false,
+      "description": "A Change_List document wrapping its entries."
+    }
+  ],
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "id",
+        "operation",
+        "anchor"
+      ],
+      "description": "A single Change_List entry the CV Editor Agent can apply mechanically (Requirement 9.3, design 'Data Models / Change_List entry'). The 'operation' vocabulary is the closed set implemented by docx_edit.py. Optional fields (new_text, style, new_items, notes, implements_findings, iteration, target_document) are present only where the operation needs them; the engine ignores irrelevant ones.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id of the Change_List entry within the run (e.g. CL-1-007)."
+        },
+        "iteration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Iteration in which the entry was produced."
+        },
+        "target_document": {
+          "type": "string",
+          "enum": [
+            "CV_Working_Copy",
+            "Letter_Working_Copy",
+            "package_coherence"
+          ],
+          "description": "Informational tag for which document the entry edits; the orchestrator routes CV vs. letter entries to separate editor invocations."
+        },
+        "implements_findings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Backreference(s) to the Finding id(s) this entry implements."
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "replace_run_text",
+            "replace_paragraph_text",
+            "insert_paragraph_after",
+            "insert_paragraph_before",
+            "delete_paragraph",
+            "set_paragraph_style",
+            "replace_bullet_list"
+          ],
+          "description": "The closed edit-operation vocabulary implemented by docx_edit.py."
+        },
+        "anchor": {
+          "type": "object",
+          "required": [
+            "paragraph_key"
+          ],
+          "description": "Where the edit applies. The engine re-resolves the stable 'paragraph_key' against the live document; 'match_text' is required only by replace_run_text but is allowed on any entry.",
+          "properties": {
+            "paragraph_key": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stable paragraph key from docx_normalize.py."
+            },
+            "match_text": {
+              "type": "string",
+              "description": "Substring to replace (replace_run_text)."
+            }
+          },
+          "additionalProperties": true
+        },
+        "new_text": {
+          "type": "string",
+          "description": "Replacement/insertion text (replace_* and insert_* operations)."
+        },
+        "style": {
+          "type": "string",
+          "description": "Named paragraph style (set_paragraph_style, optional insert style)."
+        },
+        "new_items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement list items (replace_bullet_list only)."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free-text note; ignored by the engine."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

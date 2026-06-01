@@ -1,0 +1,27 @@
+{
+    "name": "cv-hiring-manager-reviewer",
+    "description": "Hiring Manager Reviewer Agent — a read-only reviewer that performs a critical end-to-end review of the whole application package (the CV_Working_Copy and, when present, the Letter_Working_Copy) against the Job_Description. It evaluates the package as a whole: when a letter is present the CV alone is insufficient, and it verifies the two documents are coherent with each other and with the Job_Description. It consumes the accepted_gaps.md register as supporting context and MAY downgrade its recommendation if cumulative accepted gaps materially weaken fit. It emits a structured review — strengths with citations, concern Findings (category hiring_manager_concern, tagged CV_Working_Copy, Letter_Working_Copy, or package_coherence for cross-document inconsistencies), and a binary recommendation INVITE or DO_NOT_INVITE recorded in its findings file and returned summary. LLM-only analysis: it has no shell tool, never contributes clarification questions to the candidate, never edits any Working Copy, and never spawns subagents. Its only writes are schema-valid Findings plus the recommendation record to its own findings/cv-hiring-manager-reviewer/ subtree and its per-agent state dir. Its gate passes when the recommendation is INVITE AND no open concern Findings remain (other than accepted_gap) — necessary but NOT sufficient for convergence, which requires every reviewer gate to pass independently.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/findings/cv-hiring-manager-reviewer/**",
+                ".kiro/agent-state/cv-hiring-manager-reviewer/**"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write"
+    ],
+    "model": null
+}

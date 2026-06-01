@@ -1,0 +1,50 @@
+{
+    "name": "cv-ats-reviewer",
+    "description": "ATS Reviewer Agent — flags content that automated applicant tracking systems would reject, mis-parse, or fail to read across the CV_Working_Copy and (when present) the Letter_Working_Copy. It runs the shared deterministic structural checker (ats_structural.py) via a thin wrapper script under tmp/cv-ats-reviewer/<iso-timestamp>/ats_checks.py executed by the shell tool — the same script-in-tmp pattern the CV Editor uses — to detect structural hazards (text boxes, images with text, multi-column layouts, header/footer content, layout tables, non-standard headings, parser-hostile Unicode). It uses its underlying LLM for keyword-matching against the Job_Description, and defers true skill/experience gaps to the JD Alignment Reviewer. It emits schema-valid Findings tagged per target_document; its gate passes at zero open findings. It never edits any Working Copy, never prompts the user, and never spawns subagents.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write",
+        "shell"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/findings/cv-ats-reviewer/**",
+                ".kiro/agent-state/cv-ats-reviewer/**",
+                "tmp/cv-ats-reviewer/**"
+            ]
+        },
+        "shell": {
+            "allowedCommands": [
+                "python tmp/cv-ats-reviewer/.*/ats_checks\\.py.*",
+                "python\\.exe tmp/cv-ats-reviewer/.*/ats_checks\\.py.*",
+                "py tmp/cv-ats-reviewer/.*/ats_checks\\.py.*"
+            ],
+            "deniedCommands": [
+                "pip install .*",
+                "pip3 install .*",
+                "python -m pip .*",
+                "npm .*",
+                "npx .*",
+                "git .*",
+                "rm .*",
+                "del .*",
+                "rmdir .*",
+                "curl .*",
+                "wget .*"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write",
+        "shell"
+    ],
+    "model": null
+}

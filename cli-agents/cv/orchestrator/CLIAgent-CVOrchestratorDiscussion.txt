@@ -1,0 +1,379 @@
+CV Orchestrator Agent — Discussion / Design Notes
+
+Canonical name: cv-orchestrator
+Config file:    KiroCLIAgent-CVOrchestrator.json   ("name": "cv-orchestrator")
+Prompt file:    prompt.md                          (referenced as file://prompt.md)
+
+Maps to Requirement 2 (Orchestrator role, subagent topology, one-question-at-a-
+time, audit trail), Requirement 9.3/9.4 (Findings -> Change_List dedup +
+conflict priority), Requirement 10 (iteration loop, gates, convergence,
+oscillation, cap), Requirement 11.3-11.6 (page limits + overrides + render-based
+page count as a hard gate), Requirement 12.3/12.5 (accepted gaps excluded from
+gates; surfaced in the report), Requirement 13.5 (DB writeback / sidecar
+surfaced), Requirement 14.5 (workflow-level resume marker + resumability),
+Requirement 15.1/15.2 (no env vars; subagent config), and R16.3-16.5 (canonical
+name, explicit name field, required files). The prompt is authored across
+subtasks 14.1 (config), 14.2 (setup), 14.3 (loop), 14.4 (conflict/convergence/
+termination), and 14.5 (resumability + this notes file).
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+The orchestrator is the ENTRY POINT of the suite and the ONLY agent that ever
+talks to the candidate [R2.1]. Every other agent runs as a non-interactive
+subagent, returns a short summary, and never communicates with the candidate.
+The orchestrator owns:
+  - the shared Workflow_State_Directory (.kiro/agent-state/cv-workflow/);
+  - parsing the candidate's first-message inputs into run_manifest.json
+    (workspace-relative paths, never env vars) and fail-fast validation [R1.6];
+  - the NORMALIZE step (running docx_normalize.py / input_normalize.py) and the
+    byte-for-byte Working-Copy initialization [R1.10, R1.11];
+  - the iteration loop (REVIEW -> QA -> EDIT -> EVALUATE), bounded by the
+    Iteration_Cap of 10;
+  - page counting (page_count.py) as a hard convergence gate [R11.4, R11.6];
+  - per-edit-pass backups (byte-copies only) [R3.4];
+  - Findings aggregation -> dedup -> conflict resolution -> Change_List [R9.3,
+    R9.4];
+  - oscillation detection + the 3x -> wont_fix escalation [R10.3, R10.4];
+  - the single success-termination path and termination_report.md [R10.1, R10.2];
+  - relaying JD-alignment questions ONE at a time and recording verbatim answers
+    [R2.13, R6.6];
+  - the audit trail (iteration_log.md) and the resume markers [R10.6, R14.5].
+It NEVER edits Working Copy content itself — only cv-editor does that [R2.11].
+Its own writes are limited to initializing/maintaining the state directories,
+byte-copying originals into the Working Copies, and snapshotting backups. It
+never runs package installers and never runs git [R15.5, R15.6].
+
+------------------------------------------------------------------------------
+Subagent topology and the six canonical delegate names [R2.1-R2.3, R15.2, D-13]
+------------------------------------------------------------------------------
+The orchestrator includes `subagent` in its tools and spawns each delegate BY
+ITS CANONICAL NAME through Kiro CLI's native subagent mechanism (no second
+kiro-cli process, no /agent swap). toolsSettings.subagent.availableAgents and
+trustedAgents both list the six delegates byte-identically (trusted so spawns do
+not require per-call user approval):
+
+  cv-editor                    sole writer of the Working Copies (Property 2)
+  cv-spell-format-reviewer     spelling/punctuation/caps/formatting; no JD
+  cv-language-content-reviewer prose quality; ALSO the length-reduction reviewer
+  cv-jd-alignment-reviewer     JD gap analysis; the ONLY question-producing
+                               delegate (orchestrator relays its questions)
+  cv-ats-reviewer              ATS hazards (runs ats_structural.py via tmp)
+  cv-hiring-manager-reviewer   whole-package go/no-go (INVITE / DO_NOT_INVITE)
+
+The orchestrator's own canonical name is cv-orchestrator. Disk is the handoff
+bus: a subagent's summary is a short status report, but the substantive
+artifacts (Findings, Change_List, normalized inputs, questions, page counts) are
+written to the Workflow_State_Directory. This keeps the orchestrator's context
+lean, makes every handoff auditable, and is exactly what makes the workflow
+resumable after interruption [R14].
+
+Only the JD Alignment, ATS, and Hiring Manager reviewers ever see the
+Job_Description; the spell/format and language/content reviewers critique the
+documents in isolation from the JD by design [R4.1, R5.1]. When the optional
+letter or database is absent, the orchestrator simply never passes that path,
+turning the corresponding capability off [R1.8, R1.9].
+
+------------------------------------------------------------------------------
+The REVIEW / QA / EDIT / EVALUATE phase flow (per iteration n = 1..10)
+------------------------------------------------------------------------------
+NORMALIZE (iteration 0 only): build Normalized_Text + anchors; snapshot working
+  copies. Owned by setup; transition out of NORMALIZE is owned by the loop.
+
+REVIEW: spawn the five reviewers, in the fixed order [R2.5]
+  1 cv-spell-format-reviewer, 2 cv-language-content-reviewer,
+  3 cv-jd-alignment-reviewer (Phase 1 / Analysis), 4 cv-ats-reviewer,
+  5 cv-hiring-manager-reviewer (last). Each writes
+  findings/<canonical-name>/iteration-<n>.json; the orchestrator sets a
+  provisional gate_status as each returns. reviewer_queue tracks the reviewers
+  remaining this iteration (this is also the resume cursor for REVIEW).
+
+QA (only if JD Alignment Phase 1 wrote pending questions): relay each
+  unanswered question from jd_alignment/pending_questions.json STRICTLY ONE at a
+  time; record the candidate's verbatim answer in answered_questions.json BEFORE
+  asking the next (Property 8). Then spawn JD Alignment Phase 2 (Integration),
+  which emits fill-in findings, records declines as accepted_gap with the
+  verbatim response, and writes DB/sidecar with provenance. Phase 2 may append
+  new questions -> repeat the Phase1->QA->Phase2 cycle until none remain,
+  bounded by the cap. The orchestrator owns writing answered_questions.json; the
+  reviewer only reads it.
+
+EDIT: gather ALL open findings (exclude accepted_gap and wont_fix [R10.5]),
+  DEDUP by the tuple (target_document, anchor.paragraph_key, category,
+  normalized(proposed)) collapsing identical proposals into one Change_List
+  entry whose implements_findings lists every contributor [R9.3], RESOLVE
+  conflicts by the priority order below, then write change_list/iteration-<n>.json
+  (schema-valid). Empty Change_List => the single success-termination branch (see
+  below). Non-empty => snapshot per-document backups (byte-copy only), then spawn
+  cv-editor ONCE PER target document (the editor edits exactly one Working Copy
+  per invocation) with per-document Change_List subsets; collect each
+  result.json and surface every failed_to_apply in the log [R3.6].
+
+EVALUATE: run page_count.py for each Working Copy (render-based; Word COM
+  primary with Repaginate() before ComputeStatistics, LibreOffice+pypdf
+  fallback). If any document is over its limit, re-invoke
+  cv-language-content-reviewer with a LENGTH_DIRECTIVE to derive category:length
+  findings for the NEXT iteration [R11.5]. Record the per-iteration audit entry.
+  EVALUATE NEVER declares success — it always advances to the next iteration's
+  REVIEW so the edited state is re-reviewed.
+
+------------------------------------------------------------------------------
+The single success-termination path (C1, Property 6)
+------------------------------------------------------------------------------
+Success (COMPLETED) is declared at EXACTLY ONE point: the EDIT phase's
+empty-Change_List branch. That branch is reached only when a FRESH REVIEW (this
+iteration's reviewers, including any EVALUATE-derived length work from the prior
+iteration that has now been re-reviewed) produced ZERO new open findings to
+change. At that moment — and only there — the orchestrator evaluates the
+convergence predicate. The EVALUATE phase can never terminate-success because it
+has just applied edits that have not yet been re-reviewed; it always advances to
+the next REVIEW. Declaring COMPLETED solely from the empty-Change_List branch
+guarantees the final COMPLETED state was actually RE-REVIEWED and found clean,
+not merely edited (Property 6, C1). There is no other success path anywhere in
+the prompt.
+
+------------------------------------------------------------------------------
+Conflict priority order (highest wins) [R9.4]
+------------------------------------------------------------------------------
+A conflict = two+ open findings at the SAME anchor (target_document +
+paragraph_key) with INCOMPATIBLE proposed values (identical proposals are merged
+by dedup, not a conflict). Priority:
+  1 ats (severity: blocking)              ATS-unreadable fails before any human
+  2 hiring_manager_concern (blocking|high)
+  3 jd_gap                                alignment to the target role
+  4 spelling / formatting                 correctness
+  5 language                              stylistic preference
+  6 length                                applied last; never deletes content
+                                          that resolves a higher-priority finding
+This encodes R9.4's default: ATS-blocking wins over language preferences. Prefer
+SYNTHESIS (a single replace_paragraph_text that satisfies both intents) over a
+winner-takes-all drop; the next REVIEW validates the synthesis. The loser is
+RECORDED, never silently dropped; a blocking loser gets an explicit
+blocking-loss note plus a synthesis attempt. Same-category ties break by higher
+severity, then by earlier-spawned (ATS-aware) reviewer order. Every conflict +
+resolution is logged in iteration_log.md.
+
+------------------------------------------------------------------------------
+Oscillation: 3x -> wont_fix rule [R10.3, R10.4]
+------------------------------------------------------------------------------
+A finding is "the same" across iterations when its tuple (target_document,
+paragraph_key, category, normalized(proposed)) RECURS after having been marked
+applied. Matching is on the STABLE paragraph_key (from the anchor model), never
+on a live index, so it survives edits that shift paragraph positions. The
+orchestrator maintains oscillation_ledger.json (schema cv-oscillation-ledger/v1)
+keyed by that tuple, with first_applied_iteration, recurred_iterations,
+recurrence_count, alternate_applied, status. Escalation:
+  1st recurrence  -> classify as oscillation, log it, re-apply once normally;
+                     do NOT silently re-apply indefinitely.
+  2nd recurrence  -> apply ONE alternate resolution: reverse the two contending
+                     agents' priority FOR THAT ANCHOR ONLY (global order
+                     unchanged elsewhere); record alternate_applied.
+  3rd recurrence  -> mark the finding wont_fix with a documented rationale and
+                     EXCLUDE it from gate evaluation thereafter; it never again
+                     generates a Change_List entry.
+This bounds the loop INDEPENDENTLY of the Iteration_Cap — a persistently
+contested anchor cannot stall convergence forever. The ledger is restored on
+resume so recurrence counts persist across an interruption.
+
+------------------------------------------------------------------------------
+Convergence predicate (every gate independent + pages + INVITE) [R10.1, R8.6, D-8]
+------------------------------------------------------------------------------
+The predicate holds when ALL of the following are simultaneously true:
+  1 EVERY reviewer gate is PASS — each of the five reviewers has zero OPEN
+    findings for every document it reviewed; accepted_gap and wont_fix findings
+    are EXCLUDED from "open" [R10.5, R12.3, Property 5]. Each gate is evaluated
+    INDEPENDENTLY [R8.6, D-8].
+  2 EVERY Working Copy is within its page limit — last measured pages (from
+    page_counts.json, produced by render-based page_count.py) <= its limit in
+    run_manifest.json (honoring any override). Hard gate; never guessed
+    [R11.6, Property 7].
+  3 Hiring manager = INVITE for this fresh REVIEW. INVITE ALONE is necessary but
+    NOT sufficient — every other gate must independently PASS as well
+    [R8.6, D-8].
+If it holds -> TERMINATING(success). If not (e.g. a page still over, or a gate
+still failing on an iteration that happened to yield an empty Change_List) ->
+advance to the next REVIEW; do NOT terminate.
+
+------------------------------------------------------------------------------
+The 10-iteration cap [R10.2, D-10]
+------------------------------------------------------------------------------
+The loop is bounded by an Iteration_Cap of 10, enforced by the orchestrator IN
+ITS OWN loop logic — no platform mechanism enforces it (the design deliberately
+runs an orchestrator-level loop over on-disk Findings state rather than Kiro
+CLI's native review-loop construct, because convergence is a whole-workflow
+predicate, not a single stage's output check). The value 10 aligns with the max
+of the native construct. Enforce at the iteration boundary: before beginning
+REVIEW of iteration n, if n > 10, do not start another iteration -> TERMINATING
+with DID_NOT_CONVERGE. The oscillation wont_fix rule keeps individual contested
+findings from consuming the whole budget.
+
+termination_report.md (either outcome) surfaces: outcome + ending iteration;
+final per-document page counts vs. limits (with override note); the
+Accepted_Gaps register contents (verbatim declines) [R12.5]; the DB writeback
+that occurred — in place (.md/.txt) or to the Database_Sidecar
+(.kiro/agent-state/cv-workflow/database_sidecar.md) with merge instruction
+[R13.5]; the per-reviewer final gate status; and on DID_NOT_CONVERGE the
+still-open findings, wont_fix escalations + rationale, and why convergence
+failed. On COMPLETED it also names the deliverable Application_Package paths
+(working/cv.working.docx [+ letter]).
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why) [14.1]
+------------------------------------------------------------------------------
+tools: read, write, shell, subagent. It is the ONLY agent in the suite with
+`subagent` (it is the only delegator) and the only one that drives both the
+normalization and page-count scripts.
+
+toolsSettings.write.allowedPaths [R2.11, R15.3]:
+  - .kiro/agent-state/cv-workflow/**        the shared Workflow_State_Directory
+                                            (inputs/, working/, backups/,
+                                            findings/, change_list/, jd_alignment/)
+  - .kiro/agent-state/cv-orchestrator/**    its own per-agent state (resume_state.md)
+  - .kiro/agent-state/cv-workflow/working/**  listed explicitly for clarity
+                                              (subsumed by the workflow line)
+  - .kiro/agent-state/cv-workflow/backups/**  ditto
+  Crucially, write scope grants the orchestrator the ability to INITIALIZE a
+  Working Copy (byte-copy from the original) and to snapshot backups, but the
+  prompt forbids editing Working Copy CONTENT — that is cv-editor's exclusive
+  job [R2.11, Property 2]. The orchestrator also must not modify any original
+  input (CV/JD/letter/database); the DB is updated in place only by the JD
+  Alignment Reviewer [R1.11].
+
+toolsSettings.shell.allowedCommands — ONLY the three deterministic scripts the
+  orchestrator drives, each in three interpreter forms (python / python.exe / py
+  for Windows-first), regex-escaped:
+    python cli-agents/cv/shared/scripts/docx_normalize\.py.*
+    python cli-agents/cv/shared/scripts/input_normalize\.py.*
+    python cli-agents/cv/shared/scripts/page_count\.py.*
+  docx_normalize.py + input_normalize.py run in NORMALIZE; page_count.py runs in
+  EVALUATE. The orchestrator does NOT get docx_edit.py or ats_structural.py — the
+  editor and ATS reviewer run those themselves; the orchestrator only passes the
+  resolved ENGINE / STRUCTURAL_SCRIPT path to them at invocation.
+
+toolsSettings.shell.deniedCommands (global denylist for every shell-capable
+  agent) [R15.5, R15.6]:
+    pip install .* | pip3 install .* | python -m pip .* | npm .* | npx .* |
+    git .* | rm .* | del .* | rmdir .* | curl .* | wget .*
+  No installers, no git, no network, no destructive deletes. The shared scripts
+  assume their libraries are already installed; on a missing-package non-zero
+  exit the orchestrator surfaces a FATAL setup error naming the package (it does
+  NOT install it). "Cannot measure pages" (no Word and no LibreOffice) is
+  likewise FATAL because the page constraint is a hard gate that must never be
+  guessed.
+
+toolsSettings.subagent: availableAgents == trustedAgents == the six canonical
+  delegate names, byte-for-byte. The byte-identity to the installed discovery
+  config basenames is what makes spawn-by-canonical-name work (D-13).
+
+No environment variables anywhere in the config or prompt [global steering rule
++ R15.1]. Every input path arrives as an explicit labeled line in the
+candidate's first message or is read from a workspace-relative file
+(run_manifest.json); anything that looks like an env-var reference ($CV_PATH,
+%USERPROFILE%, ${...}) is treated as an invalid literal path and fails fast,
+never expanded.
+
+------------------------------------------------------------------------------
+Inputs and the no-env-vars rule [R1.5, R15.1]
+------------------------------------------------------------------------------
+First-message labeled inputs (parsed into run_manifest.json):
+  cv:                MANDATORY .docx                         (the CV_Document)
+  jd:                MANDATORY .html/.htm/.txt/.pdf/.docx/.md (Job_Description)
+  letter:            OPTIONAL .docx                          (Motivational_Letter)
+  database:          OPTIONAL .docx/.md/.txt/.pdf            (Bullet_Point_Database)
+  cv_page_limit:     OPTIONAL positive int (default 2)
+  letter_page_limit: OPTIONAL positive int (default 1)
+The orchestrator echoes back its parsed interpretation before proceeding, treats
+all paths as workspace-relative, validates mandatory inputs and FAILS FAST with
+a precise message naming the missing/invalid input [R1.6], and records a stable
+content hash per input in run_manifest.json (used later for resume matching).
+Absent letter => no letter work at all; absent database => JD Alignment's
+DB-driven gap-filling is disabled and elicited content goes to the sidecar.
+
+------------------------------------------------------------------------------
+Resumability (14.5) — two markers, disk is truth [R14.5, R14]
+------------------------------------------------------------------------------
+On EVERY launch, BEFORE any setup, the orchestrator reads workflow_state.md (the
+shared run marker) and its own resume_state.md (its per-agent marker), plus the
+prior run_manifest.json. It recomputes the current inputs' stable content hashes
+and compares them to the manifest:
+  - hash matches AND workflow_state.md status == IN_PROGRESS -> RESUME from the
+    recorded phase, honoring reviewer_queue (reviewers remaining this iteration),
+    jd_questions_outstanding (pending vs answered questions), pending_change_list,
+    the current iteration, gate_status, and the oscillation ledger — picking up
+    exactly where the prior run stopped, not redoing finished work. The prompt
+    spells out how to resume WITHIN each phase (NORMALIZE/REVIEW/QA/EDIT/EVALUATE/
+    TERMINATING): e.g. skip reviewers whose iteration findings already exist;
+    replay QA from the first still-unanswered question; reuse an existing
+    Change_List and skip the editor for documents whose result.json already
+    exists; reuse an existing page_counts.json.
+  - hash MISMATCH (inputs changed) OR the prior run is terminal
+    (COMPLETED/DID_NOT_CONVERGE) and the candidate starts again -> ARCHIVE the
+    prior run's state (ISO-timestamp suffix on workflow_state.md, run_manifest.json,
+    iteration_log.md, termination_report.md, and the orchestrator's own
+    resume_state.md) then RESTART from setup. NEVER silently overwrite a divergent
+    or finished prior run; never modify the candidate's originals while archiving
+    (Property 1).
+
+workflow_state.md vs resume_state.md:
+  - workflow_state.md is the RUN's truth — shared, phase-level, the marker a
+    future launch reads to resume the loop (R14.5). Frontmatter: status,
+    timestamp, run_id, iteration, phase, reviewer_queue, pending_change_list,
+    jd_questions_outstanding, page_limits, gate_status.
+  - resume_state.md is the ORCHESTRATOR's own per-agent marker (R14.1, R14.2),
+    frontmatter conforming to resume_state.schema.json
+    (status/agent/timestamp/input_hash/current_step/iteration), used for the
+    input-hash resume/restart decision exactly like every delegate's marker, and
+    consistent with the cli-agents/ convention [R14.6].
+On resume the orchestrator RE-DERIVES on-disk truth (findings files, change_list,
+result.json, page_counts.json, accepted_gaps.md, pending/answered questions, the
+oscillation ledger) rather than trusting memory; the delegates manage their own
+resume markers, so the orchestrator only owns the run marker and its own marker
+plus trusting the shared artifacts. (Notes-file uses the .txt extension to match
+the existing repo convention in cli-agents/issue-intake/ and cli-agents/dead-code/.)
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption (D-12) — for task 15
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/orchestrator/. Per design
+"Installation and discovery" [R16.6-R16.10, D-12]:
+  - In the authoring tree, prompt is referenced as the relative URI
+    "file://prompt.md", and shell allowedCommands reference the shared scripts by
+    their authoring-relative paths cli-agents/cv/shared/scripts/<script>.py.
+  - install_agents.py (task 15) copies the whole cli-agents/cv/ tree to a fixed
+    installed root (.kiro/cv-suite/ workspace, ~/.kiro/cv-suite/ global) and
+    generates a discovery config at .kiro/agents/cv-orchestrator.json whose
+    "prompt" is rewritten to an ABSOLUTE file:// URI and whose allowedCommands
+    script paths are rewritten to ABSOLUTE installed paths under
+    <install-root>/cv-suite/shared/scripts/. The orchestrator passes the same
+    resolved script paths (ENGINE for cv-editor, STRUCTURAL_SCRIPT for
+    cv-ats-reviewer) to those delegates at invocation; it uses the path its own
+    config resolves to and never guesses, hardcodes, or reads it from the
+    environment.
+  - Windows-first: the installer emits host-correct strings — file:///D:/.../prompt.md
+    and allowedCommands with backslash paths correctly regex-escaped. The
+    authoring allowedCommands keep forward-slash, workspace-relative paths.
+Kiro CLI discovers custom agents ONLY in .kiro/agents/ (or ~/.kiro/agents/); it
+does not scan cli-agents/cv/. The generated .kiro/agents/cv-*.json and
+.kiro/cv-suite/ carry machine-specific absolute paths and are gitignored;
+only cli-agents/cv/ is version-controlled (C2). Each generated config's `name`
+must equal its canonical name byte-for-byte so the orchestrator's
+availableAgents/trustedAgents entries match the discovered agents (D-13).
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 14)
+------------------------------------------------------------------------------
+- Task 15 (install_agents.py) must: rewrite this config's prompt URI to an
+  absolute file:// path; rewrite the three allowedCommands script paths to
+  absolute installed paths; emit host-correct (Windows) strings; and VERIFY that
+  each .kiro/agents/<canonical-name>.json `name` matches the orchestrator's
+  availableAgents/trustedAgents byte-for-byte and that every referenced prompt
+  and script resolves to an existing file.
+- Task 17 (orchestrator-logic harness tests) must drive the convergence / dedup /
+  conflict-priority / oscillation / one-question-at-a-time logic over recorded
+  fixture findings WITHOUT spawning real subagents, asserting Properties 5, 6, 8,
+  9 and the conflict-priority/oscillation rules from this prompt.
+- Task 18 (end-to-end smoke test) must install the suite, confirm the
+  orchestrator is discoverable and spawns each delegate by canonical name as a
+  trusted subagent, verify a tailored CV is produced within the page limit with
+  originals unchanged (Property 1) and single-writer holding (Property 2), and
+  run the calibrated page-count check on a Word-equipped host (Property 7).

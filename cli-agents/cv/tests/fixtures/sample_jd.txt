@@ -1,0 +1,17 @@
+Senior Backend Engineer
+
+Globex Systems is hiring a Senior Backend Engineer to design and operate the
+services behind our data platform.
+
+Responsibilities
+- Design, build, and operate reliable backend services in Python.
+- Own data pipelines that process high-volume event streams.
+- Improve API performance and reliability through measurement.
+- Collaborate on code review and mentor junior engineers.
+
+Requirements
+- 5+ years building production backend systems.
+- Strong Python and SQL skills.
+- Experience with AWS (or an equivalent cloud platform).
+- Familiarity with Docker and CI/CD pipelines.
+- Experience with Kubernetes is a plus.

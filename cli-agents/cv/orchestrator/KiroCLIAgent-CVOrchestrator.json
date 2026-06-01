@@ -1,0 +1,77 @@
+{
+    "name": "cv-orchestrator",
+    "description": "CV Orchestrator Agent — the entry point of the CV Customizer suite and the only agent that talks to the candidate. It owns the iteration loop and the Workflow_State_Directory (.kiro/agent-state/cv-workflow/): it parses the candidate's first-message inputs into run_manifest.json (workspace-relative paths, never environment variables), validates mandatory inputs and fails fast if any is missing, runs the deterministic normalization + page-count scripts via the shell tool, initializes the working copies and snapshots per-edit-pass backups, and drives the per-iteration REVIEW/QA/EDIT/EVALUATE loop. It spawns the six delegate agents (cv-editor, cv-spell-format-reviewer, cv-language-content-reviewer, cv-jd-alignment-reviewer, cv-ats-reviewer, cv-hiring-manager-reviewer) by canonical name through Kiro CLI's native subagent mechanism, aggregating their on-disk Findings into a deduplicated, conflict-resolved Change_List for the editor. It surfaces JD Alignment clarification questions to the candidate one at a time, enforces the global convergence predicate and the 10-iteration cap, and writes the audit trail (iteration_log.md) and termination report. It NEVER edits Working Copy content itself — only cv-editor does that (it only byte-copies working copies to backups/ and initializes them). It never runs package installers or git.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write",
+        "shell",
+        "subagent"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/**",
+                ".kiro/agent-state/cv-orchestrator/**",
+                ".kiro/agent-state/cv-workflow/working/**",
+                ".kiro/agent-state/cv-workflow/backups/**"
+            ]
+        },
+        "shell": {
+            "allowedCommands": [
+                "python cli-agents/cv/shared/scripts/docx_normalize\\.py.*",
+                "python\\.exe cli-agents/cv/shared/scripts/docx_normalize\\.py.*",
+                "py cli-agents/cv/shared/scripts/docx_normalize\\.py.*",
+                "python cli-agents/cv/shared/scripts/input_normalize\\.py.*",
+                "python\\.exe cli-agents/cv/shared/scripts/input_normalize\\.py.*",
+                "py cli-agents/cv/shared/scripts/input_normalize\\.py.*",
+                "python cli-agents/cv/shared/scripts/page_count\\.py.*",
+                "python\\.exe cli-agents/cv/shared/scripts/page_count\\.py.*",
+                "py cli-agents/cv/shared/scripts/page_count\\.py.*"
+            ],
+            "deniedCommands": [
+                "pip install .*",
+                "pip3 install .*",
+                "python -m pip .*",
+                "npm .*",
+                "npx .*",
+                "git .*",
+                "rm .*",
+                "del .*",
+                "rmdir .*",
+                "curl .*",
+                "wget .*"
+            ]
+        },
+        "subagent": {
+            "availableAgents": [
+                "cv-editor",
+                "cv-spell-format-reviewer",
+                "cv-language-content-reviewer",
+                "cv-jd-alignment-reviewer",
+                "cv-ats-reviewer",
+                "cv-hiring-manager-reviewer"
+            ],
+            "trustedAgents": [
+                "cv-editor",
+                "cv-spell-format-reviewer",
+                "cv-language-content-reviewer",
+                "cv-jd-alignment-reviewer",
+                "cv-ats-reviewer",
+                "cv-hiring-manager-reviewer"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write",
+        "shell",
+        "subagent"
+    ],
+    "model": null
+}

@@ -1,0 +1,27 @@
+{
+    "name": "cv-language-content-reviewer",
+    "description": "Language and Content Reviewer Agent — a read-only reviewer that critiques the prose of the CV_Working_Copy and (when present) the Letter_Working_Copy in isolation from the Job_Description. It flags weak action verbs, vague or unquantified claims, redundant phrasing, inappropriate passive voice, missing professional-summary content, parallelism issues across bullets, and cover-letter structural issues (paragraph balance, opening hook, closing call-to-action). On request it also services orchestrator length-reduction directives (category: length), proposing reductions that preserve content resolving higher-priority findings. LLM-only analysis: it has no shell tool and never consults the Job_Description. Its only writes are schema-valid Findings to its own findings/cv-language-content-reviewer/ subtree and its per-agent state dir. It never edits any Working Copy, never prompts the user, and never spawns subagents.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/findings/cv-language-content-reviewer/**",
+                ".kiro/agent-state/cv-language-content-reviewer/**"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write"
+    ],
+    "model": null
+}

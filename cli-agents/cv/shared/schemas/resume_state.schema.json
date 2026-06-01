@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kiro.dev/specs/cv-customizer-agents/resume_state.schema.json",
+  "title": "resume_state",
+  "description": "The structured frontmatter object of a per-agent resume_state.md file (Requirement 14.2, design 'Data Models / resume_state.md'). resume_state is authored on disk as Markdown-with-YAML-frontmatter; this schema describes the frontmatter mapping after a validator parses it into an object (the free-form notes body below the frontmatter is not part of the structured model and is not validated here).",
+  "type": "object",
+  "required": [
+    "status",
+    "agent",
+    "timestamp",
+    "input_hash",
+    "current_step",
+    "iteration"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "IN_PROGRESS",
+        "COMPLETED",
+        "BLOCKED_ON_CLARIFICATION",
+        "FATAL"
+      ],
+      "description": "Lifecycle status of the agent invocation."
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical agent name (e.g. cv-editor)."
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 timestamp of the state write."
+    },
+    "input_hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable hash of this invocation's inputs (resume only if it matches)."
+    },
+    "current_step": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent-specific step marker (e.g. apply_change_list)."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Iteration number this state belongs to."
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,146 @@
+"""GitHub API wrapper for CI/CD, issue, and PR operations.
+
+Usage:
+    python scripts/github_wrapper.py list-workflows
+    python scripts/github_wrapper.py list-runs --limit 5
+    python scripts/github_wrapper.py get-logs <run_id> --failed-only
+    python scripts/github_wrapper.py list-issues
+    python scripts/github_wrapper.py create-issue --title "..." --body "..."
+
+Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
+The owner/repo are auto-detected from .git/config — do NOT hardcode them.
+
+This wrapper is the project's mandated entry point for all GitHub API
+operations (see .kiro/steering/use-git-wrapper-scripts.md). Direct use
+of `gh`, `glab`, raw curl, or requests against api.github.com is
+forbidden.
+"""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import json
+import logging
+import re
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+
+CREDENTIALS_FILE = Path("credentials") / "github-pat.txt"
+PLACEHOLDER = "PASTE_YOUR_GITHUB_PAT_HERE"
+API_ROOT = "https://api.github.com"
+
+FIELD_MESSAGE = "message"
+FIELD_TITLE = "title"
+FIELD_BODY = "body"
+FIELD_STATE = "state"
+FIELD_LABELS = "labels"
+FIELD_WORKFLOWS = "workflows"
+FIELD_WORKFLOW_RUNS = "workflow_runs"
+FIELD_JOBS = "jobs"
+FIELD_NAME = "name"
+FIELD_CONCLUSION = "conclusion"
+
+logger = logging.getLogger("github_wrapper")
+
+
+class GitHubAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 0, details: Any = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.details = details
+
+
+def _detect_repo() -> tuple[str, str]:
+    """Parse .git/config to extract (owner, repo) from origin URL."""
+    cfg_path = Path(".git") / "config"
+    if not cfg_path.exists():
+        raise GitHubAPIError("Not a git repository (no .git/config found).")
+    parser = configparser.ConfigParser()
+    parser.read(cfg_path)
+    url = parser['remote "origin"']["url"]
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?/?$", url)
+    if not m:
+        raise GitHubAPIError(f"Could not parse GitHub owner/repo from origin URL: {url}")
+    return m.group(1), m.group(2)
+
+
+def _load_token() -> str:
+    if not CREDENTIALS_FILE.exists():
+        raise GitHubAPIError(
+            f"Missing credentials file: {CREDENTIALS_FILE}. "
+            "Create it from credentials/github-pat.txt.template."
+        )
+    token = CREDENTIALS_FILE.read_text(encoding="utf-8").strip()
+    if not token or token == PLACEHOLDER:
+        raise GitHubAPIError(
+            f"{CREDENTIALS_FILE} still contains the placeholder. Paste a real PAT."
+        )
+    return token
+
+
+def _api_request(
+    *,
+    method: str,
+    path: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    url = f"{API_ROOT}{path}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = Request(url=url, data=body, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req) as resp:
+            data = resp.read().decode("utf-8")
+            return json.loads(data) if data else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise GitHubAPIError(
+            f"GitHub API error: {exc.code} {exc.reason}",
+            status_code=exc.code,
+            details=details,
+        ) from exc
+
+
+# Implement subcommand functions: list_workflows, list_runs, get_run,
+# get_jobs, get_logs (with _NoRedirectHandler that strips Authorization
+# before following the 302 to Azure Blob Storage), rerun, cancel,
+# create_pr, list_issues, get_issue, get_issue_comments, comment_issue,
+# update_issue, create_issue. Each takes named parameters and prints
+# JSON or human-readable output.
+#
+# Reference: see the original scaffold in
+# CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
+# and extend per project needs.
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GitHub API wrapper")
+    parser.add_argument("subcommand")
+    # ... add subparsers / arguments per the docstring above
+    args = parser.parse_args()
+    _ = _detect_repo()
+    _ = _load_token()
+    raise NotImplementedError(
+        f"Subcommand '{args.subcommand}' not yet implemented in this skeleton. "
+        "Extend the wrapper as needed and remove this NotImplementedError."
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        main()
+    except GitHubAPIError as exc:
+        logger.error("%s", exc)
+        if exc.details:
+            logger.error("%s", exc.details)
+        sys.exit(1)

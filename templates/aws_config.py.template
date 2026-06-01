@@ -1,0 +1,92 @@
+"""Singleton accessor for AWS account configuration.
+
+All code in this project MUST resolve AWS account IDs, profiles, and
+regions through this module. Hardcoding AWS values anywhere else is a
+critical violation (see .kiro/steering/aws-config.md).
+
+Account data is loaded from `config/aws_accounts.json` (gitignored).
+A `config/aws_accounts.json.template` checked into git documents the
+expected schema.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+
+_CONFIG_PATH = Path("config") / "aws_accounts.json"
+
+_FIELD_ACCOUNTS = "accounts"
+_FIELD_ACCOUNT_ID = "account_id"
+_FIELD_PROFILE = "profile"
+_FIELD_REGION = "region"
+_FIELD_DESCRIPTION = "description"
+
+
+@dataclass(frozen=True)
+class AWSAccount:
+    """Immutable record describing one AWS account / environment."""
+
+    account_id: str
+    profile: str
+    region: str
+    description: str = ""
+
+
+class _AWSConfig:
+    """Singleton loader for `config/aws_accounts.json`.
+
+    Use the module-level `aws_config` instance.
+    """
+
+    _instance: Optional["_AWSConfig"] = None
+
+    def __new__(cls) -> "_AWSConfig":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._accounts = cls._instance._load()
+        return cls._instance
+
+    def _load(self) -> dict[str, AWSAccount]:
+        if not _CONFIG_PATH.exists():
+            raise FileNotFoundError(
+                f"AWS account config missing: {_CONFIG_PATH}. Copy "
+                "config/aws_accounts.json.template and fill in real values."
+            )
+        raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        result: dict[str, AWSAccount] = {}
+        for env_name, data in raw[_FIELD_ACCOUNTS].items():
+            result[env_name] = AWSAccount(
+                account_id=str(data[_FIELD_ACCOUNT_ID]),
+                profile=str(data[_FIELD_PROFILE]),
+                region=str(data[_FIELD_REGION]),
+                description=str(data.get(_FIELD_DESCRIPTION, "")),
+            )
+        return result
+
+    def get_account(self, env: str) -> AWSAccount:
+        if env not in self._accounts:
+            known = ", ".join(sorted(self._accounts)) or "(none)"
+            raise ValueError(
+                f"Unknown AWS environment '{env}'. Known: {known}. "
+                f"Add it to {_CONFIG_PATH} if needed."
+            )
+        return self._accounts[env]
+
+    def get_account_id(self, env: str) -> str:
+        return self.get_account(env=env).account_id
+
+    def get_profile(self, env: str) -> str:
+        return self.get_account(env=env).profile
+
+    def get_region(self, env: str) -> str:
+        return self.get_account(env=env).region
+
+    def list_environments(self) -> list[str]:
+        return sorted(self._accounts.keys())
+
+
+aws_config = _AWSConfig()

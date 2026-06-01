@@ -1,0 +1,119 @@
+"""GitLab API wrapper for CI/CD and issue operations.
+
+Usage:
+    python scripts/gitlab_wrapper.py pipeline status
+    python scripts/gitlab_wrapper.py pipeline log
+    python scripts/gitlab_wrapper.py issue list
+    python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
+
+Credentials: config/gitlab.json (gitignored).
+
+This wrapper is the project's mandated entry point for all GitLab API
+operations (see .kiro/steering/use-git-wrapper-scripts.md). Direct use
+of `glab`, `gh`, raw curl, or requests against the GitLab API is
+forbidden. If a host requires corporate-SSO cookie auth (e.g.
+Midway-protected GitLab), add that handling here as a clearly-commented
+extension point.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+CONFIG_FILE = Path("config") / "gitlab.json"
+PLACEHOLDER_MARKER = "PASTE_"
+
+FIELD_HOSTNAME = "hostname"
+FIELD_PROJECT_ID = "project_id"
+FIELD_TOKEN = "token"
+FIELD_TITLE = "title"
+FIELD_DESCRIPTION = "description"
+FIELD_LABELS = "labels"
+FIELD_CONFIDENTIAL = "confidential"
+FIELD_STATUS = "status"
+FIELD_ID = "id"
+
+logger = logging.getLogger("gitlab_wrapper")
+
+
+class GitLabAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 0, details: Any = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.details = details
+
+
+def _load_config() -> dict[str, Any]:
+    if not CONFIG_FILE.exists():
+        raise GitLabAPIError(
+            f"Missing credentials file: {CONFIG_FILE}. "
+            "Copy config/gitlab.json.template and fill in real values."
+        )
+    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    for key in (FIELD_HOSTNAME, FIELD_PROJECT_ID, FIELD_TOKEN):
+        value = config.get(key, "")
+        if not value or str(value).startswith(PLACEHOLDER_MARKER):
+            raise GitLabAPIError(f"{CONFIG_FILE} is incomplete: fill in '{key}'.")
+    return config
+
+
+def _api_request(
+    *,
+    method: str,
+    path: str,
+    config: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    url = f"https://{config[FIELD_HOSTNAME]}/api/v4{path}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = Request(url=url, data=body, method=method)
+    req.add_header("PRIVATE-TOKEN", str(config[FIELD_TOKEN]))
+    req.add_header("Accept", "application/json")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req) as resp:
+            data = resp.read().decode("utf-8")
+            return json.loads(data) if data else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise GitLabAPIError(
+            f"GitLab API error: {exc.code} {exc.reason}",
+            status_code=exc.code,
+            details=details,
+        ) from exc
+
+
+# Implement subcommand functions per the module docstring:
+# pipeline_status, pipeline_log, issue_create, issue_list, issue_show,
+# label_list, label_create. Each takes named parameters and prints JSON
+# or human-readable output.
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GitLab API wrapper")
+    parser.add_argument("subcommand")
+    args = parser.parse_args()
+    _ = _load_config()
+    raise NotImplementedError(
+        f"Subcommand '{args.subcommand}' not yet implemented in this skeleton. "
+        "Extend the wrapper as needed and remove this NotImplementedError."
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        main()
+    except GitLabAPIError as exc:
+        logger.error("%s", exc)
+        if exc.details:
+            logger.error("%s", exc.details)
+        sys.exit(1)

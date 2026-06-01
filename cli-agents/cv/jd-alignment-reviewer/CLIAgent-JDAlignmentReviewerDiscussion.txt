@@ -1,0 +1,223 @@
+JD Alignment Reviewer Agent — Discussion / Design Notes
+
+Canonical name: cv-jd-alignment-reviewer
+Config file:    KiroCLIAgent-JDAlignmentReviewer.json   ("name": "cv-jd-alignment-reviewer")
+Prompt file:    prompt.md                               (referenced as file://prompt.md)
+
+Maps to Requirement 6 (JD Alignment Reviewer Agent — Two-Phase, Repeatable),
+Requirement 12 (Accepted Gaps Register), and Requirement 13 (Bullet Point
+Database Handling and Writeback), plus R14 (resumability), R15.3 (scoped tools,
+read-only on Working Copies with the DB/sidecar exception), and
+R16.3/16.4/16.5 (canonical name, explicit name field, required files).
+Authored in task 11.
+
+------------------------------------------------------------------------------
+Role summary
+------------------------------------------------------------------------------
+A non-interactive, two-phase reviewer that compares the application package
+(CV + letter when present) against the Job_Description and closes alignment
+gaps. It is the ONLY agent in the suite whose work produces clarification
+questions for the candidate — and it never asks them itself. It writes
+questions to disk; the orchestrator (the only interactive agent) relays them
+one at a time and writes the verbatim answers back [R6.9, R2.13].
+
+Gap analysis surfaces three issue kinds [R6.2]:
+  - skill/experience gaps (JD requirements not reflected in the package)
+  - terminology swaps (align the package's wording to the JD's, same meaning)
+  - emphasis re-balancing (matching content that is buried -> surface it)
+
+Gap-closing preference order before a gap becomes a question:
+  1. already in the package           -> terminology/emphasis finding, or nothing
+  2. addressable from the database     -> DB-sourced fill-in finding [R6.3]
+  3. true gap (neither)                -> clarification question for the candidate
+
+All findings use category: jd_gap, tagged per target_document
+(CV_Working_Copy or Letter_Working_Copy — never package_coherence, that is the
+hiring manager's). Gate passes when every gap finding is either resolved
+(applied + verified) or recorded as an accepted_gap [R6.11].
+
+------------------------------------------------------------------------------
+Two-phase, repeatable pattern [R6.4, R6.5, D-9] (design "JD Alignment Two-Phase Q&A Layer")
+------------------------------------------------------------------------------
+Phase 1 (Analysis) — non-interactive subagent invocation:
+  Reads: inputs/cv.normalized.md (+letter), inputs/jd.normalized.md,
+         inputs/database.normalized.md (+ any prior in-place DB additions).
+  Writes: findings/cv-jd-alignment-reviewer/iteration-<n>.json with every
+          finding it can produce WITHOUT user input (DB-sourced fill-ins,
+          terminology swaps, emphasis re-balancing);
+          jd_alignment/pending_questions.json (ordered true-gap questions).
+  Returns: count of pending questions.
+  Never prompts the user (non-interactive). True-gap findings are NOT emitted
+  in Phase 1 — they are produced in Phase 2 (fill-in or accepted_gap) once the
+  candidate answers.
+
+Orchestrator-mediated Q&A (between phases, not this agent's job):
+  The orchestrator reads pending_questions.json and asks ONE question at a
+  time, recording each verbatim answer in jd_alignment/answered_questions.json
+  (marking it "answered") before asking the next [R2.13, R6.6, Property 8].
+  This agent's config has NO write to answered_questions.json's content beyond
+  the jd_alignment/** scope; in practice the orchestrator owns answer-writing.
+
+Phase 2 (Integration) — non-interactive subagent invocation:
+  Reads: jd_alignment/answered_questions.json + all Phase 1 context.
+  Writes: fill-in findings (category: jd_gap) for answers supplying evidence;
+          accepted_gaps.md entries (with the VERBATIM declining response) for
+          answers that decline [R6.8, R12.2]; DB-in-place append (.md/.txt) or
+          database_sidecar.md (.docx/.pdf or no DB) with provenance [R13];
+          MAY append new pending_questions.json entries to repeat the cycle
+          [R6.5].
+  Returns: counts of fill-ins, accepted gaps, writeback destination, and any
+           new pending questions.
+
+Phase detection: the orchestrator names the phase in the invocation message.
+Fallback heuristic in the prompt — Phase 2 iff answered_questions.json has
+answers not yet integrated this iteration; else Phase 1.
+
+Repeatability bound: the Phase1 -> QA -> Phase2 cycle repeats within an
+iteration until no questions remain, bounded overall by the workflow's
+10-iteration cap. The prompt forbids manufacturing follow-up questions to keep
+the loop alive — append a new question only for a real, JD-driven gap that
+cannot be closed from existing material.
+
+------------------------------------------------------------------------------
+Accepted Gaps Register (accepted_gaps.md) [R12.1, R12.2]
+------------------------------------------------------------------------------
+Append-only. Each entry carries: originating Finding ID, originating agent
+(cv-jd-alignment-reviewer), the iteration accepted, the candidate's VERBATIM
+declining response, and a one-line missing-skill summary. The prompt forbids
+paraphrasing/softening/trimming the verbatim response. The orchestrator uses
+this register to exclude accepted gaps from every later gate evaluation
+[R12.3, R10.5, Property 5]; the hiring-manager reviewer reads it as context and
+may downgrade INVITE if cumulative gaps materially weaken fit [R12.4]. Accepted
+gaps are NEVER reopened or re-asked [R6.8, R12.3].
+
+------------------------------------------------------------------------------
+Database writeback / sidecar (with provenance) [R13] (design "Database writeback rules")
+------------------------------------------------------------------------------
+Destination chosen by the user DB's format:
+  DB_PATH .md/.txt   -> append in place to the user's file, preserve structure
+  DB_PATH .docx/.pdf -> do NOT modify; append to database_sidecar.md instead
+  no DB_PATH         -> create/append database_sidecar.md
+Rationale: .docx/.pdf are binary and unsafe for in-place text editing, so their
+elicited content goes to the sidecar and the candidate merges it manually (the
+orchestrator's termination report flags this) [R13.2, R13.3, R13.5]. NO backup
+of the DB is made — git is the candidate's versioning mechanism [R13.6].
+
+Provenance on every appended entry [R13.4]: iteration, related Finding ID,
+VERBATIM question, candidate's VERBATIM response, stored as metadata that does
+not disrupt readability — HTML-style comment block in .md/sidecar, bracketed
+annotation line in .txt. Append only; match the file's existing heading/bullet
+conventions; never reflow or reorder existing content.
+
+------------------------------------------------------------------------------
+Tools and toolsSettings (what was set, and why)
+------------------------------------------------------------------------------
+tools: read, write.  NO shell (LLM analysis + file writes only; no scripts).
+NO subagent (reviewers never spawn agents). NO user prompts (only the
+orchestrator talks to the candidate) [R6.9, R6.10].
+
+toolsSettings.write.allowedPaths [R15.3, R6.10] — design permissions-matrix row
+"cv-jd-alignment-reviewer | read, write | own state dir,
+findings/cv-jd-alignment-reviewer/**, jd_alignment/**, accepted_gaps.md,
+database_sidecar.md, user DB iff .md/.txt | (none) | no":
+  - .kiro/agent-state/cv-workflow/findings/cv-jd-alignment-reviewer/**
+        its iteration-<n>.json findings (persisted for audit + resume, R9.2)
+  - .kiro/agent-state/cv-workflow/jd_alignment/**
+        pending_questions.json (and Phase 2 follow-ups)
+  - .kiro/agent-state/cv-workflow/accepted_gaps.md
+        the Accepted_Gaps register (Phase 2 declines) [R12.1]
+  - .kiro/agent-state/cv-workflow/database_sidecar.md
+        the Database_Sidecar (Phase 2 writeback when DB binary/absent) [R13.2,13.3]
+  - .kiro/agent-state/cv-jd-alignment-reviewer/**
+        its own per-agent state dir (resume_state.md, archives) [R14]
+  - **/*.md  and  **/*.txt
+        the single tricky case: the user-provided Bullet_Point_Database lives
+        at an ARBITRARY user path (R1.4, R13.1), not under the workflow state
+        tree, and may be .md or .txt. The user DB path is not known at
+        authoring time, so the only way to make an in-place .md/.txt append
+        reachable via a static allowedPaths glob is to permit .md/.txt writes
+        broadly. The DISCIPLINE that the agent touches ONLY the exact DB_PATH
+        file (never any other .md/.txt in the workspace) is enforced in the
+        prompt (Write Discipline + Anti-Patterns), not by the glob. This is the
+        deliberate tradeoff for R13.1's in-place writeback to an unknown user
+        path while every OTHER write target stays tightly scoped. .docx/.pdf
+        databases are NOT writable here (no glob for them), which structurally
+        enforces R13.2 (binary DBs go to the sidecar, never edited in place).
+
+The agent has NO write to the Working Copies, the originals, the normalized
+inputs, backups/, or any other agent's state — Property 2 (single writer =
+cv-editor) holds. It has NO shell, so there are no allowedCommands to scope and
+nothing to rewrite at install time (unlike the editor and ATS reviewer).
+
+Global denied commands are moot (no shell tool at all). No environment
+variables anywhere [global steering rule + R15.1]: every path is
+workspace-relative or an explicit argument the orchestrator supplies
+(CV_NORMALIZED, JD_NORMALIZED, LETTER_NORMALIZED, DATABASE_NORMALIZED, DB_PATH,
+ITERATION, and the phase indicator).
+
+------------------------------------------------------------------------------
+Inputs (provided by the orchestrator, never from the environment)
+------------------------------------------------------------------------------
+  CV_NORMALIZED        inputs/cv.normalized.md (+ cv.anchors.json)   [required]
+  JD_NORMALIZED        inputs/jd.normalized.md                       [required]
+  LETTER_NORMALIZED    inputs/letter.normalized.md (+ anchors)       [iff letter]
+  DATABASE_NORMALIZED  inputs/database.normalized.md                 [iff DB provided]
+  DB_PATH              the user DB file at its original path + extension
+                       [iff DB provided; needed for .md/.txt in-place writeback]
+  ITERATION            current iteration n (filenames + resume state)
+  phase                Phase 1 (Analysis) or Phase 2 (Integration)
+Unlike the spell/format and language/content reviewers, this agent DOES read
+the JD — it is the core of its role [R6.1]. When no DATABASE_NORMALIZED is
+given, DB-driven gap-filling is disabled and more gaps become questions [R1.9].
+
+------------------------------------------------------------------------------
+How the prompt enforces the contract
+------------------------------------------------------------------------------
+- Two-phase non-interactive: explicit Phase 1 / Phase 2 sections; questions go
+  to pending_questions.json; the prompt repeatedly bans prompting the candidate
+  directly and bans batching questions [R6.4, R6.6, R6.9].
+- Gap-closing order: package -> database -> question; true-gap findings deferred
+  to Phase 2 [R6.3, R6.7, R6.8].
+- Verbatim discipline: accepted-gap responses and provenance blocks store the
+  candidate's words and the question word-for-word [R12.2, R13.4].
+- Writeback by format: .md/.txt in place (only DB_PATH), .docx/.pdf/absent ->
+  sidecar; append-only; provenance required; no DB backup [R13.1-13.6].
+- Schema-valid findings: category fixed to jd_gap, source_agent fixed,
+  target in {CV_Working_Copy, Letter_Working_Copy}, status in {open,
+  accepted_gap}, severity in {low, medium, high} (no blocking), non-empty
+  paragraph_key anchor; validate against finding.schema.json before finishing;
+  empty array [] + zero questions = gate passes.
+- Accepted gaps final; don't oscillate; don't pad follow-up questions.
+- Resume protocol: resume_state.md frontmatter
+  (status/agent/timestamp/input_hash/current_step/iteration) per
+  resume_state.schema.json; input_hash folds in the phase and
+  answered_questions content so a Phase1->Phase2 switch or a new answer batch
+  forces a fresh run; resume when hash matches and IN_PROGRESS, else archive +
+  restart [R14.1-R14.4].
+
+------------------------------------------------------------------------------
+Authoring-vs-installed path rewriting assumption
+------------------------------------------------------------------------------
+This config is the AUTHORING copy under cli-agents/cv/jd-alignment-reviewer/.
+Per design "Installation and discovery" [R16.6-R16.10, D-12], prompt is
+referenced here as the relative URI "file://prompt.md"; install_agents.py
+(task 15) copies the tree to a fixed installed root and generates a discovery
+config at .kiro/agents/cv-jd-alignment-reviewer.json whose "prompt" is an
+ABSOLUTE file:// URI. This reviewer has no shell, so it has no script paths to
+rewrite (unlike the editor and ATS reviewer). The authoring config keeps the
+relative form; do not bake machine-specific absolute paths into this tree (the
+generated .kiro/agents/cv-*.json and .kiro/cv-suite/ are gitignored, per C2).
+
+------------------------------------------------------------------------------
+Open follow-ups (not blocking task 11)
+------------------------------------------------------------------------------
+- Task 14 (orchestrator) must: spawn this reviewer 3rd in the REVIEW order as
+  Phase 1; if pending_questions > 0, run the QA phase asking ONE question at a
+  time and recording verbatim answers into answered_questions.json; then spawn
+  Phase 2; repeat the Phase1->QA->Phase2 cycle while new questions appear;
+  pass CV_NORMALIZED / JD_NORMALIZED / LETTER_NORMALIZED / DATABASE_NORMALIZED /
+  DB_PATH / ITERATION / phase explicitly; exclude accepted_gaps from gate
+  evaluation; and surface DB-in-place writeback + sidecar location in the
+  termination report [R12.5, R13.5].
+- Task 15 (install_agents.py) rewrites this config's prompt URI to an absolute
+  file:// path at install time.

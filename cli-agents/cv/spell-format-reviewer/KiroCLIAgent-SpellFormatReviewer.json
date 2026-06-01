@@ -1,0 +1,27 @@
+{
+    "name": "cv-spell-format-reviewer",
+    "description": "Spell and Formatting Reviewer Agent — a read-only reviewer that flags spelling, grammar, punctuation, capitalization inconsistencies, tense inconsistencies, date-format inconsistencies, number-format inconsistencies, and visible formatting defects across the CV_Working_Copy and (when present) the Letter_Working_Copy. LLM-only analysis: it never requires external spell-checking libraries and has no shell tool. It never consults the Job_Description. Its only writes are schema-valid Findings to its own findings/cv-spell-format-reviewer/ subtree and its per-agent state dir. It never edits any Working Copy, never prompts the user, and never spawns subagents.",
+    "prompt": "file://prompt.md",
+    "tools": [
+        "read",
+        "write"
+    ],
+    "toolAliases": {},
+    "toolsSettings": {
+        "write": {
+            "allowedPaths": [
+                ".kiro/agent-state/cv-workflow/findings/cv-spell-format-reviewer/**",
+                ".kiro/agent-state/cv-spell-format-reviewer/**"
+            ]
+        }
+    },
+    "hooks": {},
+    "mcpServers": {},
+    "useLegacyMcpJson": false,
+    "resources": [],
+    "allowedTools": [
+        "read",
+        "write"
+    ],
+    "model": null
+}

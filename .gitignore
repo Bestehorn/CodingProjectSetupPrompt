@@ -1,1 +1,17 @@
 tmp/*
+
+# CV Customizer Agent Suite — runtime state and install outputs.
+# Only the cli-agents/cv/ authoring tree is version-controlled; the following
+# are regenerated per machine (machine-specific absolute paths) or per run.
+.kiro/agent-state/
+.kiro/agents/cv-*.json
+.kiro/cv-suite/
+
+# Python test/byproduct caches (the CV suite introduces pytest into the repo).
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Hypothesis property-testing local database/cache (example DB, cached
+# constants, unicode tables). Machine-specific and regenerated automatically.
+.hypothesis/

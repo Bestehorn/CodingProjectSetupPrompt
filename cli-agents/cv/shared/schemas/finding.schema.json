@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kiro.dev/specs/cv-customizer-agents/finding.schema.json",
+  "title": "Finding",
+  "description": "The unified Finding emitted by every reviewer agent in the CV Customizer Agent Suite (Requirement 9.1, design 'Data Models / Finding'). A Finding is a single structured observation about one of the Working Copies (or the package as a whole). 'current' and 'proposed' are optional because not every Finding carries text to change (e.g. a structural ATS hazard, or a hiring-manager concern, may describe a location and a rationale without a literal text replacement).",
+  "type": "object",
+  "required": [
+    "id",
+    "source_agent",
+    "iteration",
+    "target_document",
+    "category",
+    "severity",
+    "anchor",
+    "rationale",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier unique within the workflow run."
+    },
+    "source_agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical name of the agent that produced the Finding (e.g. cv-spell-format-reviewer)."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The orchestrator iteration number in which the Finding was produced."
+    },
+    "target_document": {
+      "type": "string",
+      "enum": [
+        "CV_Working_Copy",
+        "Letter_Working_Copy",
+        "package_coherence"
+      ],
+      "description": "Which document the Finding applies to; 'package_coherence' is a cross-document inconsistency."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "spelling",
+        "formatting",
+        "language",
+        "jd_gap",
+        "ats",
+        "hiring_manager_concern",
+        "length"
+      ],
+      "description": "The kind of issue. 'length' is used by the page-constraint reducer."
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "blocking"
+      ],
+      "description": "Severity of the Finding."
+    },
+    "anchor": {
+      "$ref": "#/$defs/anchor"
+    },
+    "current": {
+      "type": "string",
+      "description": "The current text/formatting state at the anchor, where applicable. Optional."
+    },
+    "proposed": {
+      "type": "string",
+      "description": "The proposed text/formatting change, where applicable. Optional."
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why the change is recommended, with citations where appropriate."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "applied",
+        "verification_failed",
+        "accepted_gap",
+        "wont_fix"
+      ],
+      "description": "Lifecycle status of the Finding."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "A stable reference into the target document identifying where the Finding applies. The schema is intentionally permissive so it accommodates BOTH the design's example anchor (an object with 'section' + 'paragraph_key' + 'match_text') AND the object anchors emitted by ats_structural.py (a 'type' + 'hazard' object carrying e.g. 'paragraph_key', 'section_index', 'table_index', or 'part'). At least one location-identifying key must be present so an empty object is rejected; any additional keys are allowed for forward compatibility (e.g. package_coherence anchors spanning both documents).",
+      "anyOf": [
+        {
+          "required": [
+            "paragraph_key"
+          ]
+        },
+        {
+          "required": [
+            "section"
+          ]
+        },
+        {
+          "required": [
+            "section_index"
+          ]
+        },
+        {
+          "required": [
+            "table_index"
+          ]
+        },
+        {
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "paragraph",
+            "section",
+            "header",
+            "footer",
+            "table",
+            "unanchored"
+          ],
+          "description": "ats_structural.py anchor discriminator."
+        },
+        "hazard": {
+          "type": "string",
+          "description": "ats_structural.py hazard sub-type (e.g. text_box, multi_column)."
+        },
+        "paragraph_key": {
+          "type": "string",
+          "description": "Stable paragraph key from docx_normalize.py."
+        },
+        "section": {
+          "type": "string",
+          "description": "Nearest preceding heading text (human-readable section name)."
+        },
+        "section_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based document section index (multi-column / header / footer hazards)."
+        },
+        "table_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based table index (layout-table hazard)."
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Column count for a multi-column section hazard."
+        },
+        "part": {
+          "type": "string",
+          "description": "Header/footer part name (e.g. /word/header1.xml)."
+        },
+        "match_text": {
+          "type": "string",
+          "description": "Substring within the anchored paragraph the Finding targets."
+        },
+        "text": {
+          "type": "string",
+          "description": "Snippet of the anchored paragraph's text (context)."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
