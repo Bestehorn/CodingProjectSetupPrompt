@@ -1,0 +1,860 @@
+# Claude Code Project Setup Prompt — v1 (Dual-IDE, Migration-Aware)
+# ================================================================
+# Paste this prompt into Claude Code (claude) to set up a project for
+# professional Python development with Claude-native configuration.
+#
+# It works for THREE situations:
+#   1. A brand-new project: scaffolds everything from scratch for Claude Code.
+#   2. An existing project already configured for Kiro (a `.kiro/` tree with
+#      steering files, hooks, MCP config, and custom agents): adds a parallel
+#      `.claude/` configuration so the project is usable with Claude Code WHILE
+#      KEEPING IT FULLY USABLE WITH KIRO. Nothing under `.kiro/` is removed or
+#      broken.
+#   3. An existing project with neither: scaffolds Claude config and migrates
+#      any ad-hoc rules it finds.
+#
+# This is the Claude Code counterpart of KiroProjectSetupPrompt.v2.txt. It
+# produces the same engineering standards, expressed in Claude Code's native
+# file formats: CLAUDE.md, .claude/rules/, .claude/settings.json (permissions +
+# hooks), .mcp.json, .claude/commands/, and .claude/agents/.
+#
+# It reuses the SAME templates/ directory as the Kiro prompt (pyproject, ruff,
+# pre-commit, git wrappers, aws_config) — those artifacts are assistant-agnostic.
+# The custom agents come from the claude-agents/ directory in this repo.
+
+---
+
+## GLOBAL EXECUTION RULES
+
+### Rule 0: Coexistence is mandatory (NEVER break Kiro)
+
+This prompt is ADDITIVE. If the project has a `.kiro/` directory, treat it as
+read-only reference material:
+
+- NEVER delete, move, or rewrite anything under `.kiro/` (steering, hooks,
+  settings, specs, agent-state).
+- The Claude Code configuration lives under `.claude/`, plus a root `CLAUDE.md`
+  and a root `.mcp.json`. These are NEW, parallel files.
+- Where a Claude file would duplicate a Kiro file's intent (e.g. a steering
+  rule), the Claude file is a faithful translation, not a replacement. The
+  project ends up usable by BOTH assistants from a single working tree.
+- Kiro reads `.kiro/agents/`; Claude Code reads `.claude/agents/`. Kiro reads
+  `.kiro/steering/`; Claude Code reads `CLAUDE.md` + `.claude/rules/`. They do
+  not collide.
+
+### Rule 1: Migration-aware merge (applies to EVERY file this prompt touches)
+
+For every file or directory this prompt mentions:
+
+1. DETECT  — check whether the target path already exists.
+2. ANALYZE — if it exists, read it and identify project-specific content
+             (custom rules, custom permissions, custom MCP servers, custom
+             interpreter paths, custom coverage thresholds, etc.).
+3. MERGE   — keep all existing content; add only what is missing. When this
+             standard introduces new keys/sections, add them. When it would
+             change an existing value, KEEP the existing value.
+4. PRESERVE — never silently overwrite project-specific configuration.
+5. REPORT   — in the final report, list (a) what was preserved, (b) what was
+             added, (c) any conflicts that need user review.
+
+When the standard and existing config conflict on a value (different Python
+version, coverage threshold, line length, test command), KEEP the existing
+value and FLAG the conflict. Do not delete legacy config until the
+corresponding migration has completed successfully and you have verified the
+new config works.
+
+### Rule 2: No environment variables in shell sessions
+
+This system hosts multiple projects. Setting shell environment variables
+(`AWS_PROFILE`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `GITHUB_TOKEN`,
+`GITLAB_TOKEN`, etc.) leaks state across projects and causes cross-project
+breakage.
+
+- Never `set`, `setx`, `export`, or `$env:VAR=...` an environment variable.
+- Pass profile/region explicitly to boto3 sessions and CLI commands.
+- Read credentials from project-local files (`config/`, `credentials/`).
+
+CLARIFICATION: the `env` block inside `.mcp.json` and the `env` block inside
+`.claude/settings.json` are NOT shell environment variables. They are scoped
+configuration consumed by a specific subprocess (an MCP server) or by Claude
+Code itself. They do not pollute global shell state. Leave those blocks intact.
+
+### Rule 3: Read complete output
+
+When running a shell command, never truncate, tail, head, or paginate its
+output. See `.claude/rules/no-output-shortening.md` (created by this prompt)
+for the full rule and the forbidden patterns.
+
+### Rule 4: Paths
+
+Assume the project root is the working directory. Adjust path examples to the
+host OS (Windows uses `\`, *nix uses `/`). Use `pathlib.Path` in Python code;
+never `os.path`.
+
+### Rule 5: No ad-hoc temporary variables in CLI commands
+
+Prefer a single pipeline or inlined literals over inventing one-off shell
+variables. If a variable is genuinely unavoidable, use `$v1`/`$v2`/`$v3` for
+scalars and `$l1`/`$l2`/`$l3` for collections; if you'd need more than three,
+write a real script under `tmp/`. (In Claude Code this is a cleanliness rule,
+not an approval-system workaround — see the steering note in Part 4.)
+
+### Rule 6: Detect the situation first, then act
+
+Before doing anything, run a short discovery and STATE which situation applies:
+
+```
+- Is this a git repo? (git rev-parse --is-inside-work-tree)
+- Does .kiro/ exist? (Kiro project → coexistence mode, Rule 0)
+- Does .claude/ already exist? (partial prior setup → Rule 1 merge)
+- Is there a pyproject.toml / requirements*.txt / setup.py / Pipfile?
+- Does src/ , test/ , cdk/ exist?
+- What is the git host? (.git/config remote origin → GitHub / GitLab / none)
+- Host OS? (affects venv activation path and templates)
+```
+
+Record this as "Situation" at the top of the final report.
+
+---
+
+## PART 0 — MCP SERVERS (CONFIGURE AND VERIFY)
+
+Claude Code reads MCP servers from `.mcp.json` in the project root (project
+scope, checked into git). This is the analogue of Kiro's
+`.kiro/settings/mcp.json`.
+
+### Part 0.1 — Configure `.mcp.json`
+
+Apply Rule 1. Read the existing `.mcp.json` first; preserve every existing
+server entry under `mcpServers`; only ADD entries whose server name is not
+already present.
+
+IMPORTANT format differences from Kiro's mcp.json:
+- Claude Code nests servers under a top-level `"mcpServers"` key.
+- `timeout` is in MILLISECONDS (Kiro used seconds). Convert: Kiro `60` → `60000`.
+- There is NO per-tool `autoApprove` field. Auto-approval is done with
+  permission `allow` rules in `.claude/settings.json` (see Part 0.3).
+- `disabled` is not used; simply omit a server to not configure it.
+- `type: "stdio"` is supported and is correct for the uvx-launched AWS servers.
+
+If the project is a Kiro project, READ `.kiro/settings/mcp.json` and translate
+each enabled server into `.mcp.json` (same `command`/`args`/`env`, convert
+`timeout`, drop `autoApprove`/`disabled`). Do not modify the Kiro file.
+
+The canonical server set for an AWS Python project (only add those relevant to
+the project; a non-AWS project may need none):
+
+```json
+{
+  "mcpServers": {
+    "awslabs.aws-documentation-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["awslabs.aws-documentation-mcp-server@latest"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "AWS_DOCUMENTATION_PARTITION": "aws",
+        "MCP_USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+      },
+      "timeout": 60000
+    },
+    "awslabs.aws-iac-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["awslabs.aws-iac-mcp-server@latest"],
+      "env": { "FASTMCP_LOG_LEVEL": "ERROR" },
+      "timeout": 60000
+    },
+    "awslabs.aws-api-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["awslabs.aws-api-mcp-server@latest"],
+      "env": { "READ_OPERATIONS_ONLY": "true" },
+      "timeout": 60000
+    },
+    "strands-agents-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["strands-agents-mcp-server"],
+      "env": { "FASTMCP_LOG_LEVEL": "INFO" },
+      "timeout": 60000
+    },
+    "awslabs.amazon-bedrock-agentcore-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["awslabs.amazon-bedrock-agentcore-mcp-server@latest"],
+      "env": { "FASTMCP_LOG_LEVEL": "ERROR" },
+      "timeout": 60000
+    }
+  }
+}
+```
+
+Notes carried over from the Kiro standard (still true here):
+- `MCP_USER_AGENT` is the documented workaround for corporate proxies/firewalls
+  that block the default user agent on the AWS Doc server.
+- `READ_OPERATIONS_ONLY=true` enforces a read-only allow-list on the AWS API
+  server. Mutating AWS infrastructure goes through CDK, not this server.
+- Do NOT put `AWS_PROFILE` in any `env` block. Profiles are resolved through
+  `src/aws_config.py` at boto3 session-creation time.
+- On Windows, `uvx` works with the same `args` shown above (no `--from`
+  console-script form is required for Claude Code's stdio launch). If a server
+  fails to start on Windows, fall back to
+  `["--from", "<pkg>@latest", "<pkg>.exe"]` and record it in the report.
+
+### Part 0.2 — Auto-approve the MCP tools (permissions, not autoApprove)
+
+In `.claude/settings.json` (Part 5), add `permissions.allow` rules so Claude is
+not prompted on every documentation lookup. Translate each Kiro `autoApprove`
+list into `mcp__<server>__<tool>` allow rules, or use a blanket per-server rule:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__awslabs.aws-documentation-mcp-server__*",
+      "mcp__awslabs.aws-iac-mcp-server__*",
+      "mcp__awslabs.aws-api-mcp-server__*",
+      "mcp__strands-agents-mcp-server__*",
+      "mcp__awslabs.amazon-bedrock-agentcore-mcp-server__*"
+    ]
+  }
+}
+```
+
+### Part 0.3 — Verify each MCP server is reachable
+
+After writing `.mcp.json`, verify connectivity. Two ways:
+1. Interactive: run `/mcp` inside Claude Code and confirm each server shows as
+   connected.
+2. From the shell: `claude mcp list` reports configured servers and status.
+
+If a server fails:
+1. Confirm `uv`/`uvx` are on PATH (`uvx --version`).
+2. Run the underlying command manually with the exact args to surface the real
+   error (e.g. `uvx awslabs.aws-documentation-mcp-server@latest --help`). Apply
+   Rule 3 — read the full output.
+3. For a network/proxy error on the AWS Doc server, confirm `MCP_USER_AGENT` is
+   set to a UA your network allows.
+
+DO NOT skip verification — a silently broken server fails mid-task with
+confusing errors, and several agents/rules mandate consulting these servers.
+
+---
+
+## PART 1 — DIRECTORY STRUCTURE
+
+Apply Rule 1. Create only what is missing. Never delete existing dirs (Rule 0).
+
+Project source layout (shared with the Kiro standard — create only if missing):
+```
+cdk/               # AWS CDK infrastructure (AWS projects)
+config/            # Config files (incl. gitlab.json, aws_accounts.json)
+credentials/       # Git host credential files (gitignored, except .template)
+docs/              # Project documentation
+scripts/           # CLI tools and utilities
+src/               # Production source code
+test/              # Unit tests (mirrors src/)
+test/integration/  # Integration tests requiring external systems
+tmp/               # Temporary files (gitignored)
+```
+
+Claude Code configuration layout (NEW — this is what makes the project
+Claude-usable):
+```
+CLAUDE.md                      # always-on project memory (root)
+.mcp.json                      # MCP servers (root)
+.claude/
+  settings.json                # permissions + hooks (checked in, team-shared)
+  settings.local.json          # personal overrides (gitignored)
+  rules/                       # path-scoped + always-on rule files (≈ steering)
+  commands/                    # slash commands (≈ Kiro userTriggered hooks)
+  agents/                      # custom subagents (≈ .kiro/agents/)
+  agent-state/                 # long-running-agent checkpoint state (gitignored)
+```
+
+If `.kiro/` exists, leave it exactly as-is. You are adding the `.claude/` tree
+beside it.
+
+---
+
+## PART 2 — VIRTUAL ENVIRONMENT AND PRE-COMMIT HOOK
+
+Identical to the Kiro standard — these are assistant-agnostic.
+
+### Part 2.1 — venv (mandatory)
+1. If `venv/` does not exist: `python -m venv venv`, activate
+   (`venv\Scripts\activate` on Windows, `source venv/bin/activate` on *nix),
+   `pip install -e ".[dev,cdk]"` (the `[cdk]` extra is optional for non-AWS
+   projects).
+2. If `venv/` exists, verify it works and `pip install -e ".[dev,cdk]"` to
+   bring deps current.
+3. STOP all further setup if the venv cannot be activated.
+
+### Part 2.2 — Pre-commit hook (git, not Claude)
+1. If `.pre-commit-config.yaml` does not exist, copy
+   `templates/pre-commit-config.yaml.template` to the project root. If it
+   exists, apply Rule 1 (preserve existing repos/hooks; add ruff/ruff-format if
+   no ruff hooks present; preserve `exclude` and pinned `rev`).
+2. If `scripts/setup-hooks.sh` does not exist, copy
+   `templates/setup-hooks.sh.template`. If it exists, preserve it.
+3. After dev deps install, run `bash scripts/setup-hooks.sh` to generate
+   `.git/hooks/pre-commit`.
+
+What runs where: pre-commit hook → ruff + ruff-format (fast); CI → ruff + mypy
++ bandit + pytest (full). Optionally ALSO add a Claude Code `Stop` hook
+(Part 6) that runs ruff, but the git hook remains the source of truth.
+
+---
+
+## PART 3 — .gitignore
+
+Apply Rule 1. Read existing entries, add only those missing. In addition to the
+standard Python/venv/IDE/testing/AWS/temp entries from the Kiro standard, ADD
+the Claude Code entries:
+
+```
+# Claude Code (machine/personal, not shared)
+.claude/settings.local.json
+.claude/agent-state/
+
+# Sensitive config
+config/aws_accounts.json
+config/gitlab.json
+
+# Git host credentials (allow templates and README)
+credentials/*
+!credentials/*.template
+!credentials/README.md
+```
+
+Do NOT gitignore `.claude/settings.json`, `.claude/rules/`, `.claude/commands/`,
+`.claude/agents/`, `.mcp.json`, or `CLAUDE.md` — those are team-shared and
+checked in. Do NOT add `.kiro/` to `.gitignore` if it is already tracked.
+
+---
+
+## PART 4 — pyproject.toml, RULES SOURCE, AND DEPENDENCIES
+
+Dependency migration to `pyproject.toml` (PEP 621) and the tool configuration
+(`[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`,
+`setuptools-scm`) are assistant-agnostic and IDENTICAL to the Kiro standard.
+Apply Rule 1: preserve existing sections and values; add only what is missing.
+
+If the project already went through the Kiro setup, its `pyproject.toml` is
+already correct — verify it and move on. If not, migrate legacy formats
+(`requirements*.txt`, `setup.py`, `setup.cfg`, `Pipfile`, poetry) into
+`pyproject.toml` exactly as the Kiro prompt's Part 4 specifies, and configure:
+
+- `[tool.ruff]` line-length 120, target py310, the pylint-equivalent selects
+  (E, F, W, I, C90, PLR0401/0801/0912/0913/0914/0915), mccabe max-complexity 10.
+- `[tool.mypy]` ignore_missing_imports, exclude `src/_version.py`.
+- `[tool.pytest.ini_options]` `--cov=src --cov-report=term-missing
+  --cov-fail-under=80` (preserve a stricter existing threshold).
+- `[tool.bandit]` exclude test/venv, skip B101.
+- `setuptools-scm` `version_file = "src/_version.py"`.
+
+(See KiroProjectSetupPrompt.v2.txt Part 4 for the full tables; the content is
+the same. This prompt does not duplicate it to avoid drift.)
+
+---
+
+## PART 5 — .claude/settings.json (PERMISSIONS) and AWS / GIT WRAPPERS
+
+### Part 5.1 — settings.json permissions
+
+Create or merge `.claude/settings.json`. This file holds permissions (and, in
+Part 6, hooks). It is the enforcement layer that Kiro expressed through each
+agent's `toolsSettings`.
+
+Apply Rule 1. A baseline that encodes the project's hard rules:
+
+```json
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "mcp__awslabs.aws-documentation-mcp-server__*",
+      "mcp__awslabs.aws-iac-mcp-server__*",
+      "mcp__awslabs.aws-api-mcp-server__*",
+      "mcp__strands-agents-mcp-server__*",
+      "mcp__awslabs.amazon-bedrock-agentcore-mcp-server__*",
+      "Bash(ruff check:*)",
+      "Bash(ruff format:*)",
+      "Bash(mypy:*)",
+      "Bash(bandit:*)",
+      "Bash(pytest:*)",
+      "Bash(python scripts/github_wrapper.py:*)",
+      "Bash(python scripts/gitlab_wrapper.py:*)"
+    ],
+    "deny": [
+      "Bash(aws cloudformation create-stack:*)",
+      "Bash(aws cloudformation update-stack:*)",
+      "Bash(aws cloudformation delete-stack:*)",
+      "Bash(aws s3api create-bucket:*)",
+      "Bash(aws s3api delete-bucket:*)",
+      "Bash(aws lambda create-function:*)",
+      "Bash(aws lambda update-function-configuration:*)",
+      "Read(./config/aws_accounts.json)",
+      "Read(./credentials/**)"
+    ]
+  }
+}
+```
+
+Tailor to the project:
+- Drop the AWS/CDK deny rules and the AWS MCP allow rules for non-AWS projects.
+- The `Read(...)` deny rules keep secrets out of context; keep them.
+- These deny rules are the enforced version of the steering rules
+  `cdk-deployment-only.md` and (with the wrapper allow rules) the
+  "wrapper scripts only" rule. Permissions are session-wide (they apply to the
+  main session and all subagents) and deny always wins over allow.
+
+### Part 5.2 — AWS account configuration (AWS projects only)
+
+Identical to the Kiro standard. Copy `templates/aws_config.py.template` to
+`src/aws_config.py` and `templates/aws_accounts.json.template` to
+`config/aws_accounts.json.template` (and to `config/aws_accounts.json` as a
+stub). If `src/aws_config.py` exists but lacks `get_account`/`get_account_id`/
+`get_profile`/`get_region`/`list_environments`, ADD the missing methods using
+the template as reference; do not overwrite the existing implementation.
+
+### Part 5.3 — Git repository wrapper scripts
+
+Identical to the Kiro standard. Detect the host from `.git/config` remote
+origin. For GitHub, copy `templates/github_wrapper.py.template` to
+`scripts/github_wrapper.py` and stub `credentials/github-pat.txt(.template)`.
+For GitLab, copy `templates/gitlab_wrapper.py.template` to
+`scripts/gitlab_wrapper.py` and stub `config/gitlab.json(.template)`. Verify
+with a read-only command once a real token is pasted
+(`python scripts/github_wrapper.py list-workflows`).
+
+NOTE on `gh`/`glab`: the Kiro standard forbids `gh`/`glab` because of its
+token-store/SSO constraints, routing everything through the wrapper. Carry that
+rule over ONLY if those constraints apply in your environment. Claude Code has
+solid `gh` support; if the constraints do not apply, you MAY instead allow
+`Bash(gh *)` and skip the wrappers — state which choice you made in the report.
+
+---
+
+## PART 6 — HOOKS (settings.json `hooks`) and SLASH COMMANDS
+
+Kiro folded two unrelated things under "hooks". They split cleanly in Claude
+Code:
+
+### Part 6.1 — User-invoked workflows → slash commands (.claude/commands/)
+
+Kiro's `userTriggered` + `askAgent` hooks (run-ci, test-coverage, sync-docs,
+git-commit, git-rebase, git-push) become **slash commands**: one Markdown file
+per command under `.claude/commands/`, whose body is the hook's prompt verbatim.
+Invoke with `/run-ci`, `/git-push`, etc.
+
+If the project is a Kiro project, READ each `.kiro/hooks/*.kiro.hook`, and for
+every hook whose `then.type` is `askAgent`, create
+`.claude/commands/<name>.md` whose body is the hook's `then.prompt` (preserve
+every step). Create at minimum:
+
+`.claude/commands/run-ci.md`:
+```markdown
+---
+description: Run the full CI workflow locally (ruff, mypy, bandit, pytest) and fix every issue.
+allowed-tools: Bash, Read, Edit, Grep, Glob
+---
+Run the project's full CI workflow locally:
+1. Read `.gitlab-ci.yml` (or `.github/workflows/*.yml`) to confirm which checks CI runs.
+2. Run each one inside the venv. Read complete output (no tail/head/Select-Object).
+3. Fix every issue before continuing — never skip, disable, or delete a check.
+4. Report which checks passed, which failed, and what was fixed.
+Continue until every check passes.
+```
+
+`.claude/commands/test-coverage.md`:
+```markdown
+---
+description: Run coverage analysis and add tests until the configured threshold is met.
+allowed-tools: Bash, Read, Edit, Grep, Glob
+---
+Analyze and improve test coverage:
+1. `pytest test/ --cov=src --cov-report=term-missing --cov-report=html` (inside the venv).
+2. Read the configured threshold from `[tool.pytest.ini_options]` in pyproject.toml.
+3. Identify uncovered files and lines, prioritizing critical paths.
+4. Add tests until the threshold is met (use hypothesis where property-based testing fits).
+5. Report initial vs final coverage, tests added, and any remaining gaps with justification.
+```
+
+`.claude/commands/sync-docs.md`:
+```markdown
+---
+description: Reconcile docs/ with the current implementation.
+allowed-tools: Bash, Read, Edit, Grep, Glob
+---
+Synchronize documentation:
+1. Read everything in docs/ and README.md.
+2. Walk src/, cdk/, scripts/ to identify components, classes, entry points.
+3. List discrepancies (docs missing components, docs describing removed components, outdated examples).
+4. Update docs to match the current implementation.
+5. Refresh `docs/forLLMConsumption.md` so it provides complete context for an AI assistant.
+6. Report files updated and changes made.
+```
+
+`.claude/commands/git-commit.md`, `git-rebase.md`, `git-push.md`: port the
+shared git workflow (gitignore compliance → integrate remote → stage/commit →
+pre-commit-hook handling → push → monitor CI). The git-push command must, after
+pushing, determine the host and monitor CI to a terminal state via the wrapper
+script (`scripts/github_wrapper.py` / `scripts/gitlab_wrapper.py`), fixing
+failures and looping until green — never `--no-verify`, never abandoning a red
+pipeline. (Reuse the body of Kiro's `git-workflow-shared.md` +
+`git-*.kiro.hook` verbatim if present.)
+
+### Part 6.2 — Event-driven automation → settings.json `hooks`
+
+Kiro's `fileEdited` / `preToolUse` / `postToolUse` / `agentStop` / `promptSubmit`
+triggers become Claude Code `hooks` in `.claude/settings.json`. Claude Code
+hooks are richer (they can BLOCK or REWRITE a tool call). Add only what the
+project needs. Two high-value ones that ENFORCE rules the Kiro steering files
+could only request:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/no-env-vars.sh"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/ruff-on-stop.sh"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Create the referenced scripts under `.claude/hooks/` (make them executable):
+- `no-env-vars.sh`: reads the hook JSON on stdin, and if the Bash command
+  matches `export `, `setx `, or `$env:` for AWS_*/GITHUB_TOKEN/GITLAB_TOKEN,
+  exits with code 2 (blocks the call) and prints why. This enforces
+  `no-environment-vars.md`.
+- `ruff-on-stop.sh`: runs `venv` ruff + ruff-format check over `src/ test/
+  scripts/ cdk/` and reports. Non-blocking; informational.
+
+These hooks are OPTIONAL. For a single trusted user the rule text in
+`.claude/rules/` is often enough; add hooks when you want hard enforcement.
+State in the report which hooks you created.
+
+---
+
+## PART 7 — CI / CD WORKFLOW
+
+Assistant-agnostic and identical to the Kiro standard. Apply Rule 1: preserve
+existing CI; add only the missing standard jobs (ruff, ruff-format check, mypy,
+bandit, pytest with coverage). Migrate black/isort/flake8 → ruff and pylint →
+ruff where the rule set matches, per Kiro Part 7. Do not change existing Python
+version, coverage threshold, or deployment stages; flag conflicts.
+
+---
+
+## PART 8 — STEERING FILES → CLAUDE.md + .claude/rules/  AND  AGENTS
+
+This is the heart of the Claude port. Kiro steering files become two things:
+a concise always-on `CLAUDE.md`, and a set of rule files under `.claude/rules/`.
+
+### Part 8.1 — CLAUDE.md (root, always loaded)
+
+Create or merge a root `CLAUDE.md`. Keep it lean — it loads every session. It
+should state the universal, short rules and POINT to the detailed rule files.
+If a Kiro project, distill `.kiro/steering/*.md` (the `inclusion: always` ones)
+into this file; do not copy the long ones verbatim (those become rule files).
+
+Template:
+```markdown
+# Project Engineering Standards (Claude Code)
+
+This project is configured for both Kiro and Claude Code. Detailed rules live
+in `.claude/rules/`. The non-negotiable essentials:
+
+## Environment
+- ALWAYS work inside the project venv. Recreate it if missing/broken; never
+  `pip install` without it. See `.claude/rules/use-venv.md`.
+- NEVER set shell environment variables (AWS_PROFILE, GITHUB_TOKEN, …). Pass
+  profile/region explicitly; read credentials from config/ and credentials/.
+  See `.claude/rules/no-environment-vars.md`.
+
+## Coding standards (no exceptions)
+- JSON field access via constants, not string literals.
+- Absolute imports only; logging not print; named parameters at all call sites.
+- Errors are exceptions (custom exceptions take a `details=None` kwarg).
+- `pathlib.Path`, never `os.path`. Line length 120.
+- Full detail: `.claude/rules/coding-standards.md`.
+
+## Evidence and honesty
+- Every claim to the user is backed by command output, file contents, test
+  results, or a documentation lookup. No hedge words for actual behavior.
+  See `.claude/rules/no-guessing.md`.
+
+## Tests
+- Tests must pass. Never skip/xfail/delete a test to go green; fix the root
+  cause. See `.claude/rules/tests-must-not-fail.md`.
+
+## Before / after any task
+- Pre-work: read docs/forLLMConsumption.md, docs/ProjectDesign.md,
+  docs/lessons-learned.md. See `.claude/rules/pre-work.md`.
+- Post-activity: run tests + ruff + mypy + bandit; update docs; clean tmp/.
+  See `.claude/rules/post-activity.md`.
+
+## Documentation MCP servers
+- Before using AWS/CDK/Strands/AgentCore APIs, consult the corresponding MCP
+  server (configured in .mcp.json). See `.claude/rules/use-doc-mcp-servers.md`.
+
+## Read complete command output; never truncate with tail/head/Select-Object.
+  See `.claude/rules/no-output-shortening.md`.
+```
+
+If a root `CLAUDE.md` already exists, MERGE (add missing sections; keep the
+project's content). You may also `@import` other files into CLAUDE.md with the
+`@path/to/file` syntax if the project prefers that layout.
+
+### Part 8.2 — .claude/rules/ (the detailed rules)
+
+Create one rule file per Kiro steering file. The mapping of Kiro's `inclusion`
+field:
+
+| Kiro inclusion | Claude Code rule file |
+|---|---|
+| `always` | `.claude/rules/<name>.md` with NO frontmatter (loads every session) — OR fold short ones into CLAUDE.md. |
+| `fileMatch` + `fileMatchPattern: "<glob>"` | `.claude/rules/<name>.md` with `paths:` frontmatter (loads when Claude touches a matching file). |
+| `manual` | a slash command (Part 6.1) or a skill; invoke with `/<name>`. |
+
+Frontmatter for a path-scoped rule:
+```markdown
+---
+paths:
+  - "test/**/*.py"
+---
+# Testing Standards
+...
+```
+
+Create these rule files (porting content verbatim from `.kiro/steering/` if
+present, else from KiroProjectSetupPrompt.v2.txt Part 8):
+
+Always-on (no `paths:`):
+- `coding-standards.md`, `design-principles.md`, `file-organization.md`,
+  `pre-work.md`, `post-activity.md`, `tech-stack.md`, `aws-config.md`,
+  `use-venv.md`, `no-environment-vars.md`, `no-output-shortening.md`,
+  `no-cli-temp-variables.md`, `use-lessons-learned.md`,
+  `use-doc-mcp-servers.md`, `document-user-prompts.md`, `no-guessing.md`,
+  `always-test-e2e.md`, `tests-must-not-fail.md`, `use-git-wrapper-scripts.md`,
+  `remote-ci-must-pass.md`, `project-specific.md`.
+
+Path-scoped (`paths:`):
+- `testing.md` → `["test/**/*.py"]`
+- `dependencies.md` → `["**/*.py"]`
+- `cdk-rules.md`, `cdk-deployment-only.md` → `["cdk/**/*.py"]`
+- `lambda-rules.md` → `["src/lambda_handlers/**/*.py"]`
+
+IMPORTANT caveat to record in the report: Claude Code loads a `paths:` rule
+when it READS a matching file (reactive), whereas Kiro `fileMatch` can load it
+proactively. For a rule that must always be in effect regardless of which file
+is open, keep its essence in `CLAUDE.md` (always-on) and use the `paths:` file
+for the longer detail.
+
+Adjust the `no-cli-temp-variables.md` rule: keep the "prefer pipelines / inline
+literals / write a script in tmp/" guidance, but note that Claude Code does NOT
+re-prompt on new shell variable names (that motivation was Kiro-specific). It
+remains a cleanliness rule, not an approval workaround.
+
+For the four "hard" rules (`no-environment-vars`, `tests-must-not-fail`,
+`cdk-deployment-only`, `use-git-wrapper-scripts`): keep the rule TEXT and ALSO
+back them with the `permissions.deny` rules (Part 5.1) and `PreToolUse` hook
+(Part 6.2) so the prohibition is enforced, not merely requested.
+
+### Part 8.3 — Install the custom agents (.claude/agents/)
+
+Install the translated subagents from this repo's `claude-agents/` directory
+into the project's `.claude/agents/`:
+
+```bash
+mkdir -p .claude/agents
+cp claude-agents/dead-code/dead-code-removal-agent.md         .claude/agents/
+cp claude-agents/doc-review/doc-reviewer-agent.md             .claude/agents/
+cp claude-agents/ci-worker/ci-workflow-agent.md               .claude/agents/
+cp claude-agents/issue-housekeeping/issue-housekeeping-agent.md .claude/agents/
+cp claude-agents/issue-intake/issue-intake-agent.md           .claude/agents/
+cp claude-agents/product-management/product-management-agent.md .claude/agents/
+cp claude-agents/spec-review/spec-review-agent.md             .claude/agents/
+cp claude-agents/spec-review/spec-prompt-author-agent.md      .claude/agents/
+cp claude-agents/cv/cv-*.md                                   .claude/agents/
+```
+
+(Install only the agents the project needs. See `claude-agents/README.md` for
+per-agent tool/permission notes and `claude-agents/cv/README.md` for the CV
+suite. The CV orchestrator must be run as the MAIN session —
+`claude --agent cv-orchestrator` — because Claude Code subagents cannot spawn
+subagents.)
+
+If this project is a Kiro project, its `.kiro/agents/` stays untouched; the
+`.claude/agents/` copies are additive.
+
+### Part 8.4 — Conformance check
+
+After creating/merging rule files, verify each `.claude/rules/*.md`:
+- If it has frontmatter, the only meaningful key is `paths:` (a list of globs).
+- `CLAUDE.md` and every rule file parse as valid Markdown.
+- No rule file still references `.kiro/agent-state/` for Claude agents (agent
+  state belongs under `.claude/agent-state/`).
+Report the number of rule files created and any that needed correction.
+
+---
+
+## PART 9 — DOCUMENTATION
+
+Apply Rule 1; assistant-agnostic. Ensure `docs/forLLMConsumption.md`,
+`docs/ProjectPlan.md`, `docs/ProjectDesign.md`, and `docs/lessons-learned.md`
+exist with their standard sections (create `lessons-learned.md` with the
+Date/Context/Lesson/Action format if missing). These are referenced by
+`pre-work.md` and `use-lessons-learned.md`.
+
+You MAY run Claude Code's built-in `/init` first to bootstrap a `CLAUDE.md`
+from the codebase, then layer Part 8.1's standards on top (merge, do not
+overwrite).
+
+---
+
+## PART 10 — EDITOR SETTINGS
+
+`.vscode/settings.json` is assistant-agnostic (it's VS Code). Apply Rule 1 and
+ensure the standard Python/ruff/pytest keys from the Kiro standard are present
+(interpreter path to the venv, ruff as formatter, format-on-save, pytest
+enabled). There is NO `.claude/`-side editor file to create — Claude Code does
+not need one. Do not create the Kiro `.kiro/settings.json` editor file from
+this prompt (leave any existing one alone).
+
+---
+
+## PART 11 — FINAL VERIFICATION AND REPORT
+
+### Verification checklist
+1. MCP servers — every server in `.mcp.json` connects (`/mcp` or
+   `claude mcp list`). Apply Rule 3.
+2. Virtual environment — `venv/` activates, deps installed.
+3. Pre-commit hook — `scripts/setup-hooks.sh` ran; `.git/hooks/pre-commit`
+   exists.
+4. CI checks — `ruff check`, `ruff format --check`, `mypy`, `bandit` pass on
+   the existing codebase (flag pre-existing issues).
+5. Tests — `pytest test/ --cov=src` runs (failures fixed per
+   `tests-must-not-fail.md`).
+6. CLAUDE.md + rules — `CLAUDE.md` exists; every intended rule file exists in
+   `.claude/rules/` and conforms (Part 8.4).
+7. Settings — `.claude/settings.json` parses; permissions + any hooks valid.
+8. Commands — intended slash commands exist in `.claude/commands/`.
+9. Agents — intended subagents exist in `.claude/agents/`; `cv-orchestrator`
+   has its `Agent(...)` allowlist line.
+10. Git wrapper — for the detected host, the wrapper + credential stub exist.
+11. Coexistence (Kiro projects) — `.kiro/` is byte-for-byte unchanged; both
+    `.kiro/agents/` and `.claude/agents/` are present.
+
+### Report
+
+Generate a report with these sections:
+```markdown
+# Claude Code Setup Report
+
+## Situation
+- Project type: [New / Existing Kiro project / Existing non-Kiro]
+- Host OS: [Windows / macOS / Linux]
+- Git host: [GitHub / GitLab / none]
+- Coexistence: [Kiro present — preserved / no Kiro]
+
+## MCP servers
+| Server | Status | Action |
+|---|---|---| ...
+
+## Files created
+- [list — CLAUDE.md, .mcp.json, .claude/settings.json, rules, commands, agents, hooks]
+
+## Files preserved / merged
+- [list, with what was preserved vs added]
+
+## Kiro coexistence
+- .kiro/ untouched: [confirmed]
+- Steering files translated to .claude/rules/: [count + mapping]
+- Kiro hooks translated to slash commands: [list]
+- Kiro MCP config translated to .mcp.json: [list]
+- Kiro agents mirrored into .claude/agents/: [list]
+
+## Enforcement choices
+- Hard rules enforced via permissions.deny: [list]
+- PreToolUse / Stop hooks created: [list or "none — advisory only"]
+- gh/glab: [forbidden via wrapper / allowed]
+
+## Configuration conflicts
+- [kept vs skipped]
+
+## Manual steps required
+- [paste git tokens; run /mcp to confirm; etc.]
+
+## Recommendations
+- [follow-ups]
+```
+
+---
+
+## APPENDIX — QUICK REFERENCE
+
+### Claude Code config files (all checked in except *.local.*)
+| File | Purpose |
+|---|---|
+| `CLAUDE.md` | always-on project memory / rules summary |
+| `.mcp.json` | MCP servers (project scope) |
+| `.claude/settings.json` | permissions + hooks (team-shared) |
+| `.claude/settings.local.json` | personal overrides (gitignored) |
+| `.claude/rules/*.md` | scoped/always rules (≈ steering) |
+| `.claude/commands/*.md` | slash commands (≈ userTriggered hooks) |
+| `.claude/agents/*.md` | custom subagents (≈ .kiro/agents) |
+| `.claude/agent-state/` | long-running-agent state (gitignored) |
+
+### Kiro → Claude Code mapping
+| Kiro | Claude Code |
+|---|---|
+| `.kiro/settings/mcp.json` | `.mcp.json` (timeout ms; no autoApprove) |
+| per-tool `autoApprove` | `permissions.allow: ["mcp__server__*"]` |
+| steering `inclusion: always` | `CLAUDE.md` or `.claude/rules/*.md` (no frontmatter) |
+| steering `inclusion: fileMatch` | `.claude/rules/*.md` with `paths:` |
+| steering `inclusion: manual` | slash command / skill |
+| hook `userTriggered`+`askAgent` | `.claude/commands/<name>.md` |
+| hook `fileEdited`/`preToolUse`/… | `.claude/settings.json` `hooks` |
+| agent `toolsSettings.fs_write.allowedPaths` | `permissions.deny` (session-wide) / PreToolUse hook |
+| agent `toolsSettings.shell.allowed/denied` | `permissions.allow/deny` (glob, not regex) |
+| agent `subagent.availableAgents` | `tools: Agent(name1, name2, …)` on the main-session agent |
+| `.kiro/agents/<name>.json` | `.claude/agents/<name>.md` (YAML frontmatter + body) |
+| `install_agents.py` | not needed — files discovered in place |
+
+### Templates referenced (shared with the Kiro prompt, under templates/)
+- `aws_config.py.template`, `aws_accounts.json.template`,
+  `setup-hooks.sh.template`, `pre-commit-config.yaml.template`,
+  `gitlab.json.template`, `gitlab_wrapper.py.template`,
+  `github_wrapper.py.template`
+
+### Custom agents (under claude-agents/ — see claude-agents/README.md)
+- dead-code-removal-agent, doc-reviewer-agent, ci-workflow-agent,
+  issue-housekeeping-agent, issue-intake-agent, product-management-agent,
+  spec-review-agent, spec-prompt-author-agent, and the cv-* suite
+  (cv-orchestrator + 6 delegates).
+
+# END OF PROMPT

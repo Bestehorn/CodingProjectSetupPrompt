@@ -37,6 +37,12 @@
 #   - Moves embedded Python skeletons (wrappers, AWS config, setup-hooks.sh)
 #     into a `templates/` directory referenced by path. The agent copies
 #     and adapts them; this prompt does not duplicate their contents.
+#   - Adds the steering-file format reference (https://kiro.dev/docs/steering/)
+#     and a mandatory conformance check over ALL steering files after they
+#     are created/merged.
+#   - New steering file remote-ci-must-pass.md: no remote-changing git
+#     operation is finished until the CI pipeline completes successfully;
+#     monitor it, retrieve and analyze logs on failure, fix, and retry.
 
 ---
 
@@ -854,6 +860,29 @@ overlap in the migration report.
 
 Apply Rule 1. For each file below, if it already exists, merge: keep
 existing project-specific content, add missing standard sections.
+
+### Steering file format (MANDATORY)
+
+Every steering file MUST conform to the format documented at
+https://kiro.dev/docs/steering/. In particular:
+
+- The file is Markdown (`.md`) and lives in `.kiro/steering/`.
+- If it has front matter, the front matter is a YAML block delimited by
+  `---` on its own line at the very top and `---` on its own line to
+  close it, before any other content.
+- The only recognized front-matter keys are `inclusion` and (when
+  `inclusion: fileMatch`) `fileMatchPattern`.
+- `inclusion` must be exactly one of `always`, `fileMatch`, or `manual`.
+- `fileMatchPattern` is required if and only if `inclusion: fileMatch`,
+  and is a glob string.
+- A file with no front matter is treated as `inclusion: always`.
+- File references use the `#[[file:<relative_path>]]` syntax.
+
+Read https://kiro.dev/docs/steering/ if any detail is unclear before
+creating or merging steering files. Do not invent front-matter keys or
+inclusion values not listed there.
+
+
 Place all files in `.kiro/steering/`.
 
 ### 8.1 `tech-stack.md` (always)
@@ -1872,6 +1901,102 @@ output formats.
   JSON fields, absolute imports, `pathlib.Path`, named parameters.
 ```
 
+### 8.25 `remote-ci-must-pass.md` (always) — NEW IN v2
+```markdown
+---
+inclusion: always
+---
+# Remote Repository Operations Are Not Done Until CI Passes (CRITICAL)
+
+Any operation that changes code on the remote repository — commit,
+push, merge, rebase-and-push, PR merge — is NOT finished until the
+corresponding CI pipeline (if one exists) has run to a successful
+completion.
+
+## Core rule
+
+1. After any operation that updates the remote (push, merge, PR
+   merge), determine whether the repository has a CI pipeline.
+   - GitLab: a `.gitlab-ci.yml` exists, or the project has pipelines.
+   - GitHub: workflows exist under `.github/workflows/`.
+   - If there is genuinely no CI pipeline, the operation is finished
+     once the push/merge succeeds. State that no pipeline exists.
+2. If a CI pipeline exists, you MUST monitor it until it COMPLETES —
+   no matter how long it takes. Do not declare the operation done
+   while the pipeline is queued, running, or in any non-terminal
+   state. Poll until it reaches a terminal state (success or failure).
+3. Retrieve pipeline/run status and logs through the project's wrapper
+   script (`scripts/github_wrapper.py` / `scripts/gitlab_wrapper.py`) —
+   never `gh`, `glab`, or raw `curl` (see `use-git-wrapper-scripts.md`).
+
+## On failure (the debugging loop)
+
+If the pipeline finishes in a failed state:
+
+1. Retrieve the full logs of the failed jobs via the wrapper script.
+   Apply `no-output-shortening.md` — read the complete logs, not a tail.
+2. Analyze the logs and determine the root cause with evidence (per
+   `no-guessing.md`). Consult MCP doc servers and `docs/` as needed.
+3. Fix the underlying issue in the source, tests, or configuration.
+4. Re-run the commit/push workflow (the fix must itself pass the
+   pre-commit hook).
+5. Monitor the new pipeline run again.
+6. Repeat this loop until the pipeline completes successfully.
+
+This loop is the ONLY exit. You may not abandon a remote-changing
+operation with a red or unfinished pipeline. "It will probably pass",
+"the failure looks unrelated", and "I'll let CI sort it out" are all
+forbidden — they violate `no-guessing.md` and this rule.
+
+## Evidence required to declare success
+
+State the terminal pipeline status with evidence quoted from the
+wrapper output: pipeline/run ID, status (`success`/`passed`), and the
+commit SHA it ran against. Without that evidence, the operation is not
+finished.
+
+## Integration
+
+- `use-git-wrapper-scripts.md`: all CI status/log retrieval goes
+  through the wrapper.
+- `no-output-shortening.md`: read complete CI logs.
+- `no-guessing.md`: every claim about pipeline state is backed by
+  quoted wrapper output.
+- `always-test-e2e.md`: a remote change that triggers CI is part of
+  the E2E loop; the E2E test is not complete until CI is green.
+- The `git-push` hook (Part 9) implements this rule operationally.
+```
+
+### 8.26 Verify conformance of ALL steering files (MANDATORY)
+
+After creating and/or merging every steering file in this Part, verify
+that ALL files in `.kiro/steering/` conform to the format documented at
+https://kiro.dev/docs/steering/ (summarized at the top of Part 8). This
+check covers files this prompt created, files it merged, AND any
+pre-existing steering files in the project.
+
+For each `*.md` file in `.kiro/steering/`:
+
+1. If the file has front matter, confirm:
+   - It opens with `---` on the first line and closes with `---` on its
+     own line, with nothing before the opening delimiter.
+   - The only keys present are `inclusion` and (when applicable)
+     `fileMatchPattern`.
+   - `inclusion` is exactly one of `always`, `fileMatch`, or `manual`.
+   - `fileMatchPattern` is present if and only if `inclusion: fileMatch`.
+2. If the file has no front matter, confirm that `always` inclusion is
+   the intended behavior; if not, add the correct front matter.
+3. Confirm any file references use the `#[[file:<relative_path>]]`
+   syntax.
+4. Confirm the file is valid Markdown and the YAML front matter parses.
+
+If any file does not conform, FIX IT to match the format at
+https://kiro.dev/docs/steering/, preserving the file's content and
+intent. Re-run the check until every file conforms.
+
+Report the result in the migration report: number of steering files
+checked, number that needed correction, and what was corrected.
+
 ---
 
 
@@ -2237,7 +2362,8 @@ After completing all parts:
 5. **Tests** — `pytest test/ --cov=src` runs (failures must be fixed
    per `tests-must-not-fail.md`).
 6. **Steering files** — every file in Part 8 exists in
-   `.kiro/steering/`.
+   `.kiro/steering/`, AND every file conforms to the format at
+   https://kiro.dev/docs/steering/ (per the Part 8.26 check).
 7. **Hooks** — every hook in Part 9 exists in `.kiro/hooks/`.
 8. **Git wrapper** — for the detected host, the wrapper exists and
    credential stub is in place. If a real token is configured, run
