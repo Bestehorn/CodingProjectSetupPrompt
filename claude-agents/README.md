@@ -38,6 +38,38 @@ so the agents keep their checkpoint/resume state under the Claude tree.
 The CV suite has its own run instructions in [`cv/README.md`](cv/README.md)
 (it is the one suite that needs special handling — see *The CV suite* below).
 
+## Spec-driven + test-driven workflow (`spec-workflow/`)
+
+In addition to the translated Kiro agents above, this directory contains a
+**native, automated spec-driven + test-driven development workflow** for Claude
+Code — the hands-off replacement for the manual Kiro CLI ↔ IDE loop. It is NOT a
+translation of a single Kiro agent; it generalizes the `cv-orchestrator` pattern
+into a `spec-conductor` that drives a feature/bugfix from a one-line idea to
+evidence-proven code in one session.
+
+| File (under `spec-workflow/`) | Subagent / role |
+|---|---|
+| `spec-conductor.md` | Main-session orchestrator (`claude --agent spec-conductor`) |
+| `spec-author.md` | Writes requirements / design / tasks |
+| `spec-researcher.md` | Read-only research bursts |
+| `test-architect.md` | Correctness Properties + coverage gate (core) |
+| `adversarial-verifier.md` | Re-runs & refutes every claim (core) |
+| `standards-reviewer.md` | Project/coding-standards conformance |
+| `best-practice-reviewer.md` | External best-practice alignment (MCP/web) |
+| `security-reviewer.md` | Threat model + vulnerability review |
+| `devops-iac-reviewer.md` | CI/CD, IaC least-privilege, observability |
+| `spec-implementer.md` | Test-first implementer (never certifies itself) |
+| `phases/spec-phase-*.md` | Phase procedures (shared by conductor + commands) |
+| `rules/agent-state-convention.md` | Cross-agent decision-log convention (all agents) |
+| `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) |
+
+It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
+`spec-prompt-author-agent`). The four `/spec-*` slash commands live in
+[`../claude-commands/`](../claude-commands/). Full documentation — pipeline, the
+autonomous readiness gate, the evidence/proof model, install, and durable state —
+is in [`spec-workflow/README.md`](spec-workflow/README.md). `ClaudeCodeSetupPrompt.txt`
+Part 12 installs and wires it into a project.
+
 ## How Claude Code discovers subagents
 
 Claude Code reads subagent definitions from two locations:

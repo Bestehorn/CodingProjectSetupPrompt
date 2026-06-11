@@ -815,6 +815,146 @@ Generate a report with these sections:
 
 ---
 
+## PART 12 — SPEC-DRIVEN + TEST-DRIVEN DEVELOPMENT (SDD/TDD)
+
+This part installs an automated spec-driven + test-driven workflow so that EVERY new
+feature, bugfix, or UI change is developed spec-first and test-first, ending with the
+agents PROVING the implementation works with captured command/test evidence — never
+just asserting it. It replaces the manual Kiro CLI ↔ IDE loop (author prompt →
+generate spec → review → resolve → repeat → implement) with a single autonomous
+Claude Code session.
+
+The full design and per-agent detail live in `claude-agents/spec-workflow/README.md`.
+This part installs the files and wires the gates. Apply Rule 1 (merge, never
+overwrite project-specific content) and Rule 0 (never touch `.kiro/`).
+
+### Part 12.1 — What gets installed
+
+From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, and
+`claude-commands/`, install into the project:
+
+- **Conductor + specialists** → `.claude/agents/`:
+  `spec-conductor` (the main-session orchestrator), `spec-author`, `spec-researcher`,
+  `test-architect` (core), `adversarial-verifier` (core), `standards-reviewer`,
+  `best-practice-reviewer`, `security-reviewer`, `devops-iac-reviewer`,
+  `spec-implementer`, plus the reused `spec-review-agent` and
+  `spec-prompt-author-agent`.
+- **Slash commands** → `.claude/commands/`: `spec-new`, `spec-review`, `spec-tasks`,
+  `spec-implement`.
+- **Phase fragments** (single source of truth for both the conductor and the
+  commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
+  `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
+  `spec-phase-implement.md`.
+- **Shared decision-log rule** → `.claude/rules/agent-state-convention.md`.
+- **TDD/evidence hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`,
+  `spec-stop-gate.sh`, `red-for-right-reason.sh` (make them executable).
+
+Install command (run from this repo, targeting the project root):
+```bash
+mkdir -p .claude/agents .claude/commands .claude/rules .claude/hooks \
+         .claude/specs/_workflow/phases
+cp claude-agents/spec-workflow/*.md            .claude/agents/    # excludes README via *.md? see note
+cp claude-agents/spec-review/*.md              .claude/agents/
+cp claude-commands/spec-*.md                   .claude/commands/
+cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
+cp claude-agents/spec-workflow/rules/agent-state-convention.md .claude/rules/
+cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
+```
+NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
+`.claude/agents/` — copy the ten agent files explicitly (see
+`claude-agents/spec-workflow/README.md` "Install" for the exact list) rather than a
+blind `*.md`, or remove `.claude/agents/README.md` afterward.
+
+### Part 12.2 — Wire the TDD/evidence gates into settings.json
+
+Add to `.claude/settings.json` (merge with Part 6's hooks):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-tdd-gate.sh"],
+            "timeout": 15 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-stop-gate.sh"] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `spec-tdd-gate.sh` blocks `git commit` (and bans `--no-verify`) unless the current
+  task has fresh green test evidence.
+- `spec-stop-gate.sh` blocks turn-end during implementation/verification when a task
+  is marked done without green evidence, or the latest run is red / contains
+  skipped/xfail tests.
+- `red-for-right-reason.sh` is a helper the conductor invokes to confirm a failing
+  test fails on an assertion, not an import/collection error.
+
+These are the machine-enforced floor under the agents' prompt-level discipline. They
+are scoped to fire only while a spec workflow is active (they read
+`.claude/agent-state/spec-conductor/workflow_state.md`), so they do not interfere with
+normal sessions.
+
+### Part 12.3 — Make the decision-log convention universal
+
+In root `CLAUDE.md`, add one line so ALL agents (the spec-workflow agents AND the
+ported ones) share the state/decision convention without their bodies changing:
+
+> All agents follow `.claude/rules/agent-state-convention.md` for state directories
+> and the append-only `DL-NNN` decision log.
+
+Because that rule file has no `paths:` frontmatter, it loads every session and every
+agent observes it. This is how decisions and the discussion behind them are preserved
+across agents and future sessions (the user's state-driven requirement, applied to
+all agents, not only the new ones).
+
+### Part 12.4 — .gitignore
+
+Commit the specs (they are the durable record): do NOT ignore `.claude/specs/`. The
+per-run agent state is already ignored via `.claude/agent-state/` (Part 3). If you
+prefer not to commit large captured evidence, you MAY add
+`.claude/specs/*/evidence/` to `.gitignore` — but keeping `evidence/REPORT.md` is
+recommended as the proof record (e.g. ignore `evidence/` but force-include
+`!.claude/specs/*/evidence/REPORT.md`).
+
+### Part 12.5 — How to use it (state this in the report)
+
+- **End to end (recommended):** `claude --agent spec-conductor`, then describe the
+  feature/bug in your first message. It interviews you (one question at a time),
+  generates requirements/design/tasks, runs the adversarial review panel until zero
+  blocking defects, implements test-first, and finishes with an evidence report. You
+  are prompted only for the interview, a possible single escalation, and the final
+  report.
+- **Per phase (on demand):** `/spec-new "<idea>"`, `/spec-review [slug]`,
+  `/spec-tasks [slug]`, `/spec-implement [slug]`.
+
+### Part 12.6 — The autonomy gate and the evidence guarantee
+
+- **Readiness gate** (maximally autonomous): a spec is ready to implement when, after
+  ≥1 review cycle, the combined **A+B finding count across the whole panel is 0**
+  (computed against the current artifact) AND the test-architect confirms a property
+  per requirement and full acceptance-criteria→test coverage. C/D findings never block.
+- **Proof, not assertion:** the implementer writes tests + code but never certifies
+  its own work; the conductor runs the tests and captures evidence; the
+  adversarial-verifier independently re-runs and tries to refute every claim
+  (including killing the implementation to confirm tests actually fail without it).
+  The final `evidence/REPORT.md` maps each requirement → property → test → quoted
+  command output.
+
+---
+
 ## APPENDIX — QUICK REFERENCE
 
 ### Claude Code config files (all checked in except *.local.*)
@@ -828,6 +968,8 @@ Generate a report with these sections:
 | `.claude/commands/*.md` | slash commands (≈ userTriggered hooks) |
 | `.claude/agents/*.md` | custom subagents (≈ .kiro/agents) |
 | `.claude/agent-state/` | long-running-agent state (gitignored) |
+| `.claude/specs/<feature>/` | spec artifacts + reviews + decisions + evidence (committed) |
+| `.claude/specs/_workflow/phases/` | spec-workflow phase fragments |
 
 ### Kiro → Claude Code mapping
 | Kiro | Claude Code |
@@ -856,5 +998,14 @@ Generate a report with these sections:
   issue-housekeeping-agent, issue-intake-agent, product-management-agent,
   spec-review-agent, spec-prompt-author-agent, and the cv-* suite
   (cv-orchestrator + 6 delegates).
+
+### Spec-driven + test-driven workflow (Part 12; see claude-agents/spec-workflow/README.md)
+- Conductor: `spec-conductor` (`claude --agent spec-conductor`).
+- Specialists: spec-author, spec-researcher, test-architect, adversarial-verifier,
+  standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer,
+  spec-implementer (+ reused spec-review-agent, spec-prompt-author-agent).
+- Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
+- Gates: spec-tdd-gate.sh (commit), spec-stop-gate.sh (turn-end),
+  red-for-right-reason.sh. Decision log: .claude/rules/agent-state-convention.md.
 
 # END OF PROMPT
