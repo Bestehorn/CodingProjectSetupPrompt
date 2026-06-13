@@ -70,6 +70,26 @@ autonomous readiness gate, the evidence/proof model, install, and durable state 
 is in [`spec-workflow/README.md`](spec-workflow/README.md). `ClaudeCodeSetupPrompt.txt`
 Part 12 installs and wires it into a project.
 
+## Autonomous issue resolution (`issue-work-orchestrator/`)
+
+The top layer above the spec workflow: a main-session agent that works the project's
+ENTIRE open-issue backlog end to end. Per issue it selects the highest-priority
+not-in-progress issue, creates a git worktree + branch, develops and PROVES a fix
+through the spec/TDD engine (embedding the same phase fragments and leaf agents — it
+does NOT nest the conductor), reviews the proof, documents it on the issue, opens a PR,
+drives CI green, self-approves + merges where allowed, cleans up, closes the issue, and
+repeats — fully resumable via `.claude/agent-state/issue-work-orchestrator/`.
+
+Run: `claude --agent issue-work-orchestrator` (or `/issues-work`, or "continue the work
+on the existing issues of this project"). Full docs:
+[`issue-work-orchestrator/README.md`](issue-work-orchestrator/README.md).
+`ClaudeCodeSetupPrompt.txt` Part 13 installs it (depends on Part 12).
+
+**Which issue agent to use:** `issue-intake` files one well-formed issue from an
+observation; `issue-housekeeping` batch-triages all issues with local quick-fixes (never
+pushes); `issue-work-orchestrator` delivers issues one at a time through the full remote
+PR/CI/merge lifecycle with proof.
+
 ## How Claude Code discovers subagents
 
 Claude Code reads subagent definitions from two locations:

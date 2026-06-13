@@ -4,7 +4,16 @@ Usage:
     python scripts/gitlab_wrapper.py pipeline status
     python scripts/gitlab_wrapper.py pipeline log
     python scripts/gitlab_wrapper.py issue list
+    python scripts/gitlab_wrapper.py issue list --state opened --assignee "*" --labels in-progress
     python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
+    python scripts/gitlab_wrapper.py issue comment <iid> --body "..."
+    python scripts/gitlab_wrapper.py issue close <iid>
+    python scripts/gitlab_wrapper.py mr create --source <branch> --target main --title "..."
+    python scripts/gitlab_wrapper.py mr get <mr_iid>
+    python scripts/gitlab_wrapper.py mr checks <mr_iid>
+    python scripts/gitlab_wrapper.py mr approve <mr_iid>
+    python scripts/gitlab_wrapper.py mr merge <mr_iid>
+    python scripts/gitlab_wrapper.py delete-branch <branch>
 
 Credentials: config/gitlab.json (gitignored).
 
@@ -95,6 +104,36 @@ def _api_request(
 # pipeline_status, pipeline_log, issue_create, issue_list, issue_show,
 # label_list, label_create. Each takes named parameters and prints JSON
 # or human-readable output.
+#
+# Merge-request / CI lifecycle subcommands (required by the
+# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13).
+# All paths are under /projects/{project_id} (URL-encode the id if it is a
+# namespace/path rather than a numeric id):
+#   - issue_list: support --state (opened/closed/all), --assignee (a
+#     username, "*" for any-assignee, or "none"), and --labels filters, so
+#     the orchestrator can detect "in progress" issues (assignee set OR an
+#     in-progress label) and skip them.
+#   - issue_comment(iid, body): POST /issues/{iid}/notes
+#   - issue_close(iid): PUT /issues/{iid}?state_event=close
+#   - mr_create(source, target, title, description): POST /merge_requests
+#       {"source_branch","target_branch","title","description",
+#        "remove_source_branch": true}
+#   - mr_get(iid): GET /merge_requests/{iid} -> state (opened/merged/closed),
+#       draft/work_in_progress, merge_status, has_conflicts, approvals.
+#   - mr_checks(iid): GET /merge_requests/{iid}/pipelines (latest pipeline
+#       status) and/or the head pipeline jobs for CI status.
+#   - mr_approve(iid): POST /merge_requests/{iid}/approve  (requires the
+#       approvals feature; a user cannot approve their own MR on many
+#       instances — surface that so the orchestrator polls for external
+#       approval instead).
+#   - mr_merge(iid): PUT /merge_requests/{iid}/merge
+#       {"should_remove_source_branch": true,
+#        "merge_when_pipeline_succeeds": true (optional)}
+#   - delete_branch(branch): DELETE /repository/branches/{url-encoded-branch}
+#     (only needed if the MR did not auto-remove the source branch).
+#
+# If a host requires corporate-SSO cookie auth, add it at the documented
+# extension point above (same as the read-only subcommands).
 
 
 def main() -> None:

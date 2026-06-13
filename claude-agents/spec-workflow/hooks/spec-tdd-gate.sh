@@ -41,11 +41,15 @@ if grep -qE '(--no-verify|[[:space:]]-n([[:space:]]|$))' <<<"$cmd"; then
   exit 2
 fi
 
-# Locate the active spec + current task from the conductor's workflow state.
-state_file=".claude/agent-state/spec-conductor/workflow_state.md"
-[[ -n "${CLAUDE_PROJECT_DIR:-}" && -f "$CLAUDE_PROJECT_DIR/$state_file" ]] && state_file="$CLAUDE_PROJECT_DIR/$state_file"
+# Locate the active spec workflow's state. Any agent that drives the spec/TDD
+# engine writes a workflow_state.md under its own agent-state dir (the
+# spec-conductor, the issue-work-orchestrator, etc.). Pick the most recently
+# modified one as the active workflow.
+base=".claude/agent-state"
+[[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "$CLAUDE_PROJECT_DIR/$base" ]] && base="$CLAUDE_PROJECT_DIR/$base"
+state_file="$(ls -t "$base"/*/workflow_state.md 2>/dev/null | head -1)"
 
-if [[ ! -f "$state_file" ]]; then
+if [[ -z "$state_file" || ! -f "$state_file" ]]; then
   # No active spec workflow — nothing more to enforce here.
   exit 0
 fi

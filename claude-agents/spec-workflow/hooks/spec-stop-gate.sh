@@ -18,9 +18,13 @@ set -u
 
 cat >/dev/null   # drain stdin (hook JSON); decisions are file-based below.
 
-state_file=".claude/agent-state/spec-conductor/workflow_state.md"
-[[ -n "${CLAUDE_PROJECT_DIR:-}" && -f "$CLAUDE_PROJECT_DIR/$state_file" ]] && state_file="$CLAUDE_PROJECT_DIR/$state_file"
-[[ -f "$state_file" ]] || exit 0   # no active workflow
+# Any agent driving the spec/TDD engine writes a workflow_state.md under its own
+# agent-state dir (spec-conductor, issue-work-orchestrator, ...). Use the most
+# recently modified one as the active workflow.
+base=".claude/agent-state"
+[[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "$CLAUDE_PROJECT_DIR/$base" ]] && base="$CLAUDE_PROJECT_DIR/$base"
+state_file="$(ls -t "$base"/*/workflow_state.md 2>/dev/null | head -1)"
+[[ -n "$state_file" && -f "$state_file" ]] || exit 0   # no active workflow
 
 phase="$(grep -iE '^[*-]?[[:space:]]*Phase:' "$state_file" | tail -1 | sed -E 's/.*Phase:[[:space:]]*//')"
 status="$(grep -iE '^[*-]?[[:space:]]*Status:' "$state_file" | tail -1 | sed -E 's/.*Status:[[:space:]]*//')"

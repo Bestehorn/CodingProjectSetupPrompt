@@ -385,7 +385,11 @@ Apply Rule 1. A baseline that encodes the project's hard rules:
       "Bash(bandit:*)",
       "Bash(pytest:*)",
       "Bash(python scripts/github_wrapper.py:*)",
-      "Bash(python scripts/gitlab_wrapper.py:*)"
+      "Bash(python scripts/gitlab_wrapper.py:*)",
+      "Bash(git worktree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rebase:*)",
+      "Bash(git push:*)"
     ],
     "deny": [
       "Bash(aws cloudformation create-stack:*)",
@@ -434,6 +438,34 @@ token-store/SSO constraints, routing everything through the wrapper. Carry that
 rule over ONLY if those constraints apply in your environment. Claude Code has
 solid `gh` support; if the constraints do not apply, you MAY instead allow
 `Bash(gh *)` and skip the wrappers — state which choice you made in the report.
+
+Required wrapper subcommands. The wrapper templates are skeletons; implement the
+subcommands the project's agents invoke. The minimum set:
+
+- Issues/CI (used by issue-intake, issue-housekeeping, ci-workflow-agent):
+  GitHub — `list-workflows`, `list-runs`, `get-run`, `get-jobs`, `get-logs`
+  (strip the Authorization header before following the 302 to Azure Blob
+  Storage), `rerun`, `cancel`, `list-issues`, `get-issue`, `get-issue-comments`,
+  `comment-issue`, `update-issue`, `create-issue`. GitLab — `pipeline status`,
+  `pipeline log`, `issue list/show/create/comment/close`, `label list/create`.
+- PR/merge lifecycle (REQUIRED by the issue-work-orchestrator, Part 13):
+  GitHub — `create-pr`, `get-pr`, `get-pr-checks`, `approve-pr`, `merge-pr`
+  (`--method merge|squash|rebase`), `delete-remote-branch`, and `list-issues`
+  with `--state`/`--assignee`/`--label` filters. GitLab — `mr create/get/checks/
+  approve/merge`, `delete-branch`, and `issue list` with state/assignee/labels.
+  (See the expanded docstrings in `templates/github_wrapper.py.template` and
+  `templates/gitlab_wrapper.py.template` for the exact REST endpoints and the
+  "can't approve your own PR/MR" caveat the orchestrator handles by polling.)
+
+If you allow `gh`/`glab` instead of the wrapper, add the corresponding allow
+rules (e.g. `Bash(gh pr *)`, `Bash(gh issue *)`) and the orchestrator will use
+them; otherwise it uses the wrapper exclusively.
+
+In-progress convention. The orchestrator must know which open issues are "in
+progress" (being worked elsewhere) so it skips them. Default convention: an
+issue is in progress if it has ANY assignee OR a label matching `in-progress`/
+`in progress`/`wip`/`doing`. State the project's actual convention here if it
+differs (it is read from `environment.md` by the agent).
 
 ---
 
@@ -903,9 +935,10 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
   test fails on an assertion, not an import/collection error.
 
 These are the machine-enforced floor under the agents' prompt-level discipline. They
-are scoped to fire only while a spec workflow is active (they read
-`.claude/agent-state/spec-conductor/workflow_state.md`), so they do not interfere with
-normal sessions.
+are scoped to fire only while a spec workflow is active (they look for the most
+recently modified `.claude/agent-state/*/workflow_state.md` — written by the
+spec-conductor OR the issue-work-orchestrator), so they do not interfere with normal
+sessions but DO fire when the orchestrator drives the embedded spec phases.
 
 ### Part 12.3 — Make the decision-log convention universal
 
@@ -955,6 +988,97 @@ recommended as the proof record (e.g. ignore `evidence/` but force-include
 
 ---
 
+## PART 13 — AUTONOMOUS ISSUE RESOLUTION (issue-work-orchestrator)
+
+This part installs a top-level agent that works the project's ENTIRE open-issue
+backlog end to end: it selects the highest-priority not-in-progress issue, develops
+and PROVES a fix through the Part 12 spec/TDD engine, opens a PR, drives CI green,
+merges (self-approving if branch protection allows), cleans up, closes the issue, and
+repeats — fully resumable. It is the autonomous-delivery layer above the spec workflow.
+
+DEPENDS ON Part 12 (the spec-workflow agents, the phase fragments under
+`.claude/specs/_workflow/phases/`, the `agent-state-convention` rule, and the
+TDD/evidence hooks). Install Part 12 first.
+
+### Part 13.1 — What gets installed
+
+- `claude-agents/issue-work-orchestrator/issue-work-orchestrator.md` →
+  `.claude/agents/` (the main-session orchestrator;
+  `claude --agent issue-work-orchestrator`).
+- `claude-commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
+  resume).
+
+```bash
+cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md .claude/agents/
+cp claude-commands/issues-work.md                                   .claude/commands/
+```
+
+Also: ensure the git wrapper implements the PR/merge/CI subcommands (Part 5.3), and
+add `.claude/worktrees/` to `.gitignore` (the orchestrator creates per-issue worktrees
+there). `.claude/agent-state/` is already gitignored (Part 3).
+
+### Part 13.2 — How it drives the fix (architecture)
+
+Claude Code subagents cannot nest, and `spec-conductor` is itself a main-session
+orchestrator that delegates to ~10 leaf subagents — so the orchestrator does NOT call
+`spec-conductor` as a subagent. Instead it **plays the conductor role itself** for the
+FIX phase: it reads the same phase fragments and delegates to the same leaf agents
+(`spec-author`, the six reviewers, `test-architect`, `adversarial-verifier`,
+`spec-implementer`, `spec-researcher`), all listed in its `Agent(...)` allowlist. The
+interactive interview is skipped — the prompt is derived from the issue. Type1 issues
+(≤3 files, clear root cause) get a lightweight test-first fix; Type2 get the full
+spec/TDD pipeline. Both produce a test that reproduces the issue's symptom and an
+`evidence/REPORT.md` proof chain.
+
+Per issue the orchestrator works in a git worktree under `.claude/worktrees/issue-<n>/`
+(plain `git worktree add`), so the spec + code + tests + evidence are committed and
+merged together. Because a delegated subagent inherits the SESSION cwd (the main
+checkout, not the worktree), the orchestrator passes the ABSOLUTE worktree path to
+every delegate and runs git/tests with `git -C <wt>`/`cd <wt> && …`. (If path-passing
+proves fragile, the documented fallback is a headless child `cd <wt> && claude -p
+--agent spec-conductor …`; see the agent README.)
+
+### Part 13.3 — Lifecycle and merge authority
+
+LOAD_ISSUES → SELECT (skip in-progress; pick highest impact/urgency/severity) →
+PREPARE (worktree+branch) → CLASSIFY → FIX (embedded spec/TDD) → PROOF_GATE → DOCUMENT
+(post fix writeup on the issue) → PR (rebase on origin/main with line-by-line conflict
+resolution, push, open PR, **self-approve + merge if branch protection allows, else
+poll for approval**, monitor CI, fix failures) → MERGE_CLEANUP (remove worktree + local
+branch, checkout main, verify post-merge CI) → RESOLVE (close issue) → refresh → repeat
+until no not-in-progress open issue remains. All remote ops go through the wrapper.
+
+### Part 13.4 — Resumability (the user's hard requirement)
+
+The orchestrator checkpoints after EVERY step to
+`.claude/agent-state/issue-work-orchestrator/resume_state.md` (outer phase, current
+issue/worktree/branch/PR, the issue queue) plus a mirrored `workflow_state.md` (so the
+TDD hooks fire during FIX) and a `DL-NNN` decision log. Relaunch with `claude --agent
+issue-work-orchestrator`, `/issues-work`, or simply "continue the work on the existing
+issues of this project" — it resumes mid-lifecycle (including re-attaching to an open
+PR mid-CI or a half-built worktree).
+
+### Part 13.5 — Permission posture
+
+Recommended: `acceptEdits` mode plus the `allow` rules from Part 5.1 (the
+`Bash(git ...)`, worktree, venv, and wrapper rules). Use `bypassPermissions` ONLY in
+an isolated environment (container/VM/CI runner). Self-merge is honored only where
+branch protection permits; otherwise the orchestrator opens the PR, drives CI green,
+and polls for an external approval before merging.
+
+### Part 13.6 — Relationship to the other issue agents
+
+- `issue-intake` — turns one informal observation into a well-formed FILED issue.
+- `issue-housekeeping` — batch-triages ALL issues with LOCAL quick-fixes (never pushes)
+  and drafts specs for the hard ones.
+- `issue-work-orchestrator` — DELIVERS issues one at a time through the full remote
+  lifecycle (push, PR, CI, merge, close) with proof.
+
+Typical flow: intake captures work → housekeeping triages/clears easy debt → the
+orchestrator autonomously delivers the real fixes to `main`.
+
+---
+
 ## APPENDIX — QUICK REFERENCE
 
 ### Claude Code config files (all checked in except *.local.*)
@@ -970,6 +1094,7 @@ recommended as the proof record (e.g. ignore `evidence/` but force-include
 | `.claude/agent-state/` | long-running-agent state (gitignored) |
 | `.claude/specs/<feature>/` | spec artifacts + reviews + decisions + evidence (committed) |
 | `.claude/specs/_workflow/phases/` | spec-workflow phase fragments |
+| `.claude/worktrees/issue-<n>/` | per-issue git worktrees (issue-work-orchestrator; gitignored) |
 
 ### Kiro → Claude Code mapping
 | Kiro | Claude Code |
@@ -1007,5 +1132,15 @@ recommended as the proof record (e.g. ignore `evidence/` but force-include
 - Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
 - Gates: spec-tdd-gate.sh (commit), spec-stop-gate.sh (turn-end),
   red-for-right-reason.sh. Decision log: .claude/rules/agent-state-convention.md.
+
+### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
+- Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).
+  Works the whole open-issue backlog: select → worktree → fix via the spec/TDD engine
+  with proof → PR → CI → self-merge-if-allowed → cleanup → close → repeat. Resumable.
+- Command: /issues-work (start or resume; "continue the work on the existing issues").
+- New wrapper subcommands required (Part 5.3): GitHub get-pr, get-pr-checks, approve-pr,
+  merge-pr, delete-remote-branch, list-issues --state/--assignee/--label; GitLab mr
+  get/checks/approve/merge, delete-branch.
+- Per-issue worktrees under .claude/worktrees/ (gitignore them).
 
 # END OF PROMPT

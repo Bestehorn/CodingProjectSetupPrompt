@@ -5,7 +5,14 @@ Usage:
     python scripts/github_wrapper.py list-runs --limit 5
     python scripts/github_wrapper.py get-logs <run_id> --failed-only
     python scripts/github_wrapper.py list-issues
+    python scripts/github_wrapper.py list-issues --state open --assignee "*" --label in-progress
     python scripts/github_wrapper.py create-issue --title "..." --body "..."
+    python scripts/github_wrapper.py create-pr --head <branch> --base main --title "..." --body-file <path>
+    python scripts/github_wrapper.py get-pr <pr_number>
+    python scripts/github_wrapper.py get-pr-checks <pr_number>
+    python scripts/github_wrapper.py approve-pr <pr_number>
+    python scripts/github_wrapper.py merge-pr <pr_number> --method squash
+    python scripts/github_wrapper.py delete-remote-branch <branch>
 
 Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
 The owner/repo are auto-detected from .git/config — do NOT hardcode them.
@@ -116,6 +123,35 @@ def _api_request(
 # create_pr, list_issues, get_issue, get_issue_comments, comment_issue,
 # update_issue, create_issue. Each takes named parameters and prints
 # JSON or human-readable output.
+#
+# PR / merge / CI lifecycle subcommands (required by the
+# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13):
+#   - list_issues: support --state (open/closed/all), --assignee (a login,
+#     or "*" for "any assignee", or "none"), and --label filters, so the
+#     orchestrator can detect which open issues are "in progress"
+#     (assignee set OR an in-progress label) and skip them.
+#   - get_pr(pr_number): return the PR's state (open/closed/merged), draft
+#     flag, mergeable / mergeable_state, head/base refs, and review state.
+#       GET /repos/{owner}/{repo}/pulls/{number}
+#       GET /repos/{owner}/{repo}/pulls/{number}/reviews
+#   - get_pr_checks(pr_number): return the combined CI status and per-check
+#     conclusions for the PR's head SHA (resolve the head SHA from the PR,
+#     then query check-runs and/or the combined commit status).
+#       GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+#       GET /repos/{owner}/{repo}/commits/{sha}/status
+#   - approve_pr(pr_number): submit an APPROVE review.
+#       POST /repos/{owner}/{repo}/pulls/{number}/reviews  {"event":"APPROVE"}
+#     (Note: GitHub forbids approving your OWN PR; if the token user is the
+#     PR author this returns 422 — surface that clearly so the orchestrator
+#     falls back to polling for an external approval.)
+#   - merge_pr(pr_number, method): merge with method in {merge,squash,rebase}.
+#       PUT /repos/{owner}/{repo}/pulls/{number}/merge  {"merge_method": ...}
+#   - delete_remote_branch(branch): delete the head ref after merge.
+#       DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
+#   - (optional) get_pr_diff(pr_number): fetch the unified diff
+#       (Accept: application/vnd.github.v3.diff); and
+#     update_pr_description(pr_number, body): PATCH the PR body to link
+#     the fix documentation / evidence.
 #
 # Reference: see the original scaffold in
 # CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
