@@ -1040,13 +1040,24 @@ proves fragile, the documented fallback is a headless child `cd <wt> && claude -
 
 ### Part 13.3 — Lifecycle and merge authority
 
-LOAD_ISSUES → SELECT (skip in-progress; pick highest impact/urgency/severity) →
-PREPARE (worktree+branch) → CLASSIFY → FIX (embedded spec/TDD) → PROOF_GATE → DOCUMENT
-(post fix writeup on the issue) → PR (rebase on origin/main with line-by-line conflict
+LOAD_ISSUES (sync local main with the remote, then re-retrieve ALL open issues FRESH —
+every iteration, never a stale list) → SELECT (skip in-progress; pick highest
+impact/urgency/severity; **CLAIM the chosen issue as in-progress on the tracker
+immediately, before any work**) → PREPARE (Remote Sync, then worktree+branch) →
+CLASSIFY → FIX (embedded spec/TDD) → PROOF_GATE → DOCUMENT (post fix writeup on the
+issue) → PR (Remote Sync the worktree, rebase on origin/main with line-by-line conflict
 resolution, push, open PR, **self-approve + merge if branch protection allows, else
-poll for approval**, monitor CI, fix failures) → MERGE_CLEANUP (remove worktree + local
-branch, checkout main, verify post-merge CI) → RESOLVE (close issue) → refresh → repeat
-until no not-in-progress open issue remains. All remote ops go through the wrapper.
+poll for approval**, monitor CI, fix failures) → MERGE_CLEANUP (Remote Sync main, remove
+worktree + local branch, verify post-merge CI) → RESOLVE (close issue) → refresh →
+repeat until no not-in-progress open issue remains. All remote ops go through the wrapper.
+
+Two standing disciplines guard against parallel/duplicated work: (1) **fresh issue data
+every iteration** — the agent never reuses a previous list, so issues closed or claimed
+elsewhere are dropped; (2) **Remote Sync** — local code is re-synced with the remote
+(fetch + fast-forward/rebase, line-by-line conflict resolution, never overwriting
+others' changes) before any work, at each iteration start, after worktree creation,
+before the PR, and after each merge. The issue is claimed in-progress at selection time
+so other workers skip it.
 
 ### Part 13.4 — Resumability (the user's hard requirement)
 

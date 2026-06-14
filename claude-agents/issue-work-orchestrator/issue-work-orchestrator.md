@@ -113,6 +113,9 @@ D3. **Conventions.** Record the "in progress" convention (default: an issue is i
     (default: self-approve+merge if branch protection allows, else poll for approval).
 D4. **Clean tree.** Confirm the main checkout has a clean working tree (`git status
     --porcelain` empty); if not, report and stop — the orchestrator requires a clean base.
+D5. **Initial Remote Sync.** Before starting any work, run the **Remote Sync**
+    sub-procedure on the main checkout so the local base reflects the remote
+    (discipline B point 1). Then enter the loop at LOAD_ISSUES.
 
 # The Outer Loop (issue lifecycle)
 
@@ -124,29 +127,85 @@ LOAD_ISSUES → SELECT → PREPARE → CLASSIFY → FIX → PROOF_GATE → DOCUM
 SELECT with no workable issue → DONE
 ```
 
+## Two standing disciplines (apply throughout the loop)
+
+**A. Always work from FRESH issue data.** At the START of every loop iteration you
+re-retrieve ALL open issues from the remote (LOAD_ISSUES). You MUST NOT reuse a
+previously-retrieved issue list to choose or to keep working an issue — issues may have
+been closed or claimed (moved to in-progress) by someone else while you worked the
+previous one, and acting on stale data causes duplicated or wasted work. Treat the
+remote as the single source of truth on every iteration.
+
+**B. Keep the local code in sync with the remote (the "Remote Sync" sub-procedure).**
+Before you start any work, and again whenever a MAJOR phase completes, integrate remote
+changes so you never build on a stale base or overwrite others' work. Run this
+**Remote Sync** sub-procedure at these points: (1) at Discovery, before the loop;
+(2) at the start of each iteration, before SELECT; (3) immediately after creating the
+worktree in PREPARE; (4) after FIX completes, before opening the PR; (5) after a merge,
+in MERGE_CLEANUP. The sub-procedure:
+
+```
+Remote Sync(target = main checkout OR <worktree>):
+  1. git -C <target> fetch origin --prune
+  2. Determine the branch <target> is on and its upstream.
+  3. If behind origin: integrate — fast-forward if possible; otherwise rebase the
+     local branch onto the updated origin counterpart
+     (main checkout → origin/<main>; a feature worktree → origin/<main>).
+  4. On conflict, resolve LINE BY LINE: read BOTH sides of each `--diff-filter=U`
+     file, produce a merge that preserves BOTH intents (never blindly overwrite
+     incoming changes), `git add`, continue. If untenable, abort and fall back to a
+     merge with the same line-by-line rule.
+  5. If any code was integrated into a worktree mid-fix, re-run the test suite to
+     confirm the integration did not break the in-progress work; reconcile if it did.
+  6. Append a `DL-NNN` entry noting what was integrated (commits/SHAs) or "already
+     up to date".
+```
+
 ## LOAD_ISSUES
-Retrieve ALL open issues via the wrapper (`list-issues` open), and for the candidates
-fetch full bodies + comments (`get-issue`, `get-issue-comments`). Record the backlog in
-`issue_queue.md` with: number, title, labels, assignee, created/updated, and any prior
-triage comments (e.g. from issue-housekeeping/issue-intake).
+Run this at the START of EVERY iteration — never skip it and never reuse a prior
+iteration's list (discipline A).
+1. Run **Remote Sync** on the main checkout so local `main` reflects the remote before
+   you reason about anything (discipline B, point 2).
+2. Retrieve ALL open issues FRESH via the wrapper (`list-issues` open), and for the
+   candidates fetch full bodies + comments (`get-issue`, `get-issue-comments`).
+3. Overwrite `issue_queue.md` with this fresh snapshot: number, title, labels, assignee,
+   state, created/updated, and any prior triage comments (e.g. from
+   issue-housekeeping/issue-intake).
+4. Reconcile against the previous snapshot: if an issue you previously considered (or
+   were about to work) is now CLOSED or now IN PROGRESS (claimed elsewhere), drop it
+   from contention and record a `DL-NNN` entry ("issue #N closed/claimed upstream since
+   last iteration — skipping to avoid duplicate work"). This re-check is the safeguard
+   against work that was fixed in parallel while you ran the previous iteration.
 
 ## SELECT
-Discard issues that are IN PROGRESS per the recorded convention (assignee set or
-in-progress label) — they are being worked elsewhere. From the remainder, choose the
-single highest **impact / urgency / severity** issue (issue X), judging autonomously
-from labels (e.g. `critical`/`security`/`bug` > `enhancement`), the described blast
-radius, regressions vs. enhancements, age, and dependencies between issues. Record the
-choice and the rationale as a `DL-NNN` entry. If NO not-in-progress open issue remains,
-go to DONE.
+1. Discard issues that are IN PROGRESS per the recorded convention (assignee set or
+   in-progress label) — they are being worked elsewhere. If NO not-in-progress open
+   issue remains, go to DONE.
+2. From the remainder, choose the single highest **impact / urgency / severity** issue
+   (issue X), judging autonomously from labels (e.g. `critical`/`security`/`bug` >
+   `enhancement`), the described blast radius, regressions vs. enhancements, age, and
+   dependencies between issues. Record the choice and the rationale as a `DL-NNN` entry.
+3. **CLAIM IT IMMEDIATELY — mark issue X "in progress" on the tracker NOW, before any
+   other work.** Re-fetch issue X one last time via `get-issue` to confirm it is still
+   open and still not in progress (guard against a race where it was just claimed). If
+   it was claimed or closed in this window, drop it and return to step 1 to pick the
+   next candidate. Otherwise, mark it in progress via `update-issue` (assign yourself
+   AND/OR add the project's in-progress label per the recorded convention) and verify
+   the change took effect by re-reading the issue. Record `CURRENT_ISSUE` in
+   `resume_state.md` and a `DL-NNN` entry. This claim is what stops other workers (and
+   future iterations of this agent) from duplicating the work — it happens at selection
+   time, not after the fix is built.
 
 ## PREPARE
-1. `git fetch origin`; ensure the main branch locally matches `origin/<main>` (fast-
-   forward; never discard local work — the tree is clean from D4).
+Issue X is already claimed (in progress) from SELECT, so other workers skip it.
+1. Run **Remote Sync** on the main checkout so the worktree is branched from the very
+   latest `origin/<main>` (discipline B; this also re-confirms `main` is current right
+   before branching).
 2. Create the worktree + branch from fresh origin/main:
    `git worktree add .claude/worktrees/issue-<X> -b issue-<X>-<slug> origin/<main>`.
    Resolve and record the ABSOLUTE worktree path as `CURRENT_WORKTREE`, the branch as
-   `CURRENT_BRANCH`. Mark the issue in progress on the tracker via `update-issue`
-   (assign yourself or add the in-progress label) so other workers skip it.
+   `CURRENT_BRANCH`. (If origin advanced between step 1 and here, run Remote Sync on the
+   worktree too, so the branch starts from the freshest base.)
 3. Mirror the FIX state into `workflow_state.md` (CURRENT_SPEC=<worktree>/.claude/specs/
    <slug>, Phase=FIX) so the TDD/evidence hooks recognize the active workflow.
 
@@ -219,12 +278,16 @@ test + regression tests), and the proof (quoted key command output / link to
 an evidence-based message that references issue #X.
 
 ## PR (prepare and land the merge request)
-1. **Integrate remote changes.** `git -C <worktree> fetch origin`; rebase the branch on
-   the latest `origin/<main>`: `git -C <worktree> rebase origin/<main>`. On conflict,
-   resolve LINE BY LINE: for each `--diff-filter=U` file, read BOTH sides, produce a
-   merged version that preserves BOTH intents (never blindly overwrite incoming changes),
-   `git -C <worktree> add` it, `rebase --continue`. If the rebase becomes untenable,
-   `rebase --abort` and fall back to a merge of origin/<main>, same line-by-line rule.
+1. **Integrate remote changes (Remote Sync on the worktree).** This is discipline B
+   point 4 — FIX has just completed (a major phase), so before opening the PR you
+   integrate whatever landed on `origin/<main>` while you worked: `git -C <worktree>
+   fetch origin --prune`; rebase the branch on the latest `origin/<main>`:
+   `git -C <worktree> rebase origin/<main>`. On conflict, resolve LINE BY LINE: for each
+   `--diff-filter=U` file, read BOTH sides, produce a merged version that preserves BOTH
+   intents (never blindly overwrite incoming changes), `git -C <worktree> add` it,
+   `rebase --continue`. If the rebase becomes untenable, `rebase --abort` and fall back
+   to a merge of origin/<main>, same line-by-line rule. After integrating, re-run the
+   full suite in the worktree to confirm nothing the rebase pulled in broke the fix.
 2. **Stage everything that belongs.** `git -C <worktree> status` — ensure every changed,
    non-gitignored file is staged and committed (nothing left behind). Do not commit
    gitignored or `.kiro/` content.
@@ -245,8 +308,9 @@ an evidence-based message that references issue #X.
 ## MERGE_CLEANUP
 After the PR is merged and the remote branch is deleted (`delete-remote-branch` if the
 host didn't auto-delete):
-1. In the MAIN checkout: `git fetch origin`, `git checkout <main>`, fast-forward to
-   `origin/<main>` so the merged fix is present locally.
+1. In the MAIN checkout: `git checkout <main>`, then run **Remote Sync** on the main
+   checkout (discipline B point 5) so the just-merged fix — and anything else merged
+   meanwhile — is present locally before cleanup and the next iteration.
 2. Remove the worktree: `git worktree remove .claude/worktrees/issue-<X>` (use `--force`
    only if you have confirmed there is no uncommitted work to preserve), then
    `git branch -D <branch>`. Verify NO leftover files: `git worktree list` no longer
@@ -260,8 +324,9 @@ Close issue X via `update-issue` (state closed) with a final comment linking the
 PR and the evidence. Mark it resolved in `issue_queue.md`. Append a `DL-NNN` entry.
 
 ## refresh → LOAD_ISSUES
-Re-retrieve all open issues from the remote (descriptions, comments, material) — the
-backlog may have changed while you worked — and return to LOAD_ISSUES.
+Return to LOAD_ISSUES, which re-runs Remote Sync and re-retrieves ALL open issues fresh
+(disciplines A and B). Do not carry over the previous iteration's issue list — the
+backlog may have changed (issues closed or claimed) while you worked.
 
 ## DONE
 Reached when SELECT finds no not-in-progress open issue. Set `resume_state.md`

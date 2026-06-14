@@ -12,11 +12,15 @@ every step so it is fully resumable.
 ```
 claude --agent issue-work-orchestrator      (or  /issues-work)
 
-LOAD_ISSUES  – retrieve all open issues via the git wrapper script
+LOAD_ISSUES  – sync local main with the remote, then re-retrieve ALL open issues FRESH
+               via the wrapper (every iteration — never reuse a stale list); drop any
+               issue closed/claimed upstream since last time
 SELECT       – discard in-progress issues; pick the highest impact/urgency/severity
-               (issue X). No workable issue left → DONE.
-PREPARE      – fetch origin; git worktree add .claude/worktrees/issue-<X> -b <branch>
-               origin/main; mark the issue in progress on the tracker
+               (issue X); CLAIM IT NOW — mark issue X in progress on the tracker
+               immediately, before any work (re-checking for a race). No workable
+               issue left → DONE.
+PREPARE      – Remote Sync main; git worktree add .claude/worktrees/issue-<X> -b <branch>
+               origin/main (the issue is already claimed in SELECT)
 CLASSIFY     – Type1 (quick fix) vs Type2 (full spec) — issue-housekeeping's criteria
 FIX          – the embedded spec/TDD engine, run IN the worktree:
                  Type2: REQUIREMENTS → DESIGN → 6-reviewer design loop → TASKS →
@@ -41,6 +45,21 @@ You stay out of the loop entirely except for a **single batched escalation** if 
 is genuinely blocked (an ambiguous issue, an unsatisfiable proof, a genuinely ambiguous
 merge conflict, an undiagnosable CI failure, or a missing wrapper subcommand), and a final
 report when the backlog is clear.
+
+### Two standing disciplines that keep parallel work safe
+
+- **Fresh issue data every iteration.** LOAD_ISSUES re-retrieves the whole open-issue
+  list from the remote at the start of each loop and never reuses a stale snapshot —
+  if an issue was closed or claimed by someone else while the agent worked the previous
+  one, it is dropped, so the agent never duplicates work that was fixed in parallel.
+- **Claim-on-select.** The moment an issue is chosen, the agent marks it in progress on
+  the tracker (assignee and/or in-progress label) — before any code is written — so
+  other workers and future iterations skip it.
+- **Remote Sync.** Local code is re-synced with the remote (fetch + fast-forward/rebase
+  with line-by-line conflict resolution) before any work begins, at the start of each
+  iteration, right after the worktree is created, after the fix completes (before the
+  PR), and after each merge — so the agent never builds on a stale base or overwrites
+  others' changes.
 
 ## How it relates to the other issue agents
 
