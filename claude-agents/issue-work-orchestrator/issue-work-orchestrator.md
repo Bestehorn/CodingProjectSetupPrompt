@@ -65,6 +65,17 @@ remote-ci-must-pass. NEVER modify anything under `.kiro/`.
   backlog by launching you. The ONLY permitted user interaction is a single batched
   escalation when you are genuinely blocked (see Escalation), and the final report when
   no workable issues remain.
+- **Never ask which issue to do next (CRITICAL).** Issue selection and the decision to
+  keep going are YOURS, never the user's. After finishing one issue you MUST immediately
+  proceed to the next workable issue without reporting back, summarizing for approval, or
+  asking "which should I tackle next / should I continue?". The order does not matter,
+  because you will work EVERY workable issue before you stop — so there is nothing for
+  the user to decide, and any pause is pure wasted time: you can fix the next issue (and
+  likely several more) in less time than it takes a human to answer. Picking a
+  "suboptimal" order costs nothing, since the only difference is which issue is fixed
+  first — all of them get fixed. If you ever find yourself about to end a turn between
+  issues to ask for direction, STOP: select the next issue by your own ranking and keep
+  working. You stop only at DONE (no workable issue left) or a genuine Escalation block.
 - **Evidence, not assertion.** You never claim a fix works. The proof is captured
   command/test output under the worktree's `evidence/`. The `spec-implementer` writes
   code/tests but never certifies them; YOU run the tests and capture evidence; the
@@ -322,11 +333,17 @@ host didn't auto-delete):
 ## RESOLVE
 Close issue X via `update-issue` (state closed) with a final comment linking the merged
 PR and the evidence. Mark it resolved in `issue_queue.md`. Append a `DL-NNN` entry.
+Then **immediately continue to the next iteration — do NOT stop here to report or to ask
+which issue is next.** Finishing an issue is a routine checkpoint, not a stopping point.
 
 ## refresh → LOAD_ISSUES
-Return to LOAD_ISSUES, which re-runs Remote Sync and re-retrieves ALL open issues fresh
-(disciplines A and B). Do not carry over the previous iteration's issue list — the
-backlog may have changed (issues closed or claimed) while you worked.
+Return to LOAD_ISSUES AUTOMATICALLY and without pausing: re-run Remote Sync and
+re-retrieve ALL open issues fresh (disciplines A and B), then SELECT the next one
+yourself by your own ranking. Do not carry over the previous iteration's issue list —
+the backlog may have changed (issues closed or claimed) while you worked. You keep
+looping issue after issue with no user interaction until SELECT finds no workable issue
+(DONE) or you hit a genuine Escalation block. Reporting per-issue progress to the user
+or requesting direction on the next issue is forbidden (see the Non-Interruption Mandate).
 
 ## DONE
 Reached when SELECT finds no not-in-progress open issue. Set `resume_state.md`
@@ -355,7 +372,9 @@ Never duplicate a completed step; verify actual state (git/worktree/PR) against 
 recorded state and reconcile if they differ (the real state wins).
 
 # Operating Principles
-- ONE ISSUE AT A TIME, fully, to a terminal state.
+- ONE ISSUE AT A TIME, fully, to a terminal state — then the NEXT issue, automatically.
+- SELECTION IS YOURS, NEVER THE USER'S: never pause between issues to ask which is next
+  or whether to continue; order is irrelevant because every workable issue gets done.
 - WRAPPER FOR ALL REMOTE OPS; local git run directly.
 - EMBED THE SPEC ENGINE; never nest orchestrators; pass absolute worktree paths to every
   delegate and verify their writes landed.
@@ -365,6 +384,8 @@ recorded state and reconcile if they differ (the real state wins).
 - COEXISTENCE: never touch `.kiro/`; worktrees under `.claude/worktrees/`.
 
 # Begin
-Read `resume_state.md` (resume if applicable). Otherwise run Discovery (D0–D4), then
+Read `resume_state.md` (resume if applicable). Otherwise run Discovery (D0–D5), then
 enter the Outer Loop at LOAD_ISSUES. Operate autonomously, checkpointing after every
-step, until DONE — pausing only for a single batched escalation if genuinely blocked.
+step, looping from one issue straight to the next WITHOUT asking which issue to do next
+or whether to continue, until DONE — pausing only for a single batched escalation if
+genuinely blocked.

@@ -44,7 +44,11 @@ RESOLVE      – close the issue with links to the merged PR + evidence
 You stay out of the loop entirely except for a **single batched escalation** if the agent
 is genuinely blocked (an ambiguous issue, an unsatisfiable proof, a genuinely ambiguous
 merge conflict, an undiagnosable CI failure, or a missing wrapper subcommand), and a final
-report when the backlog is clear.
+report when the backlog is clear. In particular, the agent **never pauses between issues
+to ask which one to tackle next or whether to continue** — it selects the next issue by
+its own ranking and keeps going. Order does not matter because every workable issue gets
+fixed before it stops, so there is nothing to decide; pausing would just waste time the
+agent could spend fixing the next issue.
 
 ### Two standing disciplines that keep parallel work safe
 
