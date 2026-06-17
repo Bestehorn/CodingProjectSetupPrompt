@@ -607,7 +607,11 @@ pushing, determine the host and monitor CI to a terminal state via the wrapper
 script (`scripts/github_wrapper.py` / `scripts/gitlab_wrapper.py`), fixing
 failures and looping until green — never `--no-verify`, never abandoning a red
 pipeline. (Reuse the body of Kiro's `git-workflow-shared.md` +
-`git-*.kiro.hook` verbatim if present.)
+`git-*.kiro.hook` verbatim if present.) These commands MUST follow
+`.claude/rules/no-ai-attribution.md`: commit messages, PR/MR titles/bodies, and
+branch names describe the work only — no `Co-Authored-By: Claude`, no
+`🤖 Generated with Claude Code`, no AI/assistant/bot attribution, and never an
+auto-generated `claude/<name>` branch; strip any such trailer the tool adds.
 
 ### Part 6.2 — Event-driven automation → settings.json `hooks`
 
@@ -949,7 +953,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
   `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
   `spec-phase-implement.md`.
-- **Shared decision-log rule** → `.claude/rules/agent-state-convention.md`.
+- **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (decision log) and
+  `no-ai-attribution.md` (descriptive names only; no Claude/AI/bot attribution in any
+  commit, PR/MR, issue, branch, worktree, or tag).
 - **TDD/evidence hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`,
   `spec-stop-gate.sh`, `red-for-right-reason.sh` (make them executable).
 
@@ -962,6 +968,7 @@ cp claude-agents/spec-review/*.md              .claude/agents/
 cp claude-commands/spec-*.md                   .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/agent-state-convention.md .claude/rules/
+cp claude-agents/spec-workflow/rules/no-ai-attribution.md      .claude/rules/
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
@@ -1012,18 +1019,23 @@ recently modified `.claude/agent-state/*/workflow_state.md` — written by the
 spec-conductor OR the issue-work-orchestrator), so they do not interfere with normal
 sessions but DO fire when the orchestrator drives the embedded spec phases.
 
-### Part 12.3 — Make the decision-log convention universal
+### Part 12.3 — Make the shared conventions universal
 
-In root `CLAUDE.md`, add one line so ALL agents (the spec-workflow agents AND the
-ported ones) share the state/decision convention without their bodies changing:
+In root `CLAUDE.md`, add these lines so ALL agents (the spec-workflow agents, the
+ported ones, AND the main session) share the conventions without their bodies changing:
 
 > All agents follow `.claude/rules/agent-state-convention.md` for state directories
 > and the append-only `DL-NNN` decision log.
+> All agents and the main session follow `.claude/rules/no-ai-attribution.md`: names
+> (branches, worktrees, tags) and messages (commits, PRs/MRs, issues, comments) must be
+> descriptive of the work — never include "claude"/AI/assistant/bot, and never add a
+> `Co-Authored-By` or `🤖 Generated with Claude Code` trailer.
 
-Because that rule file has no `paths:` frontmatter, it loads every session and every
-agent observes it. This is how decisions and the discussion behind them are preserved
-across agents and future sessions (the user's state-driven requirement, applied to
-all agents, not only the new ones).
+Because those rule files have no `paths:` frontmatter, they load every session and every
+agent observes them. The decision-log rule preserves decisions across agents and
+sessions (the user's state-driven requirement); the no-ai-attribution rule keeps the
+repository's history, branches, and tracker free of AI attribution and tool-generated
+names — applied to all agents, not only the new ones.
 
 ### Part 12.4 — .gitignore
 
@@ -1216,7 +1228,9 @@ orchestrator autonomously delivers the real fixes to `main`.
   spec-implementer (+ reused spec-review-agent, spec-prompt-author-agent).
 - Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
 - Gates: spec-tdd-gate.sh (commit), spec-stop-gate.sh (turn-end),
-  red-for-right-reason.sh. Decision log: .claude/rules/agent-state-convention.md.
+  red-for-right-reason.sh. Shared rules: .claude/rules/agent-state-convention.md
+  (decision log) and .claude/rules/no-ai-attribution.md (descriptive names, no AI
+  attribution in commits/PRs/issues/branches/worktrees).
 
 ### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).

@@ -56,7 +56,10 @@ conflict-resolution choice, merge decision) — to the worktree spec's
 Follow the always-loaded project rules: no-output-shortening (read COMPLETE command
 output; never tail/head/Select-Object), no-guessing (every claim cites evidence),
 tests-must-not-fail, use-venv, no-environment-vars, use-git-wrapper-scripts,
-remote-ci-must-pass. NEVER modify anything under `.kiro/`.
+remote-ci-must-pass, and **no-ai-attribution** (descriptive names only; never put
+"claude"/AI/bot into a branch, worktree, commit, PR, or issue, and never add a
+`Co-Authored-By`/`🤖 Generated with Claude Code` trailer). NEVER modify anything under
+`.kiro/`.
 
 # Mandates
 
@@ -212,8 +215,12 @@ Issue X is already claimed (in progress) from SELECT, so other workers skip it.
 1. Run **Remote Sync** on the main checkout so the worktree is branched from the very
    latest `origin/<main>` (discipline B; this also re-confirms `main` is current right
    before branching).
-2. Create the worktree + branch from fresh origin/main:
-   `git worktree add .claude/worktrees/issue-<X> -b issue-<X>-<slug> origin/<main>`.
+2. Create the worktree + branch from fresh origin/main with an EXPLICIT, DESCRIPTIVE
+   branch name (per `.claude/rules/no-ai-attribution.md`):
+   `git worktree add .claude/worktrees/issue-<X> -b issue-<X>-<slug> origin/<main>`,
+   where `<slug>` describes the issue/work (e.g. `issue-77-invoke-grant`). NEVER let git
+   or the tool assign an auto-generated `claude/<adjective>-<name>` branch name, and
+   never put "claude"/"ai"/"bot" in the branch name. Always pass `-b <descriptive>`.
    Resolve and record the ABSOLUTE worktree path as `CURRENT_WORKTREE`, the branch as
    `CURRENT_BRANCH`. (If origin advanced between step 1 and here, run Remote Sync on the
    worktree too, so the branch starts from the freshest base.)
@@ -288,6 +295,13 @@ test + regression tests), and the proof (quoted key command output / link to
 `evidence/REPORT.md`). Commit all worktree changes (spec + code + tests + evidence) with
 an evidence-based message that references issue #X.
 
+NO AI ATTRIBUTION (per `.claude/rules/no-ai-attribution.md`): the issue comment, the
+commit message, and later the PR/MR text describe the work only — they must NOT contain
+`Co-Authored-By: Claude`, `🤖 Generated with Claude Code`, "fixed by <agent>", or any
+mention of Claude/AI/assistant/bot. Whether a human or an agent did the work is
+irrelevant to the repo. Strip any such trailer the tool adds by default; write only the
+descriptive message.
+
 ## PR (prepare and land the merge request)
 1. **Integrate remote changes (Remote Sync on the worktree).** This is discipline B
    point 4 — FIX has just completed (a major phase), so before opening the PR you
@@ -306,7 +320,10 @@ an evidence-based message that references issue #X.
    failure at root cause; re-run until green (capture evidence). Then push:
    `git -C <worktree> push -u origin <branch>`.
 4. **Open the PR** via `create-pr` (base = main, head = branch, body linking the issue
-   and the fix doc/evidence). Record `CURRENT_PR`.
+   and the fix doc/evidence). Record `CURRENT_PR`. The PR title and body describe the
+   change, root cause, fix, and evidence ONLY — no `🤖 Generated with Claude Code`, no
+   `Co-Authored-By`, no AI/assistant/bot attribution anywhere (per
+   `.claude/rules/no-ai-attribution.md`); remove any such line the tool adds.
 5. **Approve + merge per authority.** Try `approve-pr` then `merge-pr`. If branch
    protection forbids self-approval, poll `get-pr` for an external approval (re-check on
    an interval; checkpoint between polls so a restart resumes the wait), then merge once

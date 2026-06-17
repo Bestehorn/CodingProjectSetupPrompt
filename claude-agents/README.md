@@ -61,6 +61,7 @@ evidence-proven code in one session.
 | `spec-implementer.md` | Test-first implementer (never certifies itself) |
 | `phases/spec-phase-*.md` | Phase procedures (shared by conductor + commands) |
 | `rules/agent-state-convention.md` | Cross-agent decision-log convention (all agents) |
+| `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
 | `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the

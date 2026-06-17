@@ -106,13 +106,16 @@ cp claude-agents/spec-review/spec-prompt-author-agent.md  .claude/agents/
 cp claude-commands/spec-*.md                              .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md                .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/agent-state-convention.md .claude/rules/
+cp claude-agents/spec-workflow/rules/no-ai-attribution.md      .claude/rules/
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 
 Then register the TDD gates in `.claude/settings.json` (PreToolUse(Bash) →
 `spec-tdd-gate.sh`; Stop → `spec-stop-gate.sh`) and add to root `CLAUDE.md`:
 "All agents follow `.claude/rules/agent-state-convention.md` for state and decision
-logging." `ClaudeCodeSetupPrompt.txt` (Part 12) does all of this for you.
+logging, and `.claude/rules/no-ai-attribution.md` for descriptive names with no
+Claude/AI attribution in commits, PRs, issues, branches, or worktrees."
+`ClaudeCodeSetupPrompt.txt` (Part 12) does all of this for you.
 
 ## Durable state (preserved for later agents)
 
