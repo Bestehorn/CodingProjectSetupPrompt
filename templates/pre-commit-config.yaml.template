@@ -1,4 +1,4 @@
-# All available pre-commit hooks. The git hook in .git/hooks/pre-commit
+# All available pre-commit hooks. The tracked git hook in .githooks/pre-commit
 # selectively runs only the fast ones (ruff + ruff-format). Slow ones
 # (mypy, pytest) are available via `pre-commit run <id>` or in CI.
 repos:
