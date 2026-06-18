@@ -132,6 +132,30 @@ def _api_request(
 #   - delete_branch(branch): DELETE /repository/branches/{url-encoded-branch}
 #     (only needed if the MR did not auto-remove the source branch).
 #
+# Issue metadata + checklist subcommands (best-effort; see the
+# issue-tracking rule, .claude/rules/issue-tracking.md). GitLab supports
+# most of these natively:
+#   - issue_assign(iid, username): set the assignee (the "in progress"
+#     claim). PUT /issues/{iid} {"assignee_ids":[<user id>]} (resolve the
+#     user id via GET /users?username=...).
+#   - set_due_date / start: PUT /issues/{iid} {"due_date": "<YYYY-MM-DD>"}
+#     for a target/end date; GitLab has no first-class "start date" on plain
+#     issues (it exists on epics), so record the start as a dated note unless
+#     the project uses epics.
+#   - time tracking: POST /issues/{iid}/add_spent_time {"duration":"3h"}
+#     (equivalent to the /spend quick action) to record time-spent; optional
+#     POST /issues/{iid}/time_estimate.
+#   - set_parent(iid, parent): for an epic parent use the Epic-Issues API
+#     (PUT /groups/{g}/epics/{epic_iid}/issues/{issue_id}); for a parent/child
+#     issue link use POST /issues/{iid}/links. If neither applies, record the
+#     link as a note and report the limitation.
+#   - checklist items live in the issue DESCRIPTION as "- [ ]" / "- [x]"
+#     lines: toggle_checklist_item(iid, item_text, checked) by GET-ing the
+#     description, flipping the matching line, and PUT-ing it back. (GitLab
+#     renders these as "N of M checklist items completed".)
+# For every field the host or this issue does not support, return a clear
+# "unsupported" result so the caller can fall back to a note and continue.
+#
 # If a host requires corporate-SSO cookie auth, add it at the documented
 # extension point above (same as the read-only subcommands).
 

@@ -91,6 +91,16 @@ observation; `issue-housekeeping` batch-triages all issues with local quick-fixe
 pushes); `issue-work-orchestrator` delivers issues one at a time through the full remote
 PR/CI/merge lifecycle with proof.
 
+## Mandatory merge agent (`code-merge-reviewer/`)
+
+Whenever local code must be integrated with the remote and a conflict arises, the work
+is delegated to `code-merge-reviewer` — a dedicated subagent that reviews the merge
+holistically, resolves every conflict **line by line** preserving both sides' intent,
+forbids blind "take theirs/ours", and re-runs the test suite to prove no regression
+before declaring the merge done. The `issue-work-orchestrator` delegates all conflict
+resolution to it (in Remote Sync and the PR rebase); any agent doing merges should too.
+Full docs: [`code-merge-reviewer/README.md`](code-merge-reviewer/README.md).
+
 ## How Claude Code discovers subagents
 
 Claude Code reads subagent definitions from two locations:

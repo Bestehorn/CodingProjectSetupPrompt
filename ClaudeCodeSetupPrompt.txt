@@ -527,6 +527,13 @@ subcommands the project's agents invoke. The minimum set:
   (See the expanded docstrings in `templates/github_wrapper.py.template` and
   `templates/gitlab_wrapper.py.template` for the exact REST endpoints and the
   "can't approve your own PR/MR" caveat the orchestrator handles by polling.)
+- Issue metadata + checklist (best-effort, per `issue-tracking.md`): assign an
+  issue, set start/end dates, record time-spent, set a parent/epic link, and
+  toggle a checklist item. GitLab supports these natively (assignee, `/spend`,
+  due date, epics, task-list lines); GitHub mostly via the issue body/comments
+  (no native time-tracking or start-date on classic issues). The wrapper should
+  implement what the host supports and return a clear "unsupported" result
+  otherwise so agents degrade gracefully. (See the wrapper docstrings.)
 
 If you allow `gh`/`glab` instead of the wrapper, add the corresponding allow
 rules (e.g. `Bash(gh pr *)`, `Bash(gh issue *)`) and the orchestrator will use
@@ -953,11 +960,17 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
   `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
   `spec-phase-implement.md`.
-- **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (decision log) and
-  `no-ai-attribution.md` (descriptive names only; no Claude/AI/bot attribution in any
-  commit, PR/MR, issue, branch, worktree, or tag).
-- **TDD/evidence hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`,
-  `spec-stop-gate.sh`, `red-for-right-reason.sh` (make them executable).
+- **Shared rules** → `.claude/rules/` (all always-loaded; referenced from CLAUDE.md):
+  `agent-state-convention.md` (decision log), `no-ai-attribution.md` (descriptive names
+  only; no Claude/AI/bot attribution in any commit, PR/MR, issue, branch, worktree, or
+  tag), `keep-git-clean.md` (commit source/config/docs/tests, never generated/temp
+  files, no stale worktrees/branches, tree clean at phase boundaries and closure), and
+  `issue-tracking.md` (use+update issue checklists, set metadata, keep the issue updated
+  live, log Q&A on the issue — best-effort per host).
+- **TDD/evidence + loop hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`,
+  `spec-stop-gate.sh`, `red-for-right-reason.sh`, and `issue-loop-gate.sh` (the
+  Stop-hook that keeps the issue-work-orchestrator working autonomously while workable
+  issues remain). Make them executable.
 
 Install command (run from this repo, targeting the project root):
 ```bash
@@ -967,8 +980,9 @@ cp claude-agents/spec-workflow/*.md            .claude/agents/    # excludes REA
 cp claude-agents/spec-review/*.md              .claude/agents/
 cp claude-commands/spec-*.md                   .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
-cp claude-agents/spec-workflow/rules/agent-state-convention.md .claude/rules/
-cp claude-agents/spec-workflow/rules/no-ai-attribution.md      .claude/rules/
+cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-convention,
+                                                               # no-ai-attribution,
+                                                               # keep-git-clean, issue-tracking
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
@@ -1030,6 +1044,13 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > (branches, worktrees, tags) and messages (commits, PRs/MRs, issues, comments) must be
 > descriptive of the work — never include "claude"/AI/assistant/bot, and never add a
 > `Co-Authored-By` or `🤖 Generated with Claude Code` trailer.
+> All agents follow `.claude/rules/keep-git-clean.md`: commit source/config/docs/tests,
+> never auto-generated or temp files, leave no stale worktrees/branches, and keep the
+> working tree clean at every phase boundary and at issue closure.
+> All agents that touch the issue tracker follow `.claude/rules/issue-tracking.md`: use
+> and update issue checklists, set metadata (assignee, start/end date, time-spent,
+> parent link) best-effort per host, keep the issue updated live so any agent can
+> resume, and record every user question and its answer on the issue.
 
 Because those rule files have no `paths:` frontmatter, they load every session and every
 agent observes them. The decision-log rule preserves decisions across agents and
@@ -1089,17 +1110,33 @@ TDD/evidence hooks). Install Part 12 first.
 - `claude-agents/issue-work-orchestrator/issue-work-orchestrator.md` →
   `.claude/agents/` (the main-session orchestrator;
   `claude --agent issue-work-orchestrator`).
+- `claude-agents/code-merge-reviewer/code-merge-reviewer.md` → `.claude/agents/` (the
+  mandatory conflict-resolution agent the orchestrator delegates every merge to).
 - `claude-commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
   resume).
+- `issue-loop-gate.sh` (installed with the other hooks in Part 12) registered as a
+  **Stop** hook so the orchestrator keeps working autonomously while workable issues
+  remain instead of pausing to ask which issue is next.
 
 ```bash
 cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md .claude/agents/
+cp claude-agents/code-merge-reviewer/code-merge-reviewer.md         .claude/agents/
 cp claude-commands/issues-work.md                                   .claude/commands/
 ```
 
-Also: ensure the git wrapper implements the PR/merge/CI subcommands (Part 5.3), and
-add `.claude/worktrees/` to `.gitignore` (the orchestrator creates per-issue worktrees
-there). `.claude/agent-state/` is already gitignored (Part 3).
+Register `issue-loop-gate.sh` in `.claude/settings.json` under `hooks.Stop` alongside
+`spec-stop-gate.sh` (both are Stop hooks; list both in the `Stop` array):
+```json
+{ "type": "command", "command": "bash",
+  "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-loop-gate.sh"] }
+```
+
+Also: ensure the git wrapper implements the PR/merge/CI subcommands AND the issue
+metadata/checklist subcommands (Part 5.3), and add `.claude/worktrees/` to `.gitignore`
+(the orchestrator creates per-issue worktrees there). `.claude/agent-state/` is already
+gitignored (Part 3). The orchestrator depends on the shared rules `keep-git-clean.md`
+and `issue-tracking.md` and the `code-merge-reviewer` agent (Part 12 installs the
+rules).
 
 ### Part 13.2 — How it drives the fix (architecture)
 
@@ -1135,13 +1172,26 @@ poll for approval**, monitor CI, fix failures) → MERGE_CLEANUP (Remote Sync ma
 worktree + local branch, verify post-merge CI) → RESOLVE (close issue) → refresh →
 repeat until no not-in-progress open issue remains. All remote ops go through the wrapper.
 
-Two standing disciplines guard against parallel/duplicated work: (1) **fresh issue data
-every iteration** — the agent never reuses a previous list, so issues closed or claimed
-elsewhere are dropped; (2) **Remote Sync** — local code is re-synced with the remote
-(fetch + fast-forward/rebase, line-by-line conflict resolution, never overwriting
-others' changes) before any work, at each iteration start, after worktree creation,
-before the PR, and after each merge. The issue is claimed in-progress at selection time
-so other workers skip it.
+Standing disciplines guard against parallel/duplicated work and a messy repo:
+(1) **fresh issue data every iteration** — the agent never reuses a previous list, so
+issues closed or claimed elsewhere are dropped; (2) **Remote Sync, early and often** —
+local code is re-synced with the remote before any work, at each iteration start, after
+worktree creation, periodically during long fixes, before the PR, and after each merge,
+so conflicts stay small and others' changes are never overwritten; (3) **mandatory
+merge agent** — every conflict is delegated to `code-merge-reviewer`, which resolves
+holistically and line by line, preserves both sides' intent, forbids blind take-a-side,
+and re-runs the suite to prove no regression; (4) **claim at selection** — the issue is
+assigned + dated in-progress the moment it is chosen, so other workers skip it; (5)
+**the issue is the live record** — checklists, progress, Q&A, and metadata
+(assignee/dates/time-spent/parent) are kept updated ON the issue throughout, so any
+agent can resume from it; (6) **keep-git-clean** — only the right files are committed
+(never generated/temp), and no stale worktree/branch survives closure.
+
+Autonomy is enforced mechanically: the `issue-loop-gate.sh` **Stop hook** blocks
+turn-end while the orchestrator run is `IN_PROGRESS` and workable issues remain (and no
+genuine escalation/approval wait is recorded), so the agent cannot stop to ask "which
+issue next?" — it must select the next one and continue. This backs the prompt-level
+mandate with a hard gate.
 
 ### Part 13.4 — Resumability (the user's hard requirement)
 
@@ -1228,18 +1278,26 @@ orchestrator autonomously delivers the real fixes to `main`.
   spec-implementer (+ reused spec-review-agent, spec-prompt-author-agent).
 - Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
 - Gates: spec-tdd-gate.sh (commit), spec-stop-gate.sh (turn-end),
-  red-for-right-reason.sh. Shared rules: .claude/rules/agent-state-convention.md
-  (decision log) and .claude/rules/no-ai-attribution.md (descriptive names, no AI
-  attribution in commits/PRs/issues/branches/worktrees).
+  red-for-right-reason.sh, issue-loop-gate.sh (keeps the orchestrator looping).
+  Shared always-loaded rules in .claude/rules/: agent-state-convention.md (decision
+  log), no-ai-attribution.md (descriptive names, no AI attribution), keep-git-clean.md
+  (commit-what-belongs, no stale worktrees/branches), issue-tracking.md (checklists +
+  metadata + live issue updates + Q&A on issue).
 
 ### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).
-  Works the whole open-issue backlog: select → worktree → fix via the spec/TDD engine
-  with proof → PR → CI → self-merge-if-allowed → cleanup → close → repeat. Resumable.
+  Works the whole open-issue backlog: select+claim → worktree → fix via the spec/TDD
+  engine with proof → live issue updates → PR → CI → self-merge-if-allowed → cleanup →
+  close → repeat, autonomously (issue-loop-gate Stop-hook prevents pausing to ask which
+  issue is next). Resumable.
+- Mandatory merge agent: `code-merge-reviewer` — every rebase/merge conflict is
+  delegated to it (holistic + line-by-line, both intents preserved, no blind
+  take-a-side, regression-gated). Never resolve conflicts inline.
 - Command: /issues-work (start or resume; "continue the work on the existing issues").
 - New wrapper subcommands required (Part 5.3): GitHub get-pr, get-pr-checks, approve-pr,
-  merge-pr, delete-remote-branch, list-issues --state/--assignee/--label; GitLab mr
-  get/checks/approve/merge, delete-branch.
+  merge-pr, delete-remote-branch, list-issues --state/--assignee/--label, plus
+  best-effort issue metadata/checklist ops; GitLab mr get/checks/approve/merge,
+  delete-branch, plus assign/spend/due-date/epic-link/checklist-toggle.
 - Per-issue worktrees under .claude/worktrees/ (gitignore them).
 
 # END OF PROMPT

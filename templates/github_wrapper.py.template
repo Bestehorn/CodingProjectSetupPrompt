@@ -153,6 +153,31 @@ def _api_request(
 #     update_pr_description(pr_number, body): PATCH the PR body to link
 #     the fix documentation / evidence.
 #
+# Issue metadata + checklist subcommands (best-effort; see the
+# issue-tracking rule, .claude/rules/issue-tracking.md). GitHub models
+# most of these differently from GitLab — implement what the host
+# supports and have the caller degrade gracefully:
+#   - assign_issue(number, assignee): set/clear the assignee (the
+#     "in progress" claim). POST/PATCH /repos/{o}/{r}/issues/{n}/assignees
+#     or PATCH issue with "assignees".
+#   - set_issue_labels(number, labels): add/remove labels (e.g. an
+#     in-progress label). (Also covered by update_issue.)
+#   - set_parent(number, parent): link a parent/tracking issue. GitHub has
+#     no first-class parent field on classic issues — implement via a
+#     task-list reference on the parent and/or the sub-issues API if the
+#     repo uses it; if unavailable, record the link as a comment and report
+#     "parent linking unsupported on this host".
+#   - toggle_checklist_item(number, item_text, checked): GitHub task lists
+#     live in the issue BODY as "- [ ] item" / "- [x] item" lines. Implement
+#     by GET-ing the issue body, flipping the matching line, and PATCH-ing
+#     the body back. (GitLab has a dedicated checklist API; GitHub does not.)
+#   - Time tracking: GitHub has no native time-tracking field. Record
+#     time-spent in a closing comment instead; report the limitation.
+#   - Start/end dates: no native field on classic issues; record as a dated
+#     comment (e.g. "Started: <ISO>") unless the repo uses Projects fields.
+# For every field the host does not support, return a clear "unsupported on
+# this host" result so the caller can fall back to a comment and move on.
+#
 # Reference: see the original scaffold in
 # CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
 # and extend per project needs.
