@@ -960,17 +960,21 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
   `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
   `spec-phase-implement.md`.
-- **Shared rules** → `.claude/rules/` (all always-loaded; referenced from CLAUDE.md):
-  `agent-state-convention.md` (decision log), `no-ai-attribution.md` (descriptive names
-  only; no Claude/AI/bot attribution in any commit, PR/MR, issue, branch, worktree, or
-  tag), `keep-git-clean.md` (commit source/config/docs/tests, never generated/temp
-  files, no stale worktrees/branches, tree clean at phase boundaries and closure), and
-  `issue-tracking.md` (use+update issue checklists, set metadata, keep the issue updated
-  live, log Q&A on the issue — best-effort per host).
-- **TDD/evidence + loop hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`,
-  `spec-stop-gate.sh`, `red-for-right-reason.sh`, and `issue-loop-gate.sh` (the
-  Stop-hook that keeps the issue-work-orchestrator working autonomously while workable
-  issues remain). Make them executable.
+- **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (decision log + the
+  per-run `runs/<run-id>/` state model, registry, and locks for concurrent runs),
+  `no-ai-attribution.md` (descriptive names only; no Claude/AI/bot attribution in any
+  commit, PR/MR, issue, branch, worktree, or tag), `keep-git-clean.md` (commit
+  source/config/docs/tests, never generated/temp files, no stale worktrees/branches,
+  per-run clean end-state, never move the shared local `main`, concurrency-safe gc
+  config), `issue-tracking.md` (use+update issue checklists, set metadata, keep the issue
+  updated live, log Q&A on the issue — best-effort per host) — all always-loaded — and
+  `per-worktree-venv.md` (CONDITIONAL, `paths:`-scoped to cdk/app projects: each worktree
+  gets its own venv when running code/CDK from worktrees).
+- **Hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`, `spec-stop-gate.sh`,
+  `red-for-right-reason.sh`, `issue-loop-gate.sh` (Stop-hook keeping the orchestrator
+  working autonomously while workable issues remain), and `session-register.sh`
+  (SessionStart hook that records each run's `session_id`→run mapping in `registry.json`
+  so the agent and the gate hooks know which run owns the session). Make them executable.
 
 Install command (run from this repo, targeting the project root):
 ```bash
@@ -997,6 +1001,14 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-register.sh"] }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -1011,7 +1023,9 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
       {
         "hooks": [
           { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-stop-gate.sh"] }
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-stop-gate.sh"] },
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-loop-gate.sh"] }
         ]
       }
     ]
@@ -1019,11 +1033,18 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
 }
 ```
 
+- `session-register.sh` (SessionStart) records each run's `session_id`→run mapping in
+  `registry.json` so the agent and the gate hooks can tell which run owns the session
+  (this is what makes multiple concurrent orchestrator runs in one clone unambiguous).
 - `spec-tdd-gate.sh` blocks `git commit` (and bans `--no-verify`) unless the current
   task has fresh green test evidence.
 - `spec-stop-gate.sh` blocks turn-end during implementation/verification when a task
   is marked done without green evidence, or the latest run is red / contains
   skipped/xfail tests.
+- `issue-loop-gate.sh` keeps the orchestrator looping autonomously (Part 13).
+- The gate hooks are session-identity-aware: they resolve the current `session_id` to its
+  run via `registry.json` and read only THAT run's state, so concurrent runs never
+  cross-trigger each other's gates.
 - `red-for-right-reason.sh` is a helper the conductor invokes to confirm a failing
   test fails on an assertion, not an import/collection error.
 
@@ -1114,9 +1135,9 @@ TDD/evidence hooks). Install Part 12 first.
   mandatory conflict-resolution agent the orchestrator delegates every merge to).
 - `claude-commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
   resume).
-- `issue-loop-gate.sh` (installed with the other hooks in Part 12) registered as a
-  **Stop** hook so the orchestrator keeps working autonomously while workable issues
-  remain instead of pausing to ask which issue is next.
+- The `session-register.sh` (SessionStart) and `issue-loop-gate.sh` (Stop) hooks —
+  installed and wired by Part 12.2's settings block (which already lists them) — give the
+  orchestrator its per-run identity and keep it looping autonomously.
 
 ```bash
 cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md .claude/agents/
@@ -1124,19 +1145,41 @@ cp claude-agents/code-merge-reviewer/code-merge-reviewer.md         .claude/agen
 cp claude-commands/issues-work.md                                   .claude/commands/
 ```
 
-Register `issue-loop-gate.sh` in `.claude/settings.json` under `hooks.Stop` alongside
-`spec-stop-gate.sh` (both are Stop hooks; list both in the `Stop` array):
-```json
-{ "type": "command", "command": "bash",
-  "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-loop-gate.sh"] }
-```
-
 Also: ensure the git wrapper implements the PR/merge/CI subcommands AND the issue
 metadata/checklist subcommands (Part 5.3), and add `.claude/worktrees/` to `.gitignore`
 (the orchestrator creates per-issue worktrees there). `.claude/agent-state/` is already
-gitignored (Part 3). The orchestrator depends on the shared rules `keep-git-clean.md`
-and `issue-tracking.md` and the `code-merge-reviewer` agent (Part 12 installs the
-rules).
+gitignored (Part 3). The orchestrator depends on the shared rules `keep-git-clean.md`,
+`issue-tracking.md`, `agent-state-convention.md`, and (for CDK/app projects)
+`per-worktree-venv.md`, plus the `code-merge-reviewer` agent (Part 12 installs the
+rules + hooks).
+
+### Part 13.1a — Concurrency model (multiple runs in one clone)
+
+Several `issue-work-orchestrator` runs can work ONE clone at once without colliding,
+because each run is isolated rather than coordinated through shared files:
+
+- **Main-checkout-free:** a run never `git checkout main`s or fast-forwards the shared
+  local `main`; it fetches and branches off `origin/<main>` and verifies merges via
+  `git merge-base`. The developer's checkout is never moved.
+- **Per-run state:** each run owns
+  `.claude/agent-state/issue-work-orchestrator/runs/<run-id>/` (its own
+  `resume_state.md`/`workflow_state.md`/…). No two runs share a state file.
+- **Identity via registry:** the SessionStart hook records `session_id`→run in
+  `registry.json`; the agent and the gate hooks resolve "who owns this session" from it
+  (no env var — consistent with `no-environment-vars`).
+- **Per-issue locks:** SELECT acquires `.locks/issue-<N>.lock` (atomic `mkdir`) before
+  claiming on the remote, so two runs in one clone never grab the same issue; stale locks
+  are reclaimed only when the owner is provably dead.
+- **Concurrency-safe gc:** the one-time `gc.auto 0` / `maintenance.auto false` config +
+  `--no-auto-gc` on every fetch prevents the only real shared-object-store corruption
+  hazard (set this before running concurrent work — Discovery D1 applies it).
+- **Per-worktree venv** (CDK/app projects): each worktree gets its own venv so a worktree
+  `cdk synth/deploy` never imports the main checkout's code (`per-worktree-venv.md`).
+
+Separate clones remain available for hard blast-radius isolation, but are no longer
+required for correctness. A clean rule of thumb: **one orchestrator per launch
+directory** (its own worktree/clone) — two runs launched from the *same* directory share
+session storage, so distinct launch dirs keep them cleanly separate.
 
 ### Part 13.2 — How it drives the fix (architecture)
 

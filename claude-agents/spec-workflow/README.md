@@ -105,8 +105,9 @@ cp claude-agents/spec-review/spec-prompt-author-agent.md  .claude/agents/
 # commands, phase fragments, shared rule, hooks
 cp claude-commands/spec-*.md                              .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md                .claude/specs/_workflow/phases/
-cp claude-agents/spec-workflow/rules/agent-state-convention.md .claude/rules/
-cp claude-agents/spec-workflow/rules/no-ai-attribution.md      .claude/rules/
+cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # agent-state-convention,
+                                                                         # no-ai-attribution, keep-git-clean,
+                                                                         # issue-tracking, per-worktree-venv
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 
