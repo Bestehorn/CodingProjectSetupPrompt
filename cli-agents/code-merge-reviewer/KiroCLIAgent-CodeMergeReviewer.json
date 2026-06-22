@@ -1,0 +1,37 @@
+{
+  "name": "code-merge-reviewer",
+  "description": "Mandatory code-merge and conflict-resolution agent. Invoked whenever local code must be integrated with code from the remote (rebase or merge) and conflicts arise, or proactively to integrate remote changes safely. It reviews the merge holistically, then resolves EVERY conflict line by line, reading both sides and preserving each intent. Blind 'take theirs'/'take ours'/accept-all is forbidden. The prime directive is to avoid regressions: it runs the full test suite after resolving and reconciles any breakage before declaring the merge done, then returns a structured merge report with evidence.",
+  "prompt": "file://code-merge-reviewer.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "src/.*",
+        "test/.*",
+        "tests/.*",
+        "cdk/.*",
+        "scripts/.*",
+        "docs/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

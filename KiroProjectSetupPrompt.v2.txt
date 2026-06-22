@@ -43,6 +43,18 @@
 #   - New steering file remote-ci-must-pass.md: no remote-changing git
 #     operation is finished until the CI pipeline completes successfully;
 #     monitor it, retrieve and analyze logs on failure, fix, and retry.
+#   - NEW PART 8A — installs the Kiro CLI custom-agent fleet into
+#     .kiro/agents/: an autonomous issue-work-orchestrator, the
+#     spec-driven + test-driven engine (spec-conductor + 10 specialists),
+#     a mandatory code-merge-reviewer, and standalone utility agents
+#     (dead-code, doc-review, ci-worker, issue-intake/housekeeping,
+#     product-management, spec-review). Includes the enforced gate hooks
+#     in .kiro/hooks-bin/ (preToolUse TDD gate, stop loop/proof gates,
+#     agentSpawn run-register) and five new always-loaded fleet steering
+#     files (8.27-8.31: agent-state-convention, no-ai-attribution,
+#     keep-git-clean, issue-tracking, per-worktree-venv). Agents are
+#     copied from the prompt repo's cli-agents/ tree. The CV suite is a
+#     separate domain pack and is not installed by default.
 
 ---
 
@@ -364,7 +376,9 @@ Apply Rule 1. Create only what is missing. Never delete existing dirs.
 ```
 .kiro/
   steering/        # Kiro steering files (replaces .clinerules / .amazonq)
-  hooks/           # Kiro agent hooks
+  agents/          # Kiro CLI custom agents (the autonomous fleet, PART 8A)
+  hooks/           # Kiro agent hooks (.kiro.hook runtime automation, PART 9)
+  hooks-bin/       # Gate scripts the custom agents invoke (PART 8A)
   settings/        # MCP and other settings
   specs/
     templates/     # Reusable spec templates
@@ -1967,6 +1981,233 @@ finished.
 - The `git-push` hook (Part 9) implements this rule operationally.
 ```
 
+### 8.27 `agent-state-convention.md` (always) — fleet convention
+
+This rule and 8.28–8.31 are the always-loaded conventions the Kiro CLI
+custom-agent fleet (installed in PART 8A) depends on. They apply to EVERY
+agent. Create each as a steering file with `inclusion: always` (no front
+matter is also fine — absent front matter means `always`).
+
+```markdown
+---
+inclusion: always
+---
+# Agent State & Decision-Log Convention (ALL agents)
+
+Every Kiro CLI custom agent keeps its resume/log artifacts under
+`.kiro/agent-state/<agent-name>/` (`<agent-name>` = the agent's `name`, e.g.
+`spec-conductor`, `dead-code-removal-agent`). Typical artifacts: `resume_state.md`
+(Status + phase + counters + git HEAD + source mtimes), `iteration_log.md`,
+`evidence_ledger.md`. Create the directory (and parents) on first use. Archive a
+completed/stale artifact by suffixing an ISO timestamp; never delete history.
+`.kiro/agent-state/` is gitignored (per-run runtime state).
+
+## Per-run namespacing when multiple runs share one clone
+A single-run agent uses the flat layout above. An agent of which **multiple
+instances may run concurrently in one clone** (notably `issue-work-orchestrator`)
+MUST namespace its state per run so runs never share a `resume_state.md` slot:
+
+    .kiro/agent-state/<agent-name>/
+      registry.json            # session_id -> { run_id, session_id, cwd, state_dir,
+                               #                 current_issue, status, started_at, last_heartbeat }
+      .locks/<resource>.lock   # per-resource mkdir locks (atomic create-or-fail; NTFS-safe)
+      runs/<run-id>/           # ONE run's private state subtree
+        resume_state.md  workflow_state.md  environment.md  issue_queue.md  iteration_log.md
+
+Run identity is established by an **agentSpawn hook** (`kiro-session-register.sh`,
+installed in PART 8A) that writes `registry.json` keyed by the `session_id` Kiro
+passes on stdin; `run_id` is derived from it. The agent and the gate hooks both
+resolve "which run owns this session" via that registry — no environment variable
+carries identity (consistent with `no-environment-vars`). The gate hooks
+(`kiro-tdd-gate.sh`, `kiro-stop-gate.sh`, `kiro-loop-gate.sh`) read THIS session's
+`runs/<run-id>/` state, not a globally-most-recent file.
+
+## The decision log (mandatory for all agents)
+Whenever an agent makes a non-trivial decision (a design choice, a classification, a
+fix approach, a convergence/exit call, an escalation) it appends one entry to a
+decision log: to `.kiro/specs/<feature>/decisions/decision-log.md` if operating in a
+spec context, else to `.kiro/agent-state/<agent-name>/decision-log.md`. Entry schema
+(append-only, monotonic `DL-NNN` IDs, never reused):
+
+    ## DL-<nnn> — <ISO-timestamp> — <agent-name> — phase:<PHASE-or-"n/a">
+    **Decision:** <one sentence>
+    **Driver:** <requirement IDs, finding IDs (A2/B1), user answer, a failing test, an MCP source>
+    **Alternatives considered:** <one line each, or "none">
+    **Evidence:** <path:line | evidence/... | review/<r>/iteration-NN.md#A2 | MCP/web citation>
+    **Supersedes:** <DL-mmm, or "none">
+    **Artifacts touched:** <files written/edited>
+
+Rules: append-only (to change a past decision, write a NEW entry whose `Supersedes:`
+points at the old one); every entry cites concrete evidence (a decision with no
+citable driver is itself a defect); record decisions, not narration. **Under
+concurrency:** when multiple runs could append to the SAME log, give each run its OWN
+`runs/<run-id>/decision-log.md` to avoid duplicate IDs; the agent-root log is reserved
+for cross-run notes.
+```
+
+### 8.28 `no-ai-attribution.md` (always) — fleet convention
+
+```markdown
+---
+inclusion: always
+---
+# No AI Attribution; Descriptive Names Only (ALL agents)
+
+**Never attribute work to an AI, an assistant, or a tool, anywhere. Never put
+"claude"/"AI"/"assistant"/"bot"/"LLM"/"Anthropic"/"Copilot"/a model name into any
+name or message you create.** Whether a change was made by a human or an agent is
+irrelevant to the repository and must not appear in it. This applies with NO
+exceptions to:
+
+- **Commit messages** — no `Co-Authored-By: …`, no "🤖 Generated with …", no
+  AI/tool trailer or footer. The message describes the change, nothing about who or
+  what produced it.
+- **PR/MR titles and bodies** — describe the change, root cause, fix, and evidence —
+  not the author. Strip any auto-added "Generated with …" line.
+- **Issue titles, bodies, comments** — no AI attribution, no "fixed by <agent>".
+- **Branch names** — descriptive of the work/issue (`issue-53-relevance-fix`,
+  `fix-customer-count-zero`). NEVER an auto-generated `<tool>/<adjective>-<name>`
+  style and never any name containing "claude"/"ai"/"bot".
+- **Worktree directory names, tags, stashes, and any other ref or label.**
+
+The `.kiro/` configuration directory itself is the tool's fixed config location and
+is not covered by this rule — those are infrastructure paths, not names you choose.
+
+**Naming standard (positive form):** every name describes what the thing does or the
+issue it addresses — branches `<type>-<issue-or-topic>-<slug>`; commit subjects
+imperative ≤72 chars; PR/MR titles the outcome.
+
+**Self-check before any commit / PR / issue / branch:** scan the name and full text
+for `claude`, `AI`, `assistant`, `bot`, `LLM`, `Anthropic`, `Copilot`, `🤖`,
+`Co-Authored-By`, `Generated with`. If any appears as attribution or in a name,
+remove it and restate descriptively.
+```
+
+### 8.29 `keep-git-clean.md` (always) — fleet convention
+
+```markdown
+---
+inclusion: always
+---
+# Keep Git Clean and Up-to-Date (ALL agents)
+
+The local git repository must never be left messy or stale. At every phase boundary,
+and ALWAYS when an issue/PR/task reaches a terminal state, the working tree must be
+clean (`git status --porcelain` empty) except for deliberately-in-progress files, with
+no stale branches or worktrees.
+
+**COMMIT** (belong in version control): source, tests, configuration
+(`pyproject.toml`, `.pre-commit-config.yaml`, CI config), docs, IaC/CDK, scripts,
+spec artifacts kept under version control, `.gitignore`/`.gitattributes`.
+**NEVER COMMIT** (auto-generated/transient/machine-local): build/compiled output
+(`build/`, `dist/`, `*.egg-info/`, `*.pyc`, `__pycache__/`), caches (`.pytest_cache/`,
+`.mypy_cache/`, `.ruff_cache/`, `.hypothesis/`), coverage (`.coverage`, `htmlcov/`),
+venvs (`venv/`, `.venv/`), editor/OS cruft, secrets/credentials, anything under
+`tmp/`, generated version files (`src/_version.py`), and per-run agent state
+(`.kiro/agent-state/`, `.kiro/worktrees/`). If a never-commit file is not already
+ignored, ADD it to `.gitignore` rather than leaving it untracked. Never `git add -A`
+blindly.
+
+## Worktrees and branches
+- Per-issue/per-task worktrees and branches are EPHEMERAL: when work reaches a
+  terminal state, `git worktree remove <path>` and `git branch -d/-D`, and verify
+  nothing is left behind. The clean end-state is **per run**.
+- **Do NOT move the shared local `main` branch.** When multiple runs may share one
+  clone, a run NEVER `git checkout main`s or fast-forwards local `main`. Fetch and
+  base new worktrees on `origin/<main>`, and verify merges with
+  `git merge-base --is-ancestor <sha> origin/<main>` instead of advancing local `main`.
+- Never leave a detached HEAD, half-finished rebase/merge, or orphaned worktree.
+
+## Concurrency-safe maintenance
+The one genuine corruption risk when several worktrees share one object store is
+concurrent auto-gc, which `git fetch` can trigger. Set ONCE on the clone (idempotent):
+`git config gc.auto 0`, `git config maintenance.auto false`,
+`git config gc.autoDetach false`. Pass `--no-auto-gc` on every fetch
+(`git fetch origin --prune --no-auto-gc`); NEVER `--prune=now` or a manual `git gc`
+while any worktree operation may be in flight. (`--no-auto-maintenance` is NOT a valid
+fetch flag on git ≥ 2.51 — use `--no-auto-gc` plus the persistent config.)
+
+## Stay up-to-date
+Integrate remote changes regularly. Any conflict is resolved per the line-by-line
+merge discipline — delegate to the `code-merge-reviewer` agent where installed; never
+blind "take theirs/ours".
+```
+
+### 8.30 `issue-tracking.md` (always) — fleet convention
+
+```markdown
+---
+inclusion: always
+---
+# Issue Tracking: Checklists, Metadata, and Live Updates (ALL agents)
+
+Shared by every agent that touches the issue tracker (issue-intake,
+issue-housekeeping, product-management, issue-work-orchestrator). All tracker
+operations go through the project's git wrapper script (`use-git-wrapper-scripts`).
+The goal: the issue is the durable, shared record — at any moment any other agent or
+human can pick it up and continue, because progress, decisions, Q&A, and remaining
+work are kept ON THE ISSUE, updated continuously.
+
+**Best-effort + graceful degradation:** trackers differ (GitHub, GitLab, …); use
+whatever the wrapper/host supports and skip absent optional fields cleanly (note it in
+the log) — never treat a missing optional field as a blocker.
+
+- **Checklists:** when filing an issue whose work decomposes, INCLUDE a structured
+  task-list checklist; during implementation, tick items off via the wrapper as each
+  is genuinely completed (with evidence) and add newly-discovered items. The checklist
+  is a living progress record, not decoration.
+- **Live updates (resume-anywhere):** post a short status comment at each meaningful
+  step (what was done, what's next, links to branch/PR/evidence); update the checklist;
+  record the current branch/worktree/PR and the spec/evidence location.
+- **Q&A always on the issue:** any question put to the user about an issue and the
+  user's answer MUST be recorded on the issue as a comment, verbatim, with context.
+- **Metadata (set what the host supports):** assignee (the in-progress claim), start
+  date, time tracking (e.g. GitLab `/spend`), parent/epic link, state/labels.
+- **Closing:** close with a final comment linking the merged PR/MR and evidence,
+  ensure the checklist is fully ticked (or remaining items deferred with a reason),
+  and record the time spent.
+```
+
+### 8.31 `per-worktree-venv.md` (conditional, CDK / app files) — fleet convention
+
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "cdk/**"
+---
+# Per-Worktree Virtual Environment (when running code/CDK from worktrees)
+
+Applies to projects that **execute code or IaC from inside a git worktree** while
+concurrent runs share one clone — most importantly AWS/CDK projects
+(`cdk synth`/`cdk deploy`) and any project importing an editable-installed package.
+For pure-library projects that only run tests from the main checkout, this is not
+needed.
+
+**Why:** a git worktree isolates the working tree, index, and branch — but a single
+shared venv does NOT. A `pip install -e` writes ONE editable `.pth` pinned to the
+absolute path of the checkout it ran in; code/CDK run from a worktree on that shared
+venv import the OTHER checkout's `src`/`cdk`. Re-running `pip install -e` against the
+shared venv to "fix" imports rewrites that one `.pth` last-writer-wins, corrupting
+every other concurrent run.
+
+**The rule:**
+1. Each worktree that will run code/CDK gets its OWN venv: after `git worktree add`,
+   create `<worktree>/venv` and `pip install -e ".[dev,cdk]"` INSIDE the worktree.
+2. Invoke tools by the worktree's ABSOLUTE interpreter
+   (`<worktree>/venv/Scripts/python.exe -m <tool>` on Windows,
+   `<worktree>/venv/bin/python -m <tool>` on *nix) with `cwd = <worktree>`; do not rely
+   on activation.
+3. NEVER "fix" imports by re-running `pip install -e` against the SHARED venv.
+4. Authoritative self-check (not vacuous): read the worktree venv's `*.pth` and confirm
+   it contains the WORKTREE path; for CDK, a real `cdk synth` that resolves
+   `cdk.__file__` under the worktree. Make this a resume precondition.
+5. Teardown (Windows): delete `<worktree>/venv` BEFORE `git worktree remove` (locked
+   DLLs otherwise block removal), or use out-of-tree worktrees.
+6. Bound concurrency (`MAX_CONCURRENT_WORKTREE_RUNS`, ~1.5 GB/venv) and pass an
+   explicit `pip --cache-dir <worktree>/.pipcache` (do NOT set `PIP_CACHE_DIR` — env
+   vars are forbidden).
+```
+
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
 
 After creating and/or merging every steering file in this Part, verify
@@ -1996,6 +2237,167 @@ intent. Re-run the check until every file conforms.
 
 Report the result in the migration report: number of steering files
 checked, number that needed correction, and what was corrected.
+
+---
+
+
+## PART 8A — KIRO CLI CUSTOM AGENTS (AUTONOMOUS FLEET)
+
+Apply Rule 1. This part installs the project's **Kiro CLI custom-agent fleet** —
+an autonomous issue-work orchestrator, a spec-driven + test-driven engine
+(conductor + specialists), a mandatory merge/conflict resolver, and a set of
+standalone utility agents — plus the enforced gate hooks they rely on. These are
+**Kiro CLI** custom agents (`.kiro/agents/*.json`), distinct from the Part 9 Kiro
+hooks (`.kiro/hooks/*.kiro.hook`, which are the IDE/runtime automation surface).
+
+The agent definitions are authored in this prompt's repository under `cli-agents/`
+(each agent has a `KiroCLIAgent-<Name>.json` config; the larger ones also have a
+sibling `<agent-name>.md` prompt body referenced by `prompt: "file://<agent-name>.md"`).
+This part COPIES them into the project's `.kiro/agents/`. Run these steps from the
+prompt repository, targeting the project root (the same convention as the
+`templates/` copies elsewhere in this prompt). If `cli-agents/` is not available on
+disk, skip PART 8A and note it in the migration report — the rest of the setup is
+unaffected.
+
+> **Kiro CLI fact check (researched against kiro.dev/docs/cli):** project agents live
+> in `.kiro/agents/<name>.json`; the filename (minus `.json`) is the agent's `name`. A
+> `prompt` value of `file://<name>.md` is resolved relative to the agent JSON's own
+> directory — so each agent installs as a FLAT pair `<name>.json` + `<name>.md` in
+> `.kiro/agents/` and the reference resolves there. Built-in tool ids are
+> `read`/`write`/`grep`/`glob`/`shell`/`web_search`/`web_fetch`/`code`/`subagent`.
+> Delegation uses the built-in `subagent` tool with
+> `toolsSettings.subagent.availableAgents`/`trustedAgents`. A maximum of **four**
+> subagents run concurrently. Hooks are an object keyed by trigger
+> (`agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/`stop`), each an array of
+> `{ "command", "matcher" }`; `preToolUse` exit code 2 blocks the tool, and a `stop`
+> hook blocks by writing `{"decision":"block","reason":"..."}` to STDOUT.
+
+### 8A.1 Create the agents directory and install the fleet
+
+```bash
+mkdir -p .kiro/agents
+```
+
+Install each agent below by copying its config to `.kiro/agents/<name>.json` (the
+filename, minus `.json`, MUST equal the agent's `name`), and — for the agents that use
+an external prompt body — also copying the sibling `<name>.md` into `.kiro/agents/`.
+Do NOT copy the `KiroCLIAgent-*.json` filenames verbatim; rename each to `<name>.json`.
+Do NOT copy `*Discussion.txt`, `*.schema.json`, `prompt.md` from inline-prompt agents,
+test files, or the `cli-agents/cv/` suite (the CV agents are a separate domain pack —
+install them only if the project needs CV customization).
+
+**The advanced backlog fleet** (config has a sibling `<name>.md` — copy BOTH files):
+
+| Source config | → `.kiro/agents/` | Prompt body to also copy |
+|---|---|---|
+| `cli-agents/issue-work-orchestrator/KiroCLIAgent-IssueWorkOrchestrator.json` | `issue-work-orchestrator.json` | `issue-work-orchestrator.md` |
+| `cli-agents/spec-workflow/conductor/KiroCLIAgent-SpecConductor.json` | `spec-conductor.json` | `spec-conductor.md` |
+| `cli-agents/spec-workflow/author/KiroCLIAgent-SpecAuthor.json` | `spec-author.json` | `spec-author.md` |
+| `cli-agents/spec-workflow/researcher/KiroCLIAgent-SpecResearcher.json` | `spec-researcher.json` | `spec-researcher.md` |
+| `cli-agents/spec-workflow/test-architect/KiroCLIAgent-TestArchitect.json` | `test-architect.json` | `test-architect.md` |
+| `cli-agents/spec-workflow/adversarial-verifier/KiroCLIAgent-AdversarialVerifier.json` | `adversarial-verifier.json` | `adversarial-verifier.md` |
+| `cli-agents/spec-workflow/standards-reviewer/KiroCLIAgent-StandardsReviewer.json` | `standards-reviewer.json` | `standards-reviewer.md` |
+| `cli-agents/spec-workflow/best-practice-reviewer/KiroCLIAgent-BestPracticeReviewer.json` | `best-practice-reviewer.json` | `best-practice-reviewer.md` |
+| `cli-agents/spec-workflow/security-reviewer/KiroCLIAgent-SecurityReviewer.json` | `security-reviewer.json` | `security-reviewer.md` |
+| `cli-agents/spec-workflow/devops-iac-reviewer/KiroCLIAgent-DevOpsIaCReviewer.json` | `devops-iac-reviewer.json` | `devops-iac-reviewer.md` |
+| `cli-agents/spec-workflow/implementer/KiroCLIAgent-SpecImplementer.json` | `spec-implementer.json` | `spec-implementer.md` |
+| `cli-agents/code-merge-reviewer/KiroCLIAgent-CodeMergeReviewer.json` | `code-merge-reviewer.json` | `code-merge-reviewer.md` |
+| `cli-agents/ci-worker/KiroCLIAgent-CIWorkflowAgent.json` | `ci-workflow-agent.json` | `ci-workflow-agent.md` |
+
+**The standalone utility agents** (config has an INLINE prompt — copy the JSON only):
+
+| Source config | → `.kiro/agents/` |
+|---|---|
+| `cli-agents/dead-code/KiroCLIAgent-DeadCodeAgent.json` | `dead-code-removal-agent.json` |
+| `cli-agents/doc-review/KiroCLIAgent-DocReviewer.json` | `doc-reviewer-agent.json` |
+| `cli-agents/issue-intake/KiroCLIAgent-IssueIntake.json` | `issue-intake-agent.json` |
+| `cli-agents/issue-housekeeping/KiroCLIAgent-IssueHousekeeping.json` | `issue-housekeeping-agent.json` |
+| `cli-agents/product-management/KiroCLIAgent-ProductManagement.json` | `product-management-agent.json` |
+| `cli-agents/spec-review/KiroCLIAgent-SpecReviewer.json` | `spec-review-agent.json` |
+| `cli-agents/spec-review/KiroCLIAgent-SpecPromptAuthor.json` | `spec-prompt-author-agent.json` |
+
+After copying, verify each installed file: the JSON parses, its `name` equals the
+filename stem, and for every `prompt: "file://<x>.md"` the named `<x>.md` is present
+alongside it in `.kiro/agents/`.
+
+### 8A.2 Install and wire the enforced gate hooks
+
+The advanced fleet's TDD/loop discipline is enforced by gate scripts (referenced from
+the agents' JSON `hooks` blocks). Install them into a dedicated directory so they are
+NOT confused with the Part 9 `.kiro/hooks/*.kiro.hook` runtime hooks:
+
+```bash
+mkdir -p .kiro/hooks-bin
+cp cli-agents/spec-workflow/hooks/kiro-session-register.sh  .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-tdd-gate.sh          .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-stop-gate.sh         .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh         .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh   .kiro/hooks-bin/
+chmod +x .kiro/hooks-bin/*.sh
+```
+
+What each does (the agents' `hooks` blocks already reference them, so no further
+wiring is needed beyond the copy):
+
+- `kiro-session-register.sh` — `agentSpawn` hook on `issue-work-orchestrator`. Records
+  this run's identity (session_id, cwd) into
+  `.kiro/agent-state/issue-work-orchestrator/registry.json` so concurrent runs and the
+  gate hooks can tell which run owns which issue.
+- `kiro-tdd-gate.sh` — `preToolUse` hook (matcher `execute_bash`) on the orchestrator,
+  conductor, and implementer. Exit code 2 BLOCKS a `git commit` that uses
+  `--no-verify`, or that commits an implementation task with no fresh green test
+  evidence.
+- `kiro-stop-gate.sh` — `stop` hook on the orchestrator and conductor. Blocks turn-end
+  (via STDOUT `{"decision":"block","reason":"..."}`) while a spec is mid-implementation
+  and the work is not honestly proven (a completed task with no evidence, a red latest
+  capture, or a skipped/xfail dodge).
+- `kiro-loop-gate.sh` — `stop` hook on the orchestrator. Blocks turn-end while the run
+  is `IN_PROGRESS` with workable issues remaining and no recorded escalation, so the
+  agent keeps working the backlog instead of asking "which issue next?".
+- `red-for-right-reason.sh` — a helper the conductor/implementer call directly
+  (`bash .kiro/hooks-bin/red-for-right-reason.sh <capture>`) to confirm a RED test
+  failed on a genuine assertion, not an import/collection error.
+
+> **Why a counter, not `stop_hook_active`:** Kiro's stop-hook event JSON has no
+> `stop_hook_active` field (that is a Claude Code field). The two `stop` gates instead
+> keep a per-run consecutive-block counter and allow the stop after a bounded number of
+> consecutive blocks, so a session can never wedge. Any clean pass resets the counter.
+
+### 8A.3 Delegation and concurrency
+
+- `issue-work-orchestrator` and `spec-conductor` are the only agents with the
+  `subagent` tool. Their `toolsSettings.subagent.availableAgents`/`trustedAgents`
+  rosters list the leaf specialists they delegate to (the orchestrator's roster also
+  includes `code-merge-reviewer`). Delegation is FLAT: orchestrator/conductor →
+  leaf specialists; leaves never spawn further subagents.
+- **The four-subagent cap is real.** The spec design-review panel (six reviewers) MUST
+  be run in waves of at most four — the translated conductor/orchestrator prompts
+  already instruct this; do not remove it.
+- The leaf specialists' `toolsSettings.write.allowedPaths` are scoped per role
+  (reviewers may write only to the spec dir + their own state; the implementer and
+  merge reviewer may write to `src/`/`test/`). These per-agent path scopes are a Kiro
+  capability with no Claude Code equivalent — keep them.
+
+### 8A.4 Launch and usage
+
+- **Interactive (confirmed):** start `kiro-cli` in the project, switch to the
+  orchestrator (by name via the `/agents` picker, or its configured keyboard
+  shortcut), and tell it to work the backlog. Switch to `spec-conductor` for a single
+  feature/bugfix, or to any utility agent (`dead-code-removal-agent`,
+  `doc-reviewer-agent`, `ci-workflow-agent`, `issue-intake-agent`, etc.) for a focused
+  task.
+- **Headless (provisional):**
+  `kiro-cli chat --no-interactive --agent issue-work-orchestrator --trust-tools=read,grep,write "work the open-issue backlog"`,
+  authenticated by `KIRO_API_KEY`. NOTE: the `--agent` flag for headless mode is NOT
+  confirmed in the current public Kiro CLI docs — verify it against your installed
+  `kiro-cli --help` before relying on it for automation; the interactive path above is
+  the confirmed one.
+- **Parallel runs on one machine:** run several `kiro-cli` instances, each in its OWN
+  git worktree and with its OWN `KIRO_HOME` (Kiro's session store is keyed per
+  directory but physically shares the global `~/.kiro` root; a distinct `KIRO_HOME` per
+  run isolates it). This gives OS-process isolation that sidesteps the four-subagent
+  cap entirely. The orchestrator's per-run registry/locks (8.27) and the
+  never-move-local-`main` + `gc.auto 0` git rules (8.29) make sharing one clone safe.
 
 ---
 
@@ -2365,7 +2767,14 @@ After completing all parts:
    `.kiro/steering/`, AND every file conforms to the format at
    https://kiro.dev/docs/steering/ (per the Part 8.26 check).
 7. **Hooks** — every hook in Part 9 exists in `.kiro/hooks/`.
-8. **Git wrapper** — for the detected host, the wrapper exists and
+8. **Custom agents** — every agent from PART 8A exists in `.kiro/agents/`
+   as `<name>.json` (filename stem equals the JSON `name`); each parses;
+   every `prompt: "file://<x>.md"` has its `<x>.md` present alongside it;
+   the `issue-work-orchestrator` and `spec-conductor`
+   `toolsSettings.subagent.availableAgents` rosters reference only agents
+   that were installed; the gate scripts exist in `.kiro/hooks-bin/` and
+   are executable.
+9. **Git wrapper** — for the detected host, the wrapper exists and
    credential stub is in place. If a real token is configured, run
    one read-only command to confirm auth.
 
@@ -2407,6 +2816,17 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
 - From `.amazonq/`: [source -> destination, content migrated]
 - From legacy dependency formats: [source -> pyproject.toml section, package count]
 
+## Custom agents (PART 8A)
+- Fleet installed: [yes / no / skipped — cli-agents/ not available]
+- Advanced fleet (issue-work-orchestrator, spec-conductor + specialists,
+  code-merge-reviewer, ci-workflow-agent): [count installed / list]
+- Utility agents (dead-code, doc-review, issue-intake, issue-housekeeping,
+  product-management, spec-review, spec-prompt-author): [count installed / list]
+- CV suite: [installed / skipped — domain pack]
+- Gate scripts in `.kiro/hooks-bin/`: [present + executable / missing]
+- Delegation rosters resolve (no orchestrator/conductor `availableAgents`
+  entry points at an uninstalled agent): [yes / no — list gaps]
+
 ## Git wrapper
 - Host detected: [GitHub / GitLab / both / none]
 - Wrapper: [created / preserved / merged]
@@ -2436,7 +2856,9 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
 project/
 ├── .kiro/
 │   ├── steering/                # rules
-│   ├── hooks/                   # automation
+│   ├── agents/                  # Kiro CLI custom agents (PART 8A fleet)
+│   ├── hooks/                   # .kiro.hook runtime automation (PART 9)
+│   ├── hooks-bin/               # gate scripts the custom agents invoke (PART 8A)
 │   ├── settings/                # MCP and other settings
 │   └── specs/templates/         # spec templates
 ├── .vscode/
@@ -2517,5 +2939,30 @@ All under `templates/` in the prompt repository:
 - `gitlab.json.template`
 - `gitlab_wrapper.py.template`
 - `github_wrapper.py.template`
+
+### Custom-agent sources referenced by PART 8A
+All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
+- Advanced fleet (config + sibling `<name>.md` prompt body):
+  `issue-work-orchestrator/`, `code-merge-reviewer/`, `ci-worker/`, and
+  `spec-workflow/{conductor,author,researcher,test-architect,adversarial-verifier,
+  standards-reviewer,best-practice-reviewer,security-reviewer,devops-iac-reviewer,
+  implementer}/`.
+- Utility agents (inline-prompt config only): `dead-code/`, `doc-review/`,
+  `issue-intake/`, `issue-housekeeping/`, `product-management/`, `spec-review/`.
+- Gate scripts (copied into `.kiro/hooks-bin/`): `cli-agents/spec-workflow/hooks/`
+  (`kiro-session-register.sh`, `kiro-tdd-gate.sh`, `kiro-stop-gate.sh`,
+  `kiro-loop-gate.sh`, `red-for-right-reason.sh`).
+- Not installed by default: the `cli-agents/cv/` CV-customization suite (domain pack).
+
+### Custom-agent hook trigger types (PART 8A, Kiro CLI agent JSON `hooks`)
+Distinct from the Part 9 `.kiro.hook` triggers above. Keyed by trigger, each an array
+of `{ "command", "matcher" }`:
+| Trigger | Fires / effect |
+|---|---|
+| `agentSpawn` | when the agent starts; STDOUT (exit 0) is added to context |
+| `userPromptSubmit` | on each user prompt |
+| `preToolUse` | before a tool runs; **exit code 2 blocks** it (STDERR → the model) |
+| `postToolUse` | after a tool runs (cannot undo it) |
+| `stop` | at turn-end; blocks via STDOUT `{"decision":"block","reason":"..."}` |
 
 # END OF PROMPT

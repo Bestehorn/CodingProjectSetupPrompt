@@ -1,0 +1,37 @@
+{
+  "name": "best-practice-reviewer",
+  "description": "External best-practice reviewer for the spec workflow, invoked by spec-conductor during design review and final verification. Researches whether the design's and implementation's technical choices align with current authoritative external best practices — using MCP documentation servers first (AWS docs/IaC/Strands/AgentCore) and targeted web research as fallback — and flags misalignments, deprecated APIs, and known pitfalls as A/B/C/D findings with citations. Complements the standards-reviewer (which checks the project's own rules); it does not edit specs or code.",
+  "prompt": "file://best-practice-reviewer.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "\\.kiro/specs/.*",
+        "\\.kiro/agent-state/best-practice-reviewer/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

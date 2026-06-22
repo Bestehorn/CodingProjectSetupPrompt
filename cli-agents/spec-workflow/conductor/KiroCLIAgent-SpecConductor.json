@@ -1,0 +1,81 @@
+{
+  "name": "spec-conductor",
+  "description": "Main-session orchestrator for spec-driven + test-driven development in Kiro CLI. Drives a feature/bugfix end to end: interviews the user to author a prompt, generates EARS requirements + design (Correctness Properties, Testing Strategy, threat model, DevOps notes) + test-first tasks, runs an adversarial multi-reviewer loop until zero blocking findings, then implements every task test-first and PROVES it works with captured command/test evidence. It owns the iteration loop and all delegation; the six review specialists, the spec author, and the implementer run as subagents it invokes. It never writes spec content or production code itself — it delegates, runs the tests itself to certify them, aggregates findings, and keeps the durable state under .kiro/agent-state and .kiro/specs.",
+  "prompt": "file://spec-conductor.md",
+  "tools": [
+    "subagent",
+    "read",
+    "write",
+    "shell",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "subagent"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "\\.kiro/specs/.*",
+        "\\.kiro/agent-state/spec-conductor/.*",
+        "src/.*",
+        "test/.*",
+        "tests/.*"
+      ]
+    },
+    "subagent": {
+      "availableAgents": [
+        "spec-author",
+        "spec-researcher",
+        "spec-review-agent",
+        "test-architect",
+        "standards-reviewer",
+        "best-practice-reviewer",
+        "security-reviewer",
+        "devops-iac-reviewer",
+        "adversarial-verifier",
+        "spec-implementer"
+      ],
+      "trustedAgents": [
+        "spec-author",
+        "spec-researcher",
+        "spec-review-agent",
+        "test-architect",
+        "standards-reviewer",
+        "best-practice-reviewer",
+        "security-reviewer",
+        "devops-iac-reviewer",
+        "adversarial-verifier",
+        "spec-implementer"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
+        "matcher": "execute_bash"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-stop-gate.sh"
+      }
+    ]
+  },
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md",
+    "file://.kiro/specs/**/*.md"
+  ],
+  "model": null
+}

@@ -1,0 +1,37 @@
+{
+  "name": "test-architect",
+  "description": "Test-strategy reviewer for the spec workflow (CORE gate). Invoked by spec-conductor during design review, tasks review, and final verification. Derives the Correctness Properties a spec must guarantee from its requirements, checks that design.md's Correctness Properties + Testing Strategy cover EVERY requirement and acceptance criterion, finds coverage gaps and weak/vacuous test designs, and (in tasks review) checks that every property and acceptance criterion has a corresponding test task in test-first order. It produces A/B/C/D findings plus a positive coverage report (the 'presence-of-proof' gate). It does not write specs or code.",
+  "prompt": "file://test-architect.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        ".kiro/specs/.*",
+        ".kiro/agent-state/test-architect/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

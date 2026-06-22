@@ -1,0 +1,37 @@
+{
+  "name": "security-reviewer",
+  "description": "Security reviewer for the spec workflow. Invoked by spec-conductor during design review (threat-models the design) and during final verification (scans the implemented diff). It checks trust boundaries, input validation, authn/authz, secrets handling, least-privilege IAM (CDK), injection/SSRF/path-traversal/deserialization risks, dependency and logging hygiene, and encryption defaults — using MCP docs and web research for current guidance (e.g. OWASP, AWS security best practices). It files A/B/C/D findings with evidence and concrete remediation. It does not edit specs or code, and it does authorized defensive review only.",
+  "prompt": "file://security-reviewer.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "\\.kiro/specs/.*",
+        "\\.kiro/agent-state/security-reviewer/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

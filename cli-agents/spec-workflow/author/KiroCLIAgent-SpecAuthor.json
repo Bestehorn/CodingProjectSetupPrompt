@@ -1,0 +1,37 @@
+{
+  "name": "spec-author",
+  "description": "Spec generator and editor for the spec-driven workflow. Invoked by spec-conductor to WRITE and EDIT the spec artifacts under .kiro/specs/<feature>/: requirements.md (EARS) or bugfix.md, design.md (with Correctness Properties, Testing Strategy, Security Considerations, DevOps & Operability, and an Acceptance Criteria Mapping table), and tasks.md (test-first, dependency-ordered, each task tracing to requirement IDs). It is the writer; it never reviews or grades its own output and never writes production code. It grounds every spec claim about the codebase in evidence (file:line) and consults MCP/web for external-technology choices.",
+  "prompt": "file://spec-author.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "\\.kiro/specs/.*",
+        "\\.kiro/agent-state/spec-author/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

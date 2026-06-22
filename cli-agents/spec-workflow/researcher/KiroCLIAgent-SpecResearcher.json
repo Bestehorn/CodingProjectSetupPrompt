@@ -1,0 +1,36 @@
+{
+  "name": "spec-researcher",
+  "description": "Read-only research burst for the spec workflow. Invoked by spec-conductor (typically during the interview) to answer a specific, scoped question about the codebase or an external technology. It searches the codebase (grep/glob/read), consults MCP documentation servers and the web, and returns a concise, citation-backed findings summary. It writes nothing except its own state/research log; it does not author specs or code.",
+  "prompt": "file://spec-researcher.md",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch",
+    "write"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "\\.kiro/agent-state/spec-researcher/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

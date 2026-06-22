@@ -1,0 +1,98 @@
+{
+  "name": "issue-work-orchestrator",
+  "description": "Main-session orchestrator that autonomously works a project's entire open-issue backlog end to end. In a loop it retrieves open issues via the project's git wrapper script, picks the highest impact/urgency/severity issue, creates a git worktree + branch, develops and PROVES a fix through the embedded spec-driven/test-driven cycle (reusing the spec-workflow leaf subagents and phase fragments under .kiro/specs/_workflow/phases/), reviews the proof, documents the fix on the issue, opens and drives a PR to green, merges and cleans up, then closes the issue and repeats until no workable open issues remain. It is main-checkout-free (works off origin/main), keeps per-run state under .kiro/agent-state/issue-work-orchestrator/runs/<run-id>/ with a session-keyed registry and per-issue locks, delegates every merge conflict to code-merge-reviewer, and is fully resumable. It delegates fix work to the spec-workflow subagents and never spawns nested orchestrators.",
+  "prompt": "file://issue-work-orchestrator.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch",
+    "subagent",
+    "code"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "code",
+    "web_search",
+    "web_fetch",
+    "subagent"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "src/.*",
+        "test/.*",
+        "tests/.*",
+        "cdk/.*",
+        "scripts/.*",
+        ".kiro/agent-state/.*",
+        ".kiro/specs/.*",
+        "docs/.*",
+        "\\.gitignore",
+        "pyproject\\.toml"
+      ]
+    },
+    "subagent": {
+      "availableAgents": [
+        "spec-author",
+        "spec-researcher",
+        "spec-review-agent",
+        "test-architect",
+        "standards-reviewer",
+        "best-practice-reviewer",
+        "security-reviewer",
+        "devops-iac-reviewer",
+        "adversarial-verifier",
+        "spec-implementer",
+        "code-merge-reviewer"
+      ],
+      "trustedAgents": [
+        "spec-author",
+        "spec-researcher",
+        "spec-review-agent",
+        "test-architect",
+        "standards-reviewer",
+        "best-practice-reviewer",
+        "security-reviewer",
+        "devops-iac-reviewer",
+        "adversarial-verifier",
+        "spec-implementer",
+        "code-merge-reviewer"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-session-register.sh"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
+        "matcher": "execute_bash"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-stop-gate.sh"
+      },
+      {
+        "command": "bash .kiro/hooks-bin/kiro-loop-gate.sh"
+      }
+    ]
+  },
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md",
+    "file://.kiro/specs/**/*.md"
+  ],
+  "model": null
+}

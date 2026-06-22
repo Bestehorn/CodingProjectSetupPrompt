@@ -1,0 +1,44 @@
+{
+  "name": "ci-workflow-agent",
+  "description": "Autonomous CI pipeline and test-coverage resolver. Reads the project's CI pipeline, runs every stage locally (in parallel where possible) inside the project's virtual environment, and fixes every failure with researched, evidence-backed changes — never skipping, deleting, or hacking a check to make it pass. Once CI is green, it maximizes test coverage by finding and closing gaps, then re-runs CI to guard against regressions. Concludes only when the full CI pipeline passes AND no further testing improvement remains.",
+  "prompt": "file://ci-workflow-agent.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "src/.*",
+        "test/.*",
+        "tests/.*",
+        "cdk/.*",
+        "scripts/.*",
+        ".github/.*",
+        "\\.gitlab-ci\\.yml",
+        "pyproject\\.toml",
+        ".kiro/agent-state/ci-workflow-agent/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {},
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}

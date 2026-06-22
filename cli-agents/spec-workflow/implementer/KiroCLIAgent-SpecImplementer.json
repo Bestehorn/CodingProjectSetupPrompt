@@ -1,0 +1,43 @@
+{
+  "name": "spec-implementer",
+  "description": "Test-first implementation agent for the spec workflow. Invoked by spec-conductor once per task in tasks.md: for a TEST task it writes the failing test(s) for a Correctness Property / acceptance criterion (red for the right reason, never an import error) and nothing else; for an IMPL task it writes the minimal production code to make the paired tests pass without touching unrelated tests. It never certifies its own work and may not edit requirements.md/design.md/tasks.md (no spec drift).",
+  "prompt": "file://spec-implementer.md",
+  "tools": [
+    "read",
+    "write",
+    "grep",
+    "glob",
+    "shell"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "src/.*",
+        "test/.*",
+        "tests/.*",
+        ".kiro/specs/.*",
+        ".kiro/agent-state/spec-implementer/.*"
+      ]
+    }
+  },
+  "toolAliases": {},
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
+        "matcher": "execute_bash"
+      }
+    ]
+  },
+  "mcpServers": {},
+  "useLegacyMcpJson": false,
+  "resources": [
+    "file://.kiro/steering/**/*.md"
+  ],
+  "model": null
+}
