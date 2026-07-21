@@ -519,6 +519,15 @@ subcommands the project's agents invoke. The minimum set:
   Storage), `rerun`, `cancel`, `list-issues`, `get-issue`, `get-issue-comments`,
   `comment-issue`, `update-issue`, `create-issue`. GitLab — `pipeline status`,
   `pipeline log`, `issue list/show/create/comment/close`, `label list/create`.
+- In-progress claim (REQUIRED for the orchestrator; the fix for dropped
+  in-progress labels): additive, non-destructive label ops and a single
+  self-verifying claim. GitLab — `issue label-add`/`issue label-remove` (use
+  the `add_labels`/`remove_labels` fields, NEVER a full `labels` replace),
+  `issue assign` (`--me`/`--user`/`--unassign`), `issue start` (idempotent +
+  fail-closed: adds label + assigns + re-reads + verifies, non-zero on failure),
+  `issue release`, and `issue claim-check` (read-only; exit 3 = open+unclaimed).
+  GitHub — the same as `start-issue`/`release-issue`/`claim-check` + additive
+  label/assignee endpoints. See the expanded docstrings in the wrapper templates.
 - PR/merge lifecycle (REQUIRED by the issue-work-orchestrator, Part 13):
   GitHub — `create-pr`, `get-pr`, `get-pr-checks`, `approve-pr`, `merge-pr`
   (`--method merge|squash|rebase`), `delete-remote-branch`, and `list-issues`
@@ -543,7 +552,21 @@ In-progress convention. The orchestrator must know which open issues are "in
 progress" (being worked elsewhere) so it skips them. Default convention: an
 issue is in progress if it has ANY assignee OR a label matching `in-progress`/
 `in progress`/`wip`/`doing`. State the project's actual convention here if it
-differs (it is read from `environment.md` by the agent).
+differs (it is read from `environment.md` by the agent). The in-progress label
+name the wrapper's `issue start`/`claim-check` use is read from
+`config/gitlab.json` key `in_progress_label` (default `in-progress`).
+
+Deterministic claim (fixes the "dropped in-progress label → duplicate work"
+failure). Setting the claim must be ONE idempotent, self-verifying wrapper
+command — `issue start <iid>` — NOT a hand-rolled `issue update --labels`
+(the plain `labels` field is a full replace that silently drops other labels).
+`issue start` adds the label additively, assigns the working identity, then
+re-reads and verifies both took effect, exiting non-zero if not — so an agent
+can never believe it claimed when it didn't. As a mechanical backstop, install
+the `claim-before-worktree.sh` PreToolUse hook (Part 6.2): it runs
+`issue claim-check <N>` when the agent tries to create the `issue-<N>` worktree
+and BLOCKS if the issue is still open+unclaimed, so a skipped claim is caught at
+the exact moment work would start.
 
 ---
 
@@ -686,6 +709,17 @@ Create the referenced scripts under `.claude/hooks/` (make them executable):
   matches `export `, `setx `, or `$env:` for AWS_*/GITHUB_TOKEN/GITLAB_TOKEN,
   exits with code 2 (blocks the call) and prints why. This enforces
   `no-environment-vars.md`.
+- `claim-before-worktree.sh` (PreToolUse: Bash; ships in
+  `claude-agents/spec-workflow/hooks/`): when the Bash command creates a
+  per-issue worktree (`git worktree add … issue-<N>` / `-b issue-<N>-slug`), it
+  runs `python scripts/<host>_wrapper.py issue claim-check <N>` and exits 2
+  (blocks) ONLY when claim-check reports the issue is open+unclaimed (exit 3).
+  It fails OPEN (exit 0) when no issue number parses, the wrapper/config is
+  absent, or claim-check errors — so it never wedges a session on
+  network/auth trouble. This is the mechanical enforcement of the in-progress
+  claim (Part 5.3): an agent that skipped `issue start` is stopped at the moment
+  it tries to start work. Install it for projects that use the
+  issue-work-orchestrator.
 - `ruff-on-stop.sh`: runs `venv` ruff + ruff-format check over `src/ test/
   scripts/ cdk/` and reports. Non-blocking; informational.
 
@@ -994,7 +1028,10 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   gets its own venv when running code/CDK from worktrees).
 - **Hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`, `spec-stop-gate.sh`,
   `red-for-right-reason.sh`, `issue-loop-gate.sh` (Stop-hook keeping the orchestrator
-  working autonomously while workable issues remain), and `session-register.sh`
+  working autonomously while workable issues remain), `claim-before-worktree.sh`
+  (PreToolUse hook that blocks per-issue worktree creation until the issue is verifiably
+  claimed in-progress on the remote — the mechanical enforcement of the deterministic
+  claim; see Part 5.3 / 6.2), and `session-register.sh`
   (SessionStart hook that records each run's `session_id`→run mapping in `registry.json`
   so the agent and the gate hooks know which run owns the session). Make them executable.
 
@@ -1037,7 +1074,10 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
         "hooks": [
           { "type": "command", "command": "bash",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-tdd-gate.sh"],
-            "timeout": 15 }
+            "timeout": 15 },
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/claim-before-worktree.sh"],
+            "timeout": 30 }
         ]
       }
     ],

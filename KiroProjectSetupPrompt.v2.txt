@@ -753,6 +753,20 @@ GitHub: `list-workflows`, `list-runs`, `get-run`, `get-jobs`,
 GitLab: `pipeline status`, `pipeline log`, `issue create`,
 `issue list`, `issue show`, `label list`, `label create`.
 
+In-progress claim (REQUIRED for the issue-work-orchestrator; the fix
+for dropped in-progress labels). Additive, non-destructive label ops
+plus ONE self-verifying claim — NEVER set the in-progress label via a
+full `issue update --labels` replace (the plain `labels` field replaces
+the whole set and silently drops other labels). GitLab: `issue
+label-add`/`issue label-remove` (use the `add_labels`/`remove_labels`
+fields), `issue assign` (`--me`/`--user`/`--unassign`), `issue start`
+(idempotent + fail-closed: adds label + assigns + re-reads + verifies,
+exits non-zero if the claim did not take), `issue release`, `issue
+claim-check` (read-only; exit 3 = open+unclaimed). GitHub: the same as
+`start-issue`/`release-issue`/`claim-check` + additive label/assignee
+endpoints. The in-progress label name is read from
+`config/gitlab.json` key `in_progress_label` (default `in-progress`).
+
 Wrappers MUST:
 - Use string constants for JSON field names.
 - Auto-detect owner/repo from `.git/config` (GitHub) or read host /
@@ -2162,7 +2176,13 @@ the log) — never treat a missing optional field as a blocker.
 - **Q&A always on the issue:** any question put to the user about an issue and the
   user's answer MUST be recorded on the issue as a comment, verbatim, with context.
 - **Metadata (set what the host supports):** assignee (the in-progress claim), start
-  date, time tracking (e.g. GitLab `/spend`), parent/epic link, state/labels.
+  date, time tracking (e.g. GitLab `/spend`), parent/epic link, state/labels. CLAIM
+  in-progress with the wrapper's single verified `issue start` (idempotent, fail-closed:
+  adds the label additively + assigns + re-reads + verifies); NEVER set the in-progress
+  label via a full `issue update --labels` replace — the plain `labels` field replaces
+  the whole set and silently drops other labels (this repeatedly caused duplicate work).
+  Use additive `issue label-add`/`issue label-remove` for label changes; `issue release`
+  to drop a claim you can't act on now.
 - **Closing:** close with a final comment linking the merged PR/MR and evidence,
   ensure the checklist is fully ticked (or remaining items deferred with a reason),
   and record the time spent.
@@ -2328,11 +2348,12 @@ NOT confused with the Part 9 `.kiro/hooks/*.kiro.hook` runtime hooks:
 
 ```bash
 mkdir -p .kiro/hooks-bin
-cp cli-agents/spec-workflow/hooks/kiro-session-register.sh  .kiro/hooks-bin/
-cp cli-agents/spec-workflow/hooks/kiro-tdd-gate.sh          .kiro/hooks-bin/
-cp cli-agents/spec-workflow/hooks/kiro-stop-gate.sh         .kiro/hooks-bin/
-cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh         .kiro/hooks-bin/
-cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh   .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-session-register.sh       .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-tdd-gate.sh               .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-stop-gate.sh              .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh              .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-claim-before-worktree.sh  .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh        .kiro/hooks-bin/
 chmod +x .kiro/hooks-bin/*.sh
 ```
 
@@ -2347,6 +2368,12 @@ wiring is needed beyond the copy):
   conductor, and implementer. Exit code 2 BLOCKS a `git commit` that uses
   `--no-verify`, or that commits an implementation task with no fresh green test
   evidence.
+- `kiro-claim-before-worktree.sh` — `preToolUse` hook (matcher `execute_bash`) on the
+  orchestrator. Exit code 2 BLOCKS creating the per-issue worktree
+  (`git worktree add … issue-<N>`) until `issue claim-check <N>` confirms the issue is
+  claimed in-progress on the remote — the mechanical enforcement of the deterministic
+  claim. Fails open on any uncertainty (no issue number, no wrapper, or a claim-check
+  error) so it never wedges a session.
 - `kiro-stop-gate.sh` — `stop` hook on the orchestrator and conductor. Blocks turn-end
   (via STDOUT `{"decision":"block","reason":"..."}`) while a spec is mid-implementation
   and the work is not honestly proven (a completed task with no evidence, a red latest
@@ -2951,7 +2978,7 @@ All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
   `issue-intake/`, `issue-housekeeping/`, `product-management/`, `spec-review/`.
 - Gate scripts (copied into `.kiro/hooks-bin/`): `cli-agents/spec-workflow/hooks/`
   (`kiro-session-register.sh`, `kiro-tdd-gate.sh`, `kiro-stop-gate.sh`,
-  `kiro-loop-gate.sh`, `red-for-right-reason.sh`).
+  `kiro-loop-gate.sh`, `kiro-claim-before-worktree.sh`, `red-for-right-reason.sh`).
 - Not installed by default: the `cli-agents/cv/` CV-customization suite (domain pack).
 
 ### Custom-agent hook trigger types (PART 8A, Kiro CLI agent JSON `hooks`)

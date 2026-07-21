@@ -7,6 +7,11 @@ Usage:
     python scripts/gitlab_wrapper.py issue list --state opened --assignee "*" --labels in-progress
     python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
     python scripts/gitlab_wrapper.py issue comment <iid> --body "..."
+    python scripts/gitlab_wrapper.py issue start <iid>        # claim in-progress (idempotent, verified)
+    python scripts/gitlab_wrapper.py issue claim-check <iid>  # read-only; exit 3 if open+unclaimed
+    python scripts/gitlab_wrapper.py issue release <iid>      # drop the claim
+    python scripts/gitlab_wrapper.py issue label-add <iid> --labels in-progress
+    python scripts/gitlab_wrapper.py issue assign <iid> --me
     python scripts/gitlab_wrapper.py issue close <iid>
     python scripts/gitlab_wrapper.py mr create --source <branch> --target main --title "..."
     python scripts/gitlab_wrapper.py mr get <mr_iid>
@@ -112,7 +117,8 @@ def _api_request(
 #   - issue_list: support --state (opened/closed/all), --assignee (a
 #     username, "*" for any-assignee, or "none"), and --labels filters, so
 #     the orchestrator can detect "in progress" issues (assignee set OR an
-#     in-progress label) and skip them.
+#     in-progress label) and skip them. Map --assignee "*" -> assignee_id=Any,
+#     "none" -> assignee_id=None, else assignee_username=<user>.
 #   - issue_comment(iid, body): POST /issues/{iid}/notes
 #   - issue_close(iid): PUT /issues/{iid}?state_event=close
 #   - mr_create(source, target, title, description): POST /merge_requests
@@ -135,9 +141,34 @@ def _api_request(
 # Issue metadata + checklist subcommands (best-effort; see the
 # issue-tracking rule, .claude/rules/issue-tracking.md). GitLab supports
 # most of these natively:
-#   - issue_assign(iid, username): set the assignee (the "in progress"
-#     claim). PUT /issues/{iid} {"assignee_ids":[<user id>]} (resolve the
-#     user id via GET /users?username=...).
+#
+#   *** IN-PROGRESS CLAIM — the deterministic, non-destructive path. ***
+#   NEVER set the in-progress label via `issue update --labels` (the plain
+#   "labels" field on PUT is a FULL REPLACE and silently drops other labels —
+#   this repeatedly caused the label to vanish and duplicate work). Use the
+#   DEDICATED additive fields instead:
+#   - label_add(iid, labels):    PUT /issues/{iid} {"add_labels": "a,b"}    (merge)
+#   - label_remove(iid, labels): PUT /issues/{iid} {"remove_labels": "a,b"} (subtract)
+#   - issue_assign(iid, --me|--user U|--unassign): set/clear the assignee
+#     (the "in progress" claim). PUT /issues/{iid} {"assignee_ids":[<id>]}.
+#     Resolve --me via GET /user; a username via GET /users?username=...;
+#     unassign with assignee_ids=[0]. assignee_ids is a JSON array, so send it
+#     as a JSON body, not urlencoded form fields.
+#   - issue_start(iid): THE CLAIM the orchestrator uses. Idempotent AND
+#     fail-closed: (1) re-fetch, abort if state != "opened"; (2) abort if
+#     already assigned to a different user (unless --force); (3) resolve the
+#     current user; (4) ONE PUT with {"add_labels": <in-progress label>,
+#     "assignee_ids":[me]}; (5) RE-READ and VERIFY the label is present AND
+#     the current user is an assignee — if not, exit non-zero printing the
+#     observed state (a claim is never believed unless it verifiably took).
+#     The in-progress label name is read from config/gitlab.json key
+#     "in_progress_label" (default "in-progress").
+#   - issue_release(iid): inverse of start — remove_labels=<in-progress> +
+#     assignee_ids=[0], for when an issue is too ambiguous to work now.
+#   - issue_claim_check(iid): READ-ONLY. Exit 0 if the issue is claimed
+#     (in-progress label present OR an assignee set) or not "opened"; exit 3
+#     if it is OPEN and UNCLAIMED. Consumed by the claim-before-worktree
+#     PreToolUse hook, which BLOCKS worktree creation for an unclaimed issue.
 #   - set_due_date / start: PUT /issues/{iid} {"due_date": "<YYYY-MM-DD>"}
 #     for a target/end date; GitLab has no first-class "start date" on plain
 #     issues (it exists on epics), so record the start as a dated note unless

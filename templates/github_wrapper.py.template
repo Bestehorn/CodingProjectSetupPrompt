@@ -7,6 +7,9 @@ Usage:
     python scripts/github_wrapper.py list-issues
     python scripts/github_wrapper.py list-issues --state open --assignee "*" --label in-progress
     python scripts/github_wrapper.py create-issue --title "..." --body "..."
+    python scripts/github_wrapper.py start-issue <number>    # claim in-progress (idempotent, verified)
+    python scripts/github_wrapper.py claim-check <number>    # read-only; exit 3 if open+unclaimed
+    python scripts/github_wrapper.py release-issue <number>  # drop the claim
     python scripts/github_wrapper.py create-pr --head <branch> --base main --title "..." --body-file <path>
     python scripts/github_wrapper.py get-pr <pr_number>
     python scripts/github_wrapper.py get-pr-checks <pr_number>
@@ -157,11 +160,29 @@ def _api_request(
 # issue-tracking rule, .claude/rules/issue-tracking.md). GitHub models
 # most of these differently from GitLab — implement what the host
 # supports and have the caller degrade gracefully:
-#   - assign_issue(number, assignee): set/clear the assignee (the
-#     "in progress" claim). POST/PATCH /repos/{o}/{r}/issues/{n}/assignees
-#     or PATCH issue with "assignees".
-#   - set_issue_labels(number, labels): add/remove labels (e.g. an
-#     in-progress label). (Also covered by update_issue.)
+#
+#   *** IN-PROGRESS CLAIM — the deterministic, non-destructive path. ***
+#   GitHub has ADDITIVE label endpoints — use them, never a PATCH that
+#   replaces the whole "labels" array (that drops other labels):
+#   - label_add(number, labels):    POST   /repos/{o}/{r}/issues/{n}/labels {"labels":[...]}  (adds)
+#   - label_remove(number, label):  DELETE /repos/{o}/{r}/issues/{n}/labels/{label}           (one)
+#   - assign_issue(number, --me|--user U|--unassign): set/clear the assignee
+#     (the "in progress" claim). POST/DELETE
+#     /repos/{o}/{r}/issues/{n}/assignees {"assignees":[...]}. Resolve --me via
+#     GET /user; these assignee endpoints are additive/subtractive (not a full
+#     PATCH replace).
+#   - start_issue(number): THE CLAIM the orchestrator uses. Idempotent AND
+#     fail-closed: (1) GET the issue, abort if state != "open"; (2) abort if
+#     assigned to a different user (unless --force); (3) resolve the current
+#     user (GET /user); (4) POST the in-progress label AND POST the assignee;
+#     (5) RE-READ and VERIFY the label is present AND the current user is an
+#     assignee — else exit non-zero. In-progress label name from
+#     config/github.json key "in_progress_label" (default "in-progress").
+#   - release_issue(number): inverse — DELETE the in-progress label + DELETE
+#     the assignee.
+#   - claim_check(number): READ-ONLY. Exit 0 if claimed (in-progress label OR
+#     assignee) or not "open"; exit 3 if OPEN and UNCLAIMED. Consumed by the
+#     claim-before-worktree PreToolUse hook.
 #   - set_parent(number, parent): link a parent/tracking issue. GitHub has
 #     no first-class parent field on classic issues — implement via a
 #     task-list reference on the parent and/or the sub-issues API if the

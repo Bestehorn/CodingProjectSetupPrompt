@@ -1,6 +1,7 @@
 {
-  "_comment": "Copy to config/gitlab.json (gitignored) and replace placeholders. hostname is the GitLab host (gitlab.com or self-hosted). project_id is the numeric ID under Settings > General. token is a Personal or Project Access Token with at least 'api' scope.",
+  "_comment": "Copy to config/gitlab.json (gitignored) and replace placeholders. hostname is the GitLab host (gitlab.com or self-hosted). project_id is the numeric ID under Settings > General. token is a Personal or Project Access Token with at least 'api' scope. in_progress_label is the label the wrapper's 'issue start' claim adds/verifies (optional; defaults to 'in-progress' if omitted).",
   "hostname": "gitlab.com",
   "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
-  "token": "PASTE_YOUR_GITLAB_TOKEN_HERE"
+  "token": "PASTE_YOUR_GITLAB_TOKEN_HERE",
+  "in_progress_label": "in-progress"
 }

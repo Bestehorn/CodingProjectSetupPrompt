@@ -155,11 +155,16 @@ curl unless the project explicitly allows it. Local-only git (`status`, `add`, `
 Subcommands you rely on (the setup prompt mandates these; if a subcommand is missing,
 STOP and report it as a required wrapper extension rather than falling back to `gh`):
 list-issues (with state/assignee/label filters), get-issue, get-issue-comments,
-comment-issue, update-issue (labels/assignee/state, AND best-effort: assignee,
-start/end date, time-spent, parent/epic link, checklist-item toggle), create-pr,
-get-pr / get-pr-checks, approve-pr, merge-pr, delete-remote-branch,
-list-runs/get-run/get-logs/rerun. Per the issue-tracking rule, use whatever metadata/
-checklist subcommands the host supports and skip cleanly what it does not.
+comment-issue, update-issue (title/description only for the claim — see below),
+**the in-progress claim commands: `issue start` (idempotent, fail-closed claim),
+`issue release`, `issue claim-check`, and the additive `issue label-add`/`issue
+label-remove`/`issue assign`** (GitHub `start-issue`/`release-issue`/`claim-check`),
+plus best-effort start/end date, time-spent, parent/epic link, and checklist-item
+toggle, create-pr, get-pr / get-pr-checks, approve-pr, merge-pr, delete-remote-branch,
+list-runs/get-run/get-logs/rerun. NEVER set the in-progress label via a whole-set
+`update-issue --labels` replace (it drops other labels) — always claim via `issue start`
+and change labels via the additive primitives. Per the issue-tracking rule, use whatever
+metadata/checklist subcommands the host supports and skip cleanly what it does not.
 
 # Merging (mandatory delegation to code-merge-reviewer)
 
@@ -302,23 +307,28 @@ iteration's list (discipline A).
    runs IN THE SAME CLONE from both selecting issue X before either has claimed it on the
    remote.
 4. **CLAIM IT IMMEDIATELY on the tracker — mark issue X "in progress" NOW, before any
-   other work.** Re-fetch issue X one last time via `get-issue` to confirm it is still
-   open and still not in progress (guard against a race where another worker/clone just
-   claimed it). If it was claimed or closed in this window, RELEASE your local lock
-   (`rmdir`/remove `.locks/issue-<X>.lock`) and return to step 1 for the next candidate.
-   Otherwise claim it per the **issue-tracking** rule (best-effort, set what the host
-   supports):
-   - **Assign** the issue to the working identity AND/OR add the project's in-progress
-     label (per the recorded convention) — this is the claim.
-   - **Set the start date / "started" timestamp** (a start-date field if the host has
-     one, else a dated "started" comment). Note the wall-clock start so you can record
-     time-spent at closure.
-   - **Set the parent/epic/linked-issue field** if issue X has one.
-   - Verify the changes took effect by re-reading the issue. Record `CURRENT_ISSUE` and
-     the start time in `resume_state.md`, set `WORKABLE_ISSUES_REMAIN` appropriately,
-     and append a `DL-NNN` entry. This claim is what stops other workers (and future
-     iterations of this agent) from duplicating the work — it happens at selection time,
-     not after the fix is built.
+   other work — with the ONE deterministic, fail-closed command.** Run the wrapper's
+   claim: `issue start <X>` (GitHub `start-issue <X>`). This single call is idempotent
+   and self-verifying — it re-fetches issue X (aborting if it is not open or is already
+   assigned to someone else, i.e. the race was lost), adds the in-progress label
+   *additively*, assigns the working identity, then RE-READS and confirms both took
+   effect, **exiting non-zero if the claim did not land**. Do NOT hand-roll the claim
+   with `issue update --labels` — the plain `labels` field is a full replace that
+   silently drops other labels and has repeatedly caused the in-progress label to vanish
+   and duplicate work (see the **issue-tracking** rule).
+   - **If `issue start` exits non-zero** (closed/claimed in this window, or the claim
+     verification failed): RELEASE your local lock (`rmdir`/remove
+     `.locks/issue-<X>.lock`) and return to step 1 for the next candidate. Never proceed
+     on an unverified claim.
+   - **On success:** the in-progress label + assignee are set and verified. Additionally
+     set the parent/epic/linked-issue field if issue X has one, and note the wall-clock
+     start so you can record time-spent at closure. Record `CURRENT_ISSUE` and the start
+     time in `resume_state.md`, set `WORKABLE_ISSUES_REMAIN` appropriately, and append a
+     `DL-NNN` entry. This verified claim — made at selection time, not after the fix is
+     built — is what stops other workers (and future iterations of this agent) from
+     duplicating the work. The `claim-before-worktree` PreToolUse hook independently
+     blocks worktree creation for issue X until this claim is visible on the remote, so a
+     skipped or failed claim is caught mechanically at PREPARE.
 
 ## PREPARE
 Issue X is already locked locally and claimed on the tracker from SELECT.
@@ -384,8 +394,9 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    to derive testable acceptance criteria with evidence, post the clarifying question(s)
    ON the issue via `comment-issue` (per the issue-tracking rule — questions live on the
    issue), move issue X to the back of this run's `issue_queue.md`, RELEASE the claim
-   (unassign / remove the in-progress label so others/you can pick it up once answered)
-   AND release the local lock (`rmdir .locks/issue-<X>.lock`), tear down the worktree
+   with the wrapper's `issue release <X>` (removes the in-progress label and unassigns so
+   others/you can pick it up once answered) AND release the local lock
+   (`rmdir .locks/issue-<X>.lock`), tear down the worktree
    venv if any, remove the worktree (per keep-git-clean — no stale worktree), and SELECT
    the next issue rather than idling (do not guess). You do NOT need to set
    `AWAITING_USER` for this — you

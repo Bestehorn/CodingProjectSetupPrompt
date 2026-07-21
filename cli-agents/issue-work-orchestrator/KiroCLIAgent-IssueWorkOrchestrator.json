@@ -77,6 +77,10 @@
       {
         "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
         "matcher": "execute_bash"
+      },
+      {
+        "command": "bash .kiro/hooks-bin/kiro-claim-before-worktree.sh",
+        "matcher": "execute_bash"
       }
     ],
     "stop": [

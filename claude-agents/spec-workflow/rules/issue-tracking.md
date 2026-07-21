@@ -50,9 +50,19 @@ transient chat. (This complements the agent decision log, `DL-NNN`.)
 
 ## Metadata fields (set what the host supports)
 
-- **Assignee:** when starting work, assign the issue to the working identity (the
-  agent/bot/user account in use) so others see it is being worked. This is also the
-  "in progress" claim.
+- **Assignee / the in-progress claim (DETERMINISTIC — do it the safe way):** when
+  starting work, CLAIM the issue with the wrapper's single verified command — GitLab
+  `issue start <iid>` (GitHub `start-issue <n>`). It is **idempotent** and **fail-closed**:
+  it adds the in-progress label *additively*, assigns the working identity, then re-reads
+  and verifies BOTH took effect, exiting non-zero if not — so a claim is never believed
+  unless it actually landed. NEVER set the in-progress label via a full
+  `issue update --labels` replace: the host's plain `labels` field is a **full replace**
+  that silently drops other labels and has repeatedly caused the in-progress label to
+  vanish and duplicate work. Use the additive `issue label-add` / `issue label-remove`
+  (GitLab `add_labels`/`remove_labels`) primitives for any label change. If a claim's
+  verification fails or the issue was claimed by someone else, do NOT start work — release
+  your local lock and pick another issue. Release a claim you can't act on now with
+  `issue release <iid>`.
 - **Start date / "in progress" timestamp:** record when work started (a start-date
   field if the host has one, else a dated "started" comment).
 - **Time tracking:** track the time spent fixing/completing the issue and record it in
@@ -61,7 +71,8 @@ transient chat. (This complements the agent decision log, `DL-NNN`.)
 - **Parent / epic / linked issue:** if the issue has a parent (epic, parent issue,
   linked tracking issue), set the corresponding field/link so the hierarchy is intact.
 - **State / labels:** move the issue through the host's states (in-progress → closed)
-  and apply the project's conventional labels.
+  and apply the project's conventional labels — always via the *additive* label
+  primitives (`issue label-add` / `issue label-remove`), never a whole-set replace.
 
 ## Closing
 
