@@ -620,6 +620,28 @@ branch names describe the work only — no `Co-Authored-By: Claude`, no
 `🤖 Generated with Claude Code`, no AI/assistant/bot attribution, and never an
 auto-generated `claude/<name>` branch; strip any such trailer the tool adds.
 
+Also install the **project-agnostic** commands that are not derived from a Kiro
+hook but belong in every project. These ship verbatim in this repo's
+`claude-commands/` (same file-copy pattern as `spec-*`/`issues-work`):
+
+`.claude/commands/close-session.md` (`/close-session`): a read-only end-of-session
+close-out check. It answers "Can we close this here? Is git clean? Any leftover
+files?" — verifying the working tree is clean (`git status --porcelain`, incl.
+`--untracked-files=all`), `tmp/` is empty, THIS run's own worktree/branch/lock were
+cleaned up (never flagging sibling sessions' `.claude/worktrees/issue-*`), the shared
+local `main` is untouched (expected-behind, per `keep-git-clean.md`), and any pending
+remote/CI follow-up is surfaced — then emits a YES/NO "safe to close" verdict with
+quoted evidence. It NEVER stages, commits, pushes, or deletes anything, and only
+archives the session (`archive_session` `session_id: "self"`) after an explicit
+go-ahead. It leans on the always-loaded rules `no-output-shortening.md`,
+`no-guessing.md`, `keep-git-clean.md`, `file-organization.md`, and
+`remote-ci-must-pass.md`; the worktree/lock steps are best-effort and degrade
+gracefully when the issue-work-orchestrator (Part 13) is not installed.
+
+```bash
+cp claude-commands/close-session.md .claude/commands/
+```
+
 ### Part 6.2 — Event-driven automation → settings.json `hooks`
 
 Kiro's `fileEdited` / `preToolUse` / `postToolUse` / `agentStop` / `promptSubmit`
