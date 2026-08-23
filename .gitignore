@@ -12,6 +12,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Local virtual environment. The tracked .githooks/pre-commit hook resolves
+# pre-commit from here (see .pre-commit-config.yaml); it is per-machine.
+venv/
+.venv/
+
 # Hypothesis property-testing local database/cache (example DB, cached
 # constants, unicode tables). Machine-specific and regenerated automatically.
 .hypothesis/

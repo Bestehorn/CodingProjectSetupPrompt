@@ -1,0 +1,23 @@
+# Pre-commit configuration for THIS repository (the prompt/agent authoring repo).
+#
+# The tracked git hook `.githooks/pre-commit` (wired via core.hooksPath) runs exactly
+# two hook ids from this file on the staged files of every commit: `ruff` then
+# `ruff-format`. Without this file that hook fails, so it is required here even though
+# most of the repository is Markdown/JSON prompt material.
+#
+# Only the fast lint/format pair is defined. mypy and pytest are deliberately absent:
+# this repo has no `src/` package to type-check, and the CV suite's tests are run from
+# `cli-agents/cv/` with its own pytest.ini rather than from the repo root.
+#
+# Python in this repository lives under `cli-agents/cv/` (shared scripts + tests) plus
+# `templates/*.py.template` files, which are NOT valid standalone modules and are
+# excluded. Prompt/documentation files are untouched by these hooks.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^(venv/|tmp/|templates/|old/|workspace/)
+      - id: ruff-format
+        exclude: ^(venv/|tmp/|templates/|old/|workspace/)
