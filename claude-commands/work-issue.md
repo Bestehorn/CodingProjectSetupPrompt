@@ -167,6 +167,13 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      the project threshold, and — for a bugfix — regressions cover the Unchanged Behavior
      clauses. On insufficient proof, record why as `DL-NNN` and reject back to implement
      (cap ~5 cycles, then escalate once).
+   - DEFECTS YOU DISCOVER ALONG THE WAY (`issue-filing-discipline.md`): blocking → absorb
+     into this change; small and clear (a few lines, no design choice) → **fix it now** in
+     this worktree and mention it in the commit/PR, do NOT file it; needs extensive
+     research, design options, or work outside this issue → delegate to
+     `issue-intake-agent` for ONE gated issue (`Origin: spawned-discovery`,
+     `Spawned-from: #X`, plus `Subject:`/`Filing-rationale:`); anything else → a row in
+     `docs/findings-ledger.md`. Finishing with zero new issues filed is the expected result.
    - DOCUMENT: post the full writeup on issue X via `comment-issue` (root cause with
      citation, approach, spec/design summary, tests added, quoted proof / link to
      `evidence/REPORT.md`), then commit the code, tests, and evidence with an
@@ -200,7 +207,8 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Monitor the post-merge trunk pipeline if one exists; if it fails, the fix is not done
      — rework in a FRESH worktree cut from `origin/<main>` until it is green.
    - RESOLVE per `issue-tracking.md`: final comment linking the merged PR and the evidence,
-     checklist fully ticked (or remaining items explicitly deferred with a reason), time
+     checklist fully ticked (or remaining items explicitly deferred with a reason — routed
+     per `issue-filing-discipline.md`, never as an automatic follow-up issue), time
      spent recorded (elapsed from the Step 2 start time), then close X via `update-issue`.
    - Release the local lock (`rmdir .locks/issue-<X>.lock`), set `Status: COMPLETED` and
      `WORKABLE_ISSUES_REMAIN: no` in `resume_state.md`, and update your registry entry.

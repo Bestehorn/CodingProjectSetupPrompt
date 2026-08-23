@@ -2051,6 +2051,76 @@ When you need to perform a repo operation that the wrapper does not yet support:
 <!-- MIGRATION: If this project already has a custom wrapper with non-standard authentication (e.g., corporate ALB + cookie), keep the authentication code as-is and only extend the subcommand surface. Document the host-specific auth behavior at the top of the wrapper. -->
 ```
 
+### 8.26 `issue-filing-discipline.md` (always included):
+```markdown
+---
+inclusion: always
+---
+# Issue Filing Discipline: fix it, or file it — never file by default
+
+The wrapper (8.25) can create issues, so this rule governs WHEN it may. An
+issue-driven workflow that files whatever it notices grows its own backlog:
+measured on a project set up with these prompts, 60% of all issues (78% in the
+last measured month) were created while working other issues, and the subject
+mix drifted from the product to the development machinery. No single filing was
+wrong; the default was.
+
+**Only an OBSERVED defect may be filed.** Evidence you can quote: failing
+command output, a wrong value, an exception, a cited code path whose misbehavior
+you demonstrated. "This could go wrong", "this is not hardened against X",
+"this looks fragile", a theoretical race, an unexercised edge case, and a
+stylistic preference are NOT defects.
+
+**Zero filed issues is a valid and expected outcome.** Never file to show
+diligence or to record that you looked.
+
+**The fix-first evaluation (MANDATORY before filing).** Stop at the first branch
+that applies and say which one you took:
+1. Blocking the current task → fix it inside the current change.
+2. Small and clear — localized, a few lines, no design choice, no new
+   dependency, no public-API or schema change, provable with the existing tests
+   plus at most one added test → **FIX IT NOW and do not file.** A typo, an
+   off-by-one, a wrong constant, a missing None check, a stale docstring: fix,
+   then mention it in the commit message and the report.
+3. Needs extensive RESEARCH, an evaluation of DESIGN-OPTIONS, or is
+   OUT-OF-SCOPE for the current task (or a human explicitly asked for an issue:
+   HUMAN-REQUEST) → file it, and NAME which of those applies.
+4. None of the above → one row in `docs/findings-ledger.md`, then move on.
+
+**Machinery hardening needs a named incident.** A gap in a hook, guard, rule, or
+CI script is filable only after it caused measured damage (lost work, a false
+merge or block, corrupted state). Otherwise it goes to the ledger and waits.
+
+**Already resolved is never filed.** Report the proof instead of creating a
+tracker record for someone to close. **Check open AND recently closed issues**
+first and extend the existing one instead of opening a sibling. **One
+observation → at most one issue.**
+
+**Every filed body carries its provenance**, so the loop stays measurable:
+
+    Origin: human-request | spawned-discovery | spawned-residual | agent-sweep
+    Subject: product | process
+    Spawned-from: #<N>          (required when Origin is spawned-*)
+    Filing-rationale: RESEARCH | DESIGN-OPTIONS | OUT-OF-SCOPE | HUMAN-REQUEST — <one line>
+
+`Subject` is `product` when the change can alter behavior a user of the
+delivered system experiences, else `process`.
+
+**The findings ledger** `docs/findings-ledger.md` is the append-only home for
+everything NOT filed (sub-threshold findings, theoretical hardening gaps,
+adjacent observations, deferred scope). Same evidence standard as an issue, no
+obligation of work — this is what makes "nothing may be dropped" compatible with
+"do not file it". Columns: Date | Subject | Finding | Evidence | Why not filed |
+Status (`open` / `promoted #N` / `stale`). Never delete a row; mark it `stale`.
+
+<!-- NOTE: KiroProjectSetupPrompt.v2.txt carries the fuller version of this rule
+(steering 8.32) plus the mechanical `preToolUse` gate
+(.kiro/hooks-bin/kiro-issue-filing-gate.sh) that BLOCKS an issue-create call
+whose body has no filing rationale, and it removes the filing quotas from the
+Kiro CLI agent fleet. v1 installs no agent fleet, so this steering file is the
+whole containment here. Prefer v2 for new setups. -->
+```
+
 ---
 
 ## PART 9: KIRO HOOKS
@@ -2873,6 +2943,21 @@ Each lesson should include:
 <!-- Add lessons below this line -->
 ```
 
+### `docs/findings-ledger.md`:
+Create it (steering 8.26 routes here). It is the append-only record of findings
+that were deliberately NOT filed as issues:
+```markdown
+# Findings Ledger
+
+Findings recorded but deliberately NOT filed as issues, per
+`.kiro/steering/issue-filing-discipline.md`. Append-only: never delete a row; mark it
+`stale` instead. Promote a row to an issue when it recurs or causes measured damage, and
+record the issue number here.
+
+| Date | Subject | Finding | Evidence | Why not filed | Status |
+|---|---|---|---|---|---|
+```
+
 ---
 
 ## PART 13: VIRTUAL ENVIRONMENT
@@ -2894,6 +2979,7 @@ After completing all setup:
 6. **Verify Steering Files**: Confirm all `.kiro/steering/` files are created/merged
 7. **Verify Hooks**: Confirm all `.kiro/hooks/` files are created/preserved
 8. **Verify Git Wrapper**: Confirm the host wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`) exists and that a credential stub is in place. If the developer has already pasted a real token, run one read-only command (e.g. `list-workflows` / `pipeline status --count 1`) to confirm auth works.
+9. **Verify Issue-Filing Discipline**: Confirm `.kiro/steering/issue-filing-discipline.md` (8.26) exists with `inclusion: always` and that `docs/findings-ledger.md` exists with its table header. This is the only containment v1 installs — there is no agent fleet and no mechanical gate here; note in the report that v2 carries both.
 
 ### Migration Report (REQUIRED):
 Generate a comprehensive migration report with the following sections:

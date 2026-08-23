@@ -266,6 +266,35 @@ Remote Sync(target = <this run's own worktree>; NEVER the shared main checkout):
      date", and refresh your registry heartbeat.
 ```
 
+**C. Defects you discover while working an issue: FIX, don't file.** Working an issue
+with this much verification rigor surfaces other defects — that is the discovery engine
+that grows a backlog faster than it drains it. Route EVERY such finding through
+`.claude/rules/issue-filing-discipline.md`, in this order, and record the branch as a
+`DL-NNN` entry:
+
+  1. **Blocking issue X's fix?** → absorb it into the current change. It is part of the
+     work, not a new issue.
+  2. **Small and clear?** → **FIX IT NOW, in this worktree, on this branch.** Localized,
+     a few lines, no design choice, no new dependency, no public-API or schema change,
+     provable with one added test. Mention it in the commit message, the PR body, and
+     the issue's closing comment. Do NOT file it. A one-line fix costs less than the
+     issue that describes it.
+  3. **Needs extensive RESEARCH, an evaluation of DESIGN-OPTIONS, or is genuinely
+     OUT-OF-SCOPE** (fixing it here would blow up this change or reach into unrelated
+     subsystems)? → delegate to the `issue-intake-agent` to file ONE issue, with
+     `Origin: spawned-discovery`, `Spawned-from: #X`, its `Subject:`, and the
+     `Filing-rationale:`. Machinery/process findings (hooks, gates, rules, locks, CI)
+     additionally need a NAMED INCIDENT — measured damage they already caused — before
+     they may be filed at all.
+  4. **None of the above?** → one row in `docs/findings-ledger.md`, then continue. It is
+     on durable record and it costs no work cycle.
+
+An observation that is not a demonstrated defect ("this could go wrong", "this is not
+hardened", "this looks fragile") is not filable at all — ledger row at most. **A run that
+resolved five issues and filed zero new ones is the expected shape of a good run**, and
+the PreToolUse gate `.claude/hooks/issue-filing-gate.sh` will block any create call whose
+body lacks the provenance lines above.
+
 ## LOAD_ISSUES
 Run this at the START of EVERY iteration — never skip it and never reuse a prior
 iteration's list (discipline A).
@@ -513,7 +542,9 @@ host didn't auto-delete):
 ## RESOLVE
 Close issue X per the **issue-tracking** rule: post a final comment linking the merged
 PR and the evidence; ensure the issue's checklist is fully ticked (or any remaining item
-is explicitly deferred with a reason); **record the time spent** (elapsed from the start
+is explicitly deferred with a reason — a deferred item is routed by discipline C, so it
+becomes a fix here, a ledger row, or ONE gated issue, never an automatic follow-up);
+**record the time spent** (elapsed from the start
 timestamp set at SELECT) in the host's time-tracking field if it has one, else in the
 closing comment; then close the issue via `update-issue` (state closed). Mark it
 resolved in this run's `issue_queue.md`, release the issue's local lock if still held,
@@ -537,7 +568,9 @@ Reached when SELECT finds no not-in-progress, unlocked open issue. Set this run'
 `resume_state.md` `Status: COMPLETED` and `WORKABLE_ISSUES_REMAIN: no` (this releases the
 issue-loop Stop-hook so the turn may end), and set your registry entry `status` to done.
 Emit a final report: issues resolved this run (with PR + evidence links), any issue
-escalated/blocked (with the reason and the clarifying comment posted), and confirmation
+escalated/blocked (with the reason and the clarifying comment posted), the discipline-C
+outcomes (defects fixed in passing, ledger rows appended, and any issue filed with its
+`Filing-rationale` — "no new issues filed" is the expected line here), and confirmation
 this run left a clean state (no leftover worktree/branch/lock of its own; the shared
 local `main` untouched).
 

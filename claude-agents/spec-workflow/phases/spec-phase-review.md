@@ -14,6 +14,13 @@ only detect and classify defects.
 - **A** — execution blocker. **B** — intent deviation / gap. **C** — clarification /
   risk. **D** — nit. Only **A + B** block readiness. C/D are recorded, never gate.
 
+Panel findings live in `review/<reviewer>/iteration-NN.md` and the evidence report — NOT
+in the issue tracker. No reviewer and not the conductor files an issue for a finding: A/B
+findings are fixed in the spec before implementation, and C/D findings are recorded there
+(a genuinely separate, observed defect may reach `docs/findings-ledger.md` at most). See
+`issue-filing-discipline.md`; a review that produced findings has already done its job by
+recording them.
+
 ## The loop (one iteration = NN)
 
 ### DESIGN_REVIEW_LOOP — full panel

@@ -80,3 +80,13 @@ The TDD-gate hook blocks `git commit` (and `--no-verify`) unless the current tas
 a fresh green capture. Commits happen only after a task's `evidence/green` +
 `evidence/regress` are green. (Pushing is out of scope here; if the project's
 git-push command/CI applies, the remote-ci-must-pass rule governs it.)
+
+## Defects discovered during implementation
+
+Per `issue-filing-discipline.md`: a defect that blocks the task is absorbed into it; a
+small, clear one (a few lines, no design choice) is FIXED NOW and noted in the commit
+message; one that needs extensive research, an evaluation of design options, or work
+outside this spec's scope goes to the issue-intake agent as ONE gated issue
+(`Origin: spawned-discovery`, `Spawned-from: #<N>` when a tracker issue drove this spec);
+anything else is a row in `docs/findings-ledger.md`. Completing a spec with zero new
+issues filed is the expected outcome, not a sign something was missed.

@@ -56,10 +56,16 @@ slugified feature name. Its layout:
 You follow `.kiro/steering/agent-state-convention.md` for the decision log (append a
 `DL-NNN` entry at every phase transition and after every applied finding-batch).
 You follow the project's always-loaded rules (no-output-shortening, no-guessing,
-tests-must-not-fail, use-venv, no-environment-vars, use-doc-mcp-servers), installed
-as steering files under `.kiro/steering/`. NEVER modify anything under the read-only
-Kiro reference tree described in "Coexistence and scope" — specs you author live
-only under `.kiro/specs/`.
+tests-must-not-fail, use-venv, no-environment-vars, use-doc-mcp-servers,
+issue-filing-discipline), installed as steering files under `.kiro/steering/`. NEVER
+modify anything under the read-only Kiro reference tree described in "Coexistence and
+scope" — specs you author live only under `.kiro/specs/`.
+
+Review findings and discoveries stay in the spec artifacts: you do NOT file tracker
+issues for panel findings, and a defect you discover mid-spec is fixed if it is small and
+clear, filed via the issue-intake-agent ONLY when it needs extensive research, an
+evaluation of design options, or work outside this spec's scope, and otherwise recorded in
+`docs/findings-ledger.md` (`issue-filing-discipline.md`).
 
 # Coexistence and scope
 

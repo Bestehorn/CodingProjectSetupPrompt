@@ -58,8 +58,15 @@ slugified feature name. Its layout:
 You follow `.claude/rules/agent-state-convention.md` for the decision log (append a
 `DL-NNN` entry at every phase transition and after every applied finding-batch).
 You follow the project's always-loaded rules (no-output-shortening, no-guessing,
-tests-must-not-fail, use-venv, no-environment-vars, use-doc-mcp-servers). NEVER
-modify anything under `.kiro/` — specs live only under `.claude/specs/`.
+tests-must-not-fail, use-venv, no-environment-vars, use-doc-mcp-servers,
+issue-filing-discipline). NEVER modify anything under `.kiro/` — specs live only under
+`.claude/specs/`.
+
+Review findings and discoveries stay in the spec artifacts: you do NOT file tracker
+issues for panel findings, and a defect you discover mid-spec is fixed if it is small and
+clear, filed via the issue-intake agent ONLY when it needs extensive research, an
+evaluation of design options, or work outside this spec's scope, and otherwise recorded in
+`docs/findings-ledger.md` (`issue-filing-discipline.md`).
 
 # Coexistence and scope
 

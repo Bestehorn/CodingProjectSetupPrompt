@@ -445,6 +445,17 @@ Detect the repository issue-filing mechanism. Try in order: `gh` CLI,
 remote inspection. If none available, set `ISSUE_MECHANISM = UNAVAILABLE`
 and surface all `REQUIRES_REWRITE` findings at termination.
 
+Detecting a mechanism does not authorize filing. `REQUIRES_REWRITE` findings
+are routed at termination per `.claude/rules/issue-filing-discipline.md`:
+unreachable code that cannot be removed without a rewrite is a CLEANUP
+opportunity, not an observed defect, so the default route is a row in
+`docs/findings-ledger.md` and a line in the report — NOT a tracker entry.
+File (at most ONE consolidated issue for the run) only when a finding is a
+demonstrated defect that needs RESEARCH or DESIGN-OPTIONS — for example the
+rewrite requires an architectural decision, or the analysis showed the
+"dead" code is reachable in a way that indicates a real bug. Filing nothing
+is the expected outcome of a clean pass.
+
 Enumerate available MCP documentation servers for resolving library-level
 reachability questions (e.g., "does this Python framework discover handlers
 by import-scanning, making them reachable without an explicit import?").
@@ -899,7 +910,12 @@ abort). Record final test suite totals. Leave the file in place.
         been pushed.
 
   7.7.6 REQUIRES_REWRITE FINDINGS — candidates that appeared removable but
-        needed a rewrite. Issues filed via ISSUE_MECHANISM if available.
+        needed a rewrite. Report each with its evidence and the rewrite it
+        would take. State where each went per Discovery Step 6's routing:
+        a `docs/findings-ledger.md` row (the default), or the single
+        consolidated issue with its `Filing-rationale` when one was
+        warranted. "No issue filed" is a complete, clean result — say so
+        rather than filing to have something to report.
 
   7.7.7 VERIFICATION STATEMENT — exact text: "Final full test suite passes
         with 0 failures and 0 errors on commit <final commit hash> of
@@ -931,6 +947,10 @@ typical projects converge in two.
 - COVERAGE IS A WEAK SIGNAL: zero-coverage alone never drives removal.
 - PER-CANDIDATE FIDELITY: One candidate, one commit, one full parallel
   test run, one classification.
+- LEDGER BEFORE TRACKER: A `REQUIRES_REWRITE` finding is a cleanup
+  opportunity, not a defect. It goes to `docs/findings-ledger.md` and the
+  report; only a demonstrated defect needing research or design options
+  reaches the tracker, and then in ONE consolidated issue.
 - REMOVAL OR REVERT ONLY: No refactoring, no rewriting, no "while we're
   here" changes.
 - GIT IS THE UNDO BUTTON: Every change lives on a working branch; every

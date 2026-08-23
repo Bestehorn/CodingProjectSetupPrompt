@@ -49,12 +49,23 @@
 #     a mandatory code-merge-reviewer, and standalone utility agents
 #     (dead-code, doc-review, ci-worker, issue-intake/housekeeping,
 #     product-management, spec-review). Includes the enforced gate hooks
-#     in .kiro/hooks-bin/ (preToolUse TDD gate, stop loop/proof gates,
-#     agentSpawn run-register) and five new always-loaded fleet steering
-#     files (8.27-8.31: agent-state-convention, no-ai-attribution,
-#     keep-git-clean, issue-tracking, per-worktree-venv). Agents are
-#     copied from the prompt repo's cli-agents/ tree. The CV suite is a
-#     separate domain pack and is not installed by default.
+#     in .kiro/hooks-bin/ (preToolUse TDD gate, preToolUse issue-filing
+#     gate, stop loop/proof gates, agentSpawn run-register) and six new
+#     always-loaded fleet steering files (8.27-8.32:
+#     agent-state-convention, no-ai-attribution, keep-git-clean,
+#     issue-tracking, per-worktree-venv, issue-filing-discipline). Agents
+#     are copied from the prompt repo's cli-agents/ tree. The CV suite is
+#     a separate domain pack and is not installed by default.
+#   - NEW steering file issue-filing-discipline.md (8.32) + the
+#     kiro-issue-filing-gate.sh preToolUse gate: contains the measured
+#     backlog-self-amplification failure mode in which the fleet files
+#     most of its own backlog. Issues may be filed only for OBSERVED
+#     defects, only after a mandatory fix-first evaluation (a few lines
+#     gets FIXED, not filed), only for research / design-option /
+#     out-of-scope work, and only with Origin/Subject/Filing-rationale
+#     provenance. Filing quotas are removed from every agent; zero filed
+#     issues is a valid outcome; everything else goes to
+#     docs/findings-ledger.md.
 
 ---
 
@@ -1999,10 +2010,11 @@ finished.
 
 ### 8.27 `agent-state-convention.md` (always) — fleet convention
 
-This rule and 8.28–8.31 are the always-loaded conventions the Kiro CLI
+This rule and 8.28–8.32 are the always-loaded conventions the Kiro CLI
 custom-agent fleet (installed in PART 8A) depends on. They apply to EVERY
 agent. Create each as a steering file with `inclusion: always` (no front
-matter is also fine — absent front matter means `always`).
+matter is also fine — absent front matter means `always`) — except 8.31,
+which is `fileMatch`-scoped.
 
 ```markdown
 ---
@@ -2187,7 +2199,12 @@ the log) — never treat a missing optional field as a blocker.
   to drop a claim you can't act on now.
 - **Closing:** close with a final comment linking the merged PR/MR and evidence,
   ensure the checklist is fully ticked (or remaining items deferred with a reason),
-  and record the time spent.
+  and record the time spent. A deferred item is NOT an automatic follow-up issue —
+  route it through `issue-filing-discipline.md` (fix it now, one gated issue, or a
+  findings-ledger row).
+
+Scope: this rule governs an issue that EXISTS. Whether an issue should exist at all is
+governed by `issue-filing-discipline.md`.
 ```
 
 ### 8.31 `per-worktree-venv.md` (conditional, CDK / app files) — fleet convention
@@ -2228,6 +2245,90 @@ every other concurrent run.
 6. Bound concurrency (`MAX_CONCURRENT_WORKTREE_RUNS`, ~1.5 GB/venv) and pass an
    explicit `pip --cache-dir <worktree>/.pipcache` (do NOT set `PIP_CACHE_DIR` — env
    vars are forbidden).
+```
+
+### 8.32 `issue-filing-discipline.md` (always) — fleet convention — NEW
+
+```markdown
+---
+inclusion: always
+---
+# Issue Filing Discipline: fix it, or file it — never file by default (ALL agents)
+
+An autonomous issue-driven workflow spawns its own backlog: verification finds defects,
+evidence culture forbids dropping them, every finding becomes a tracker entry, every
+entry gets worked, and working it runs the discovery engine again. Measured on a project
+built with this setup: 60% of all issues (78% in the last measured month) were created by
+working other issues, weekly creation went 11 → 52, and the subject mix moved from the
+product to the workflow machinery. No single filing was wrong; the DEFAULT was. Filing an
+issue is not the cheap, diligent option — it commits a future work cycle and needs a
+reason.
+
+**Only an OBSERVED defect can be filed.** Evidence you can quote: failing command output,
+a wrong value, an exception, a cited code path whose misbehavior you demonstrated. NOT
+defects: "this could go wrong", "not hardened against X", "a guard is missing", "looks
+fragile", a theoretical race, an unexercised edge case, a stylistic preference.
+
+**Zero filed issues is a valid and expected outcome.** Never file to demonstrate
+diligence or to record that you looked. A run that fixed its issue and filed nothing is
+complete — say so plainly.
+
+**No quotas.** No agent has a per-run filing target ("file N proposals", "one issue per
+finding"). A sweep that finds nothing filable reports exactly that.
+
+**The fix-first evaluation (MANDATORY before any filing).** Stop at the first branch that
+applies and record which one:
+1. **Blocking the current task?** → fix it inside the current change.
+2. **Small and clear?** → **FIX IT NOW; do not file.** Localized, a few lines, no design
+   choice, no new dependency, no public-API/schema change, provable with the existing
+   tests plus at most one added test. Typos, off-by-ones, wrong constants, missing None
+   checks, stale docstrings: fix, mention in the commit message and the report.
+3. **Needs one of these three?** → file, and NAME it: `RESEARCH` (solution needs
+   extensive investigation), `DESIGN-OPTIONS` (alternatives to evaluate / a spec cycle),
+   `OUT-OF-SCOPE` (fixing it here would materially enlarge the change or reach unrelated
+   subsystems). A human asking for an issue is its own rationale: `HUMAN-REQUEST`.
+4. **None of the above?** → one row in `docs/findings-ledger.md`, then move on.
+
+**Process machinery needs a NAMED INCIDENT.** A gap in a hook, gate, rule, lock protocol,
+CI script, or agent prompt is filable only after it caused measured damage (lost work, a
+false merge, a false block, corrupted state, a wedged session). Name it, or ledger it and
+wait. Guards ship at "good enough"; adversarial completeness is for the product.
+
+**Already resolved is never filed.** Report the proof; do not create a tracker record of
+a non-defect for someone to close.
+
+**Check duplicates and neighbors first** (open AND recently closed) and extend the
+existing issue instead of opening a sibling. **One observation → at most one issue**; no
+"companion" issues for discarded candidates.
+
+**Route every filing through the `issue-intake-agent`** rather than calling the tracker
+yourself; call the wrapper's `create-issue` directly only when intake is unavailable, and
+then produce the same body.
+
+**Mandatory provenance lines in every filed body** (the `preToolUse` gate
+`.kiro/hooks-bin/kiro-issue-filing-gate.sh` blocks a create call without them):
+
+    Origin: human-request | spawned-discovery | spawned-residual | agent-sweep
+    Subject: product | process
+    Spawned-from: #<N>          (required when Origin is spawned-*)
+    Filing-rationale: RESEARCH | DESIGN-OPTIONS | OUT-OF-SCOPE | HUMAN-REQUEST — <one line>
+
+`Subject` is `product` if the change can alter behavior a user of the delivered system
+experiences (the tie-break for deploy/build tooling), else `process`.
+
+**The findings ledger** `docs/findings-ledger.md` is the durable home for everything NOT
+filed: sub-threshold findings, theoretical hardening gaps, adjacent observations,
+deferred checklist items. Append-only, same evidence standard as an issue, no obligation
+of work — this is what makes "nothing may be dropped" compatible with "do not file it".
+Columns: Date | Subject | Finding | Evidence | Why not filed | Status
+(`open` / `promoted #N` / `stale`). Never delete a row; mark it `stale` after six
+untouched weeks.
+
+**Anti-patterns:** filing something you could have fixed in the time the issue body took;
+filing "for the record"; filing a hardening idea for machinery that never failed; turning
+one root cause into three point-fix issues (file ONE that removes the cause); ending a
+report with "follow-up issues I opened" that never cleared the evaluation; skipping the
+ledger because "it was only a small thing".
 ```
 
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
@@ -2355,6 +2456,7 @@ cp cli-agents/spec-workflow/hooks/kiro-tdd-gate.sh               .kiro/hooks-bin
 cp cli-agents/spec-workflow/hooks/kiro-stop-gate.sh              .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh              .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-claim-before-worktree.sh  .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-issue-filing-gate.sh      .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh        .kiro/hooks-bin/
 chmod +x .kiro/hooks-bin/*.sh
 ```
@@ -2376,6 +2478,21 @@ wiring is needed beyond the copy):
   claimed in-progress on the remote — the mechanical enforcement of the deterministic
   claim. Fails open on any uncertainty (no issue number, no wrapper, or a claim-check
   error) so it never wedges a session.
+- `kiro-issue-filing-gate.sh` — `preToolUse` hook (matcher `execute_bash`) on EVERY agent
+  that can reach the tracker: the orchestrator plus `issue-intake-agent`,
+  `product-management-agent`, `doc-reviewer-agent`, `dead-code-removal-agent`, and
+  `issue-housekeeping-agent`. Exit code 2 BLOCKS an issue-CREATE call
+  (`create-issue`, `issue create`) whose body is provably missing the provenance lines
+  required by steering 8.32 (`Origin:`, `Subject:`, `Spawned-from:` for spawned issues,
+  `Filing-rationale:`), and its block message hands the agent the fix-first evaluation
+  instead. Read/update calls (`list-issues`, `get-issue`, `comment-issue`,
+  `update-issue`, `issue claim-check`) pass untouched, and it fails OPEN whenever the
+  body cannot be read (heredoc, command substitution, a variable, an unreadable
+  `--body-file`, no jq/python available) so it never wedges a session. RESIDUAL: only the
+  `execute_bash` matcher is wired; a create call issued through `executePwsh` is not seen
+  (that matcher value is unverified against the Kiro docs, and an invalid matcher would be
+  a worse failure than the gap). This is the mechanical half of the containment in 8.32 —
+  the steering file, not the script, is the authority on what may be filed.
 - `kiro-stop-gate.sh` — `stop` hook on the orchestrator and conductor. Blocks turn-end
   (via STDOUT `{"decision":"block","reason":"..."}`) while a spec is mid-implementation
   and the work is not honestly proven (a completed task with no evidence, a red latest
@@ -2857,6 +2974,22 @@ past mistakes.
 <!-- Add entries below -->
 ```
 
+### `docs/findings-ledger.md`
+Create if the project installs steering 8.32 (`issue-filing-discipline.md`). It is the
+append-only home for findings the fix-first evaluation deliberately did NOT file — the
+pressure valve that lets "nothing may be dropped" coexist with "do not file it":
+```markdown
+# Findings Ledger
+
+Findings recorded but deliberately NOT filed as issues, per
+`.kiro/steering/issue-filing-discipline.md`. Append-only: never delete a row; mark it
+`stale` instead. Promote a row to an issue when it recurs or causes measured damage, and
+record the issue number here.
+
+| Date | Subject | Finding | Evidence | Why not filed | Status |
+|---|---|---|---|---|---|
+```
+
 ---
 
 ## PART 13 — FINAL VERIFICATION AND MIGRATION REPORT
@@ -2889,6 +3022,18 @@ After completing all parts:
 9. **Git wrapper** — for the detected host, the wrapper exists and
    credential stub is in place. If a real token is configured, run
    one read-only command to confirm auth.
+10. **Issue-filing containment** (if any tracker-capable agent was installed) —
+    `.kiro/steering/issue-filing-discipline.md` exists with `inclusion: always`;
+    `docs/findings-ledger.md` exists with its table header;
+    `.kiro/hooks-bin/kiro-issue-filing-gate.sh` is executable and appears in the
+    `hooks.preToolUse` block of each tracker-capable agent's JSON. Verify the gate both
+    blocks and allows:
+    ```bash
+    printf '%s' '{"cwd":".","tool_input":{"command":"python scripts/gitlab_wrapper.py issue create --title X --description \"broken\""}}' \
+      | bash .kiro/hooks-bin/kiro-issue-filing-gate.sh; echo "expect 2, got $?"
+    printf '%s' '{"cwd":".","tool_input":{"command":"python scripts/gitlab_wrapper.py issue list"}}' \
+      | bash .kiro/hooks-bin/kiro-issue-filing-gate.sh; echo "expect 0, got $?"
+    ```
 
 ### Migration report
 
@@ -2936,6 +3081,10 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
   product-management, spec-review, spec-prompt-author): [count installed / list]
 - CV suite: [installed / skipped — domain pack]
 - Gate scripts in `.kiro/hooks-bin/`: [present + executable / missing]
+- Issue-filing containment: steering 8.32 installed [yes / no],
+  `kiro-issue-filing-gate.sh` wired into [list of agents],
+  `docs/findings-ledger.md` [created / already present], block+allow self-check
+  [exit 2 / exit 0 as expected]
 - Reusable prompts in `.kiro/prompts/` (PART 8A.5): [list — e.g. auto-work,
   invoked as `@auto-work`]
 - Delegation rosters resolve (no orchestrator/conductor `availableAgents`

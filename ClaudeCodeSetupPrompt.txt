@@ -720,6 +720,19 @@ Create the referenced scripts under `.claude/hooks/` (make them executable):
   claim (Part 5.3): an agent that skipped `issue start` is stopped at the moment
   it tries to start work. Install it for projects that use the
   issue-work-orchestrator.
+- `issue-filing-gate.sh` (PreToolUse: Bash; ships in
+  `claude-agents/spec-workflow/hooks/`): recognizes an issue-CREATE call
+  (`create-issue`, `issue create`, `gh/glab issue create`) and exits 2 (blocks)
+  when the body is provably missing the provenance lines required by
+  `.claude/rules/issue-filing-discipline.md` (`Origin:`, `Subject:`,
+  `Spawned-from:` for spawned issues, `Filing-rationale:`). Its block message
+  restates the fix-first evaluation, so the cheap path — fix the defect instead
+  of filing it — is the one the agent is handed. Read/update calls
+  (`list-issues`, `get-issue`, `comment-issue`, `update-issue`) pass untouched,
+  and it fails OPEN when the body is unreadable (heredoc, command substitution,
+  a variable, an unreadable `--body-file`) so it never wedges a session. This is
+  the mechanical half of the backlog-self-amplification containment; install it
+  for any project whose agents can reach the tracker.
 - `ruff-on-stop.sh`: runs `venv` ruff + ruff-format check over `src/ test/
   scripts/ cdk/` and reports. Non-blocking; informational.
 
@@ -791,6 +804,16 @@ in `.claude/rules/`. The non-negotiable essentials:
 - Before using AWS/CDK/Strands/AgentCore APIs, consult the corresponding MCP
   server (configured in .mcp.json). See `.claude/rules/use-doc-mcp-servers.md`.
 
+## Issue filing: fix it, or file it — never file by default
+- File an issue ONLY for a defect you OBSERVED (evidence you can quote), and
+  only after asking whether to just FIX it: a few lines, no design choice → fix
+  it now and say so. File only when it needs extensive research, an evaluation
+  of design options, or is outside the current task's scope — and then through
+  the issue-intake agent, with `Origin:`/`Subject:`/`Filing-rationale:` lines.
+- Ending an activity with ZERO filed issues is normal and expected. Everything
+  else worth remembering goes to `docs/findings-ledger.md`.
+  See `.claude/rules/issue-filing-discipline.md`.
+
 ## Read complete command output; never truncate with tail/head/Select-Object.
   See `.claude/rules/no-output-shortening.md`.
 ```
@@ -830,7 +853,10 @@ Always-on (no `paths:`):
   `no-cli-temp-variables.md`, `use-lessons-learned.md`,
   `use-doc-mcp-servers.md`, `document-user-prompts.md`, `no-guessing.md`,
   `always-test-e2e.md`, `tests-must-not-fail.md`, `use-git-wrapper-scripts.md`,
-  `remote-ci-must-pass.md`, `project-specific.md`.
+  `remote-ci-must-pass.md`, `project-specific.md`, and — for any project whose
+  agents can reach an issue tracker — `issue-filing-discipline.md` (ships in
+  `claude-agents/spec-workflow/rules/`; installed with the other fleet rules in
+  Part 12.1).
 
 Path-scoped (`paths:`):
 - `testing.md` → `["test/**/*.py"]`
@@ -849,10 +875,13 @@ literals / write a script in tmp/" guidance, but note that Claude Code does NOT
 re-prompt on new shell variable names (that motivation was Kiro-specific). It
 remains a cleanliness rule, not an approval workaround.
 
-For the four "hard" rules (`no-environment-vars`, `tests-must-not-fail`,
-`cdk-deployment-only`, `use-git-wrapper-scripts`): keep the rule TEXT and ALSO
-back them with the `permissions.deny` rules (Part 5.1) and `PreToolUse` hook
-(Part 6.2) so the prohibition is enforced, not merely requested.
+For the five "hard" rules (`no-environment-vars`, `tests-must-not-fail`,
+`cdk-deployment-only`, `use-git-wrapper-scripts`, `issue-filing-discipline`):
+keep the rule TEXT and ALSO back them with the `permissions.deny` rules
+(Part 5.1) and `PreToolUse` hooks (Part 6.2 / Part 12.2) so the prohibition is
+enforced, not merely requested. For `issue-filing-discipline` the mechanical
+half is `issue-filing-gate.sh`, which blocks an issue-create call whose body
+carries no filing rationale.
 
 ### Part 8.3 — Install the custom agents (.claude/agents/)
 
@@ -878,6 +907,13 @@ suite. The CV orchestrator must be run as the MAIN session —
 `claude --agent cv-orchestrator` — because Claude Code subagents cannot spawn
 subagents.)
 
+If ANY of `issue-intake`, `issue-housekeeping`, `product-management`,
+`doc-review`, or `dead-code` is installed, also install
+`.claude/rules/issue-filing-discipline.md` and `.claude/hooks/issue-filing-gate.sh`
+(Part 12.1 / 12.2). Those five are the agents that can create tracker issues, and
+without the rule + gate they file by default — the measured cause of a backlog
+that grows on its own.
+
 If this project is a Kiro project, its `.kiro/agents/` stays untouched; the
 `.claude/agents/` copies are additive.
 
@@ -899,6 +935,23 @@ Apply Rule 1; assistant-agnostic. Ensure `docs/forLLMConsumption.md`,
 exist with their standard sections (create `lessons-learned.md` with the
 Date/Context/Lesson/Action format if missing). These are referenced by
 `pre-work.md` and `use-lessons-learned.md`.
+
+Also create `docs/findings-ledger.md` if the project installs
+`issue-filing-discipline.md` (Part 8.2). It is the append-only home for findings
+that are deliberately NOT filed as issues — the pressure valve that lets "nothing
+may be dropped" coexist with "do not file it". Create it with this header:
+
+```markdown
+# Findings Ledger
+
+Findings recorded but deliberately NOT filed as issues, per
+`.claude/rules/issue-filing-discipline.md`. Append-only: never delete a row; mark
+it `stale` instead. Promote a row to an issue when it recurs or causes measured
+damage, and record the issue number here.
+
+| Date | Subject | Finding | Evidence | Why not filed | Status |
+|---|---|---|---|---|---|
+```
 
 You MAY run Claude Code's built-in `/init` first to bootstrap a `CLAUDE.md`
 from the codebase, then layer Part 8.1's standards on top (merge, do not
@@ -939,6 +992,17 @@ this prompt (leave any existing one alone).
 10. Git wrapper — for the detected host, the wrapper + credential stub exist.
 11. Coexistence (Kiro projects) — `.kiro/` is byte-for-byte unchanged; both
     `.kiro/agents/` and `.claude/agents/` are present.
+12. Issue-filing containment (if any tracker-capable agent was installed) —
+    `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no
+    `paths:`); `docs/findings-ledger.md` exists with its table header;
+    `.claude/hooks/issue-filing-gate.sh` is executable and wired as a
+    `PreToolUse` Bash hook. Verify the gate both blocks and allows:
+    ```bash
+    printf '%s' '{"tool_input":{"command":"python scripts/github_wrapper.py create-issue --title X --body \"broken\""}}' \
+      | bash .claude/hooks/issue-filing-gate.sh; echo "expect 2, got $?"
+    printf '%s' '{"tool_input":{"command":"python scripts/github_wrapper.py list-issues"}}' \
+      | bash .claude/hooks/issue-filing-gate.sh; echo "expect 0, got $?"
+    ```
 
 ### Report
 
@@ -973,6 +1037,9 @@ Generate a report with these sections:
 - Hard rules enforced via permissions.deny: [list]
 - PreToolUse / Stop hooks created: [list or "none — advisory only"]
 - gh/glab: [forbidden via wrapper / allowed]
+- Issue-filing containment: [issue-filing-discipline.md installed + gate wired /
+  not applicable — no tracker-capable agent installed], findings ledger:
+  [created / already present]
 
 ## Configuration conflicts
 - [kept vs skipped]
@@ -1023,7 +1090,11 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   source/config/docs/tests, never generated/temp files, no stale worktrees/branches,
   per-run clean end-state, never move the shared local `main`, concurrency-safe gc
   config), `issue-tracking.md` (use+update issue checklists, set metadata, keep the issue
-  updated live, log Q&A on the issue — best-effort per host) — all always-loaded — and
+  updated live, log Q&A on the issue — best-effort per host),
+  `issue-filing-discipline.md` (WHETHER an issue should exist at all: observed defects
+  only, the mandatory fix-first evaluation, zero filings is a valid outcome, no quotas,
+  the four provenance lines, and the `docs/findings-ledger.md` route for everything not
+  filed) — all always-loaded — and
   `per-worktree-venv.md` (CONDITIONAL, `paths:`-scoped to cdk/app projects: each worktree
   gets its own venv when running code/CDK from worktrees).
 - **Hook scripts** → `.claude/hooks/`: `spec-tdd-gate.sh`, `spec-stop-gate.sh`,
@@ -1031,7 +1102,10 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   working autonomously while workable issues remain), `claim-before-worktree.sh`
   (PreToolUse hook that blocks per-issue worktree creation until the issue is verifiably
   claimed in-progress on the remote — the mechanical enforcement of the deterministic
-  claim; see Part 5.3 / 6.2), and `session-register.sh`
+  claim; see Part 5.3 / 6.2), `issue-filing-gate.sh` (PreToolUse hook that blocks an
+  issue-CREATE call whose body carries no `Origin:`/`Subject:`/`Filing-rationale:` — the
+  mechanical enforcement of `issue-filing-discipline.md`; fails open when the body is
+  unreadable), and `session-register.sh`
   (SessionStart hook that records each run's `session_id`→run mapping in `registry.json`
   so the agent and the gate hooks know which run owns the session). Make them executable.
 
@@ -1045,7 +1119,8 @@ cp claude-commands/spec-*.md                   .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-convention,
                                                                # no-ai-attribution,
-                                                               # keep-git-clean, issue-tracking
+                                                               # keep-git-clean, issue-tracking,
+                                                               # issue-filing-discipline
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
@@ -1077,7 +1152,10 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
             "timeout": 15 },
           { "type": "command", "command": "bash",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/claim-before-worktree.sh"],
-            "timeout": 30 }
+            "timeout": 30 },
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-filing-gate.sh"],
+            "timeout": 15 }
         ]
       }
     ],
@@ -1104,6 +1182,11 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
   is marked done without green evidence, or the latest run is red / contains
   skipped/xfail tests.
 - `issue-loop-gate.sh` keeps the orchestrator looping autonomously (Part 13).
+- `issue-filing-gate.sh` blocks an issue-CREATE call whose body carries no
+  `Origin:`/`Subject:`/`Filing-rationale:` line, and hands the agent the fix-first
+  evaluation instead. Unlike the other gates it is NOT scoped to an active spec workflow —
+  reflex filing happens in ordinary sessions too — and it fails open whenever the body
+  cannot be read, so it can only ever stop a provably unjustified filing.
 - The gate hooks are session-identity-aware: they resolve the current `session_id` to its
   run via `registry.json` and read only THAT run's state, so concurrent runs never
   cross-trigger each other's gates.
@@ -1134,6 +1217,14 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > and update issue checklists, set metadata (assignee, start/end date, time-spent,
 > parent link) best-effort per host, keep the issue updated live so any agent can
 > resume, and record every user question and its answer on the issue.
+> All agents and the main session follow `.claude/rules/issue-filing-discipline.md`:
+> file an issue ONLY for a defect you OBSERVED, and only after evaluating whether to
+> simply FIX it — a few lines with no design choice gets fixed now, not filed. File only
+> for extensive research, an evaluation of design options, or work outside the current
+> task's scope, and then through the issue-intake agent with `Origin:`, `Subject:`,
+> `Spawned-from:` and `Filing-rationale:` lines. Zero filed issues is a normal, expected
+> outcome; anything worth remembering but not worth a work cycle goes to
+> `docs/findings-ledger.md`.
 
 Because those rule files have no `paths:` frontmatter, they load every session and every
 agent observes them. The decision-log rule preserves decisions across agents and
@@ -1414,14 +1505,20 @@ and polls for an external approval before merging.
 
 ### Part 13.6 — Relationship to the other issue agents
 
-- `issue-intake` — turns one informal observation into a well-formed FILED issue.
+- `issue-intake` — turns one informal observation into AT MOST ONE well-formed filed
+  issue, and is the project's filing GATE: it reports NOT_FILED (with the direct fix to
+  make) when the observation is a small clear defect, is already resolved, or is a
+  duplicate. It is the only route agents use to file.
 - `issue-housekeeping` — batch-triages ALL issues with LOCAL quick-fixes (never pushes)
-  and drafts specs for the hard ones.
+  and drafts specs for the hard ones. It never creates issues.
 - `issue-work-orchestrator` — DELIVERS issues one at a time through the full remote
-  lifecycle (push, PR, CI, merge, close) with proof.
+  lifecycle (push, PR, CI, merge, close) with proof. Defects it finds along the way are
+  fixed in place when small, and reach the tracker only through intake's gate.
 
 Typical flow: intake captures work → housekeeping triages/clears easy debt → the
-orchestrator autonomously delivers the real fixes to `main`.
+orchestrator autonomously delivers the real fixes to `main`. A healthy cycle SHRINKS the
+backlog: per `issue-filing-discipline.md`, a run that closes issues and files none is the
+expected outcome, not a sign that something was missed.
 
 ---
 
@@ -1479,11 +1576,13 @@ orchestrator autonomously delivers the real fixes to `main`.
   spec-implementer (+ reused spec-review-agent, spec-prompt-author-agent).
 - Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
 - Gates: spec-tdd-gate.sh (commit), spec-stop-gate.sh (turn-end),
-  red-for-right-reason.sh, issue-loop-gate.sh (keeps the orchestrator looping).
+  red-for-right-reason.sh, issue-loop-gate.sh (keeps the orchestrator looping),
+  issue-filing-gate.sh (blocks an issue-create call with no filing rationale).
   Shared always-loaded rules in .claude/rules/: agent-state-convention.md (decision
   log), no-ai-attribution.md (descriptive names, no AI attribution), keep-git-clean.md
   (commit-what-belongs, no stale worktrees/branches), issue-tracking.md (checklists +
-  metadata + live issue updates + Q&A on issue).
+  metadata + live issue updates + Q&A on issue), issue-filing-discipline.md (observed
+  defects only, fix-first before filing, zero filings is valid, findings ledger).
 
 ### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).

@@ -152,6 +152,19 @@ All other modifications are out of scope. Specifically:
     requires.
   - No "fixing" unrelated issues noticed during analysis.
 
+Permitted tracker mutations: commenting on, labeling, and CLOSING existing
+issues, plus drafting spec prompts for Type2 escalation. This agent does NOT
+CREATE issues — not for residual scope, not for a Type2 escalation (the spec
+prompt is the artifact, attached to the existing issue), and not for
+something noticed while working an issue. A defect you notice in passing is
+routed by `.claude/rules/issue-filing-discipline.md`: fix it inside the
+Type1 scope if it belongs there, otherwise record it in
+`docs/findings-ledger.md` and report it. If a finding genuinely needs its
+own issue (extensive research, design options to evaluate, or work outside
+this pass), name that rationale in the termination report and let the user
+or the issue-intake agent file it — one issue, gated, not a family of them.
+Closing an issue as already-resolved never spawns a replacement issue.
+
 # Type1 vs Type2 Classification Criteria
 
 An issue is Type1 (quick-fix) when ALL of the following hold:

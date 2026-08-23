@@ -69,13 +69,23 @@ agent could spend fixing the next issue.
 
 | Agent | Scope | Remote? | Output |
 |---|---|---|---|
-| `issue-intake` | Turn ONE informal observation into a well-formed filed issue | files the issue | a new issue |
-| `issue-housekeeping` | Batch-triage ALL issues; local Type1 quick-fixes; draft specs for Type2 | **no push** (local ephemeral branch) | issues closed / triaged in place |
+| `issue-intake` | Turn ONE observation into AT MOST ONE well-formed issue; it is also the filing GATE | files the issue when the gate passes | a new issue — or NOT_FILED with the direct fix to make |
+| `issue-housekeeping` | Batch-triage ALL issues; local Type1 quick-fixes; draft specs for Type2 | **no push** (local ephemeral branch) | issues closed / triaged in place; never new issues |
 | **`issue-work-orchestrator`** | **Deliver issues** one at a time, full lifecycle | **pushes, PRs, merges, monitors CI** | merged + closed issues with proof |
 
 Use `issue-intake` to capture work, `issue-housekeeping` to triage and clear easy debt,
 and `issue-work-orchestrator` to actually deliver fixes to `main` autonomously. A common
 flow: housekeeping classifies the backlog → the orchestrator delivers the real fixes.
+
+**Filing discipline (standing discipline C).** Defects the orchestrator finds while
+working an issue are FIXED, not filed: blocking ones are absorbed into the current change,
+small and clear ones are fixed in the same worktree and noted in the commit/PR, and only a
+finding that needs extensive research, an evaluation of design options, or work outside
+the issue's scope goes to `issue-intake` as ONE gated issue (`Origin: spawned-discovery`,
+`Spawned-from: #X`). Everything else becomes a row in `docs/findings-ledger.md`. A run
+that resolves issues and files none is the expected shape of a good run — see
+[`../spec-workflow/rules/issue-filing-discipline.md`](../spec-workflow/rules/issue-filing-discipline.md),
+mechanically backed by `hooks/issue-filing-gate.sh`.
 
 ## Why it embeds the spec engine (and does not call `spec-conductor`)
 

@@ -6,6 +6,11 @@ issue-housekeeping, product-management, the issue-work-orchestrator). It is inst
 referenced from the project's root `CLAUDE.md`. All tracker operations go through the
 project's git wrapper script (`use-git-wrapper-scripts`).
 
+Scope: this rule governs an issue that EXISTS. Whether an issue should exist at all is
+governed by `.claude/rules/issue-filing-discipline.md` — observed defects only, fix-first
+before filing, and zero filings is a valid outcome. Read that one before creating
+anything.
+
 The goal: the issue is the durable, shared record of the work. At any moment, ANY other
 agent or human must be able to pick up the issue and continue with minimal lost context
 — because progress, decisions, questions, answers, and remaining work are all kept ON
@@ -80,3 +85,9 @@ When the work is done and merged, close the issue with a final comment that link
 merged PR/MR and the evidence, ensures the checklist is fully ticked (or remaining items
 are explicitly deferred with a reason), and records the time spent. Leave the issue as a
 complete, self-contained record of what was done and proven.
+
+A deferred checklist item is NOT an automatic follow-up issue. Route it through
+`issue-filing-discipline.md`: fix it now if it is small and clear, file ONE gated issue if
+it needs research, design options, or work outside this scope, and otherwise record it in
+`docs/findings-ledger.md`. "Deferred with a reason" means the reason names which of those
+happened.

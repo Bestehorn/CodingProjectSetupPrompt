@@ -107,15 +107,19 @@ cp claude-commands/spec-*.md                              .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md                .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # agent-state-convention,
                                                                          # no-ai-attribution, keep-git-clean,
-                                                                         # issue-tracking, per-worktree-venv
+                                                                         # issue-tracking, per-worktree-venv,
+                                                                         # issue-filing-discipline
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 
 Then register the TDD gates in `.claude/settings.json` (PreToolUse(Bash) →
-`spec-tdd-gate.sh`; Stop → `spec-stop-gate.sh`) and add to root `CLAUDE.md`:
+`spec-tdd-gate.sh` + `issue-filing-gate.sh`; Stop → `spec-stop-gate.sh`) and add to root
+`CLAUDE.md`:
 "All agents follow `.claude/rules/agent-state-convention.md` for state and decision
-logging, and `.claude/rules/no-ai-attribution.md` for descriptive names with no
-Claude/AI attribution in commits, PRs, issues, branches, or worktrees."
+logging, `.claude/rules/no-ai-attribution.md` for descriptive names with no
+Claude/AI attribution in commits, PRs, issues, branches, or worktrees, and
+`.claude/rules/issue-filing-discipline.md` for when an issue may be filed at all
+(observed defects only, fix-first, zero filings is a valid outcome)."
 `ClaudeCodeSetupPrompt.txt` (Part 12) does all of this for you.
 
 ## Durable state (preserved for later agents)

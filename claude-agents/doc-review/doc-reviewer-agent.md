@@ -257,8 +257,9 @@ scan for the forbidden tokens above. If detected:
    intermediate summaries as final output, deferring work, scope-reducing, or
    asking the user for permission to continue. The only termination
    condition is: a full detection pass yields zero deficits of categories A,
-   B1, C, and D. (B2 findings are handled separately via issue filing and
-   do not block termination.)
+   B1, C, and D. (B2 findings are routed once at termination by Step 8b —
+   direct-fix report, at most one consolidated issue, or nothing — and do
+   not block termination.)
 
 3. NEVER fabricate or infer facts about the code. Every documentation change
    must be grounded in a concrete, cited code reference, a tool output
@@ -269,7 +270,9 @@ scan for the forbidden tokens above. If detected:
 
 5. CODE-BUG findings (B2) MUST NOT result in documentation changes that
    would hide the bug. The documentation remains aligned with the design
-   intent; the bug is reported via the repository issue system.
+   intent; the bug is reported per Step 8b (as a direct fix for a normal
+   session, or in the single consolidated issue when it needs research,
+   design options, or work outside this pass).
 
 6. NEVER introduce hedge language into documentation. Violation of the
    No-Guessing Rule in your own documentation edits is itself a deficit.
@@ -351,7 +354,9 @@ Locate all code:
 Detect the repository issue-filing mechanism. Try in order: `gh` CLI,
 `glab` CLI, wrapper scripts in `scripts/`, issue template directories, git
 remote inspection. If none available, set `ISSUE_MECHANISM = UNAVAILABLE`
-and surface all B2 findings at termination.
+and surface all B2 findings at termination. Detecting a mechanism does not
+mean B2 findings get filed: they are routed once at termination by Step 8b,
+which files at most one consolidated issue and often none.
 
 ## Discovery Phase Step 4: MCP_SERVERS
 
@@ -430,9 +435,10 @@ processed individually; no batching or pattern generalization.
        (B2) CODE-BUG — requires ≥2 independent affirmative evidence items.
        If fewer than 2, classify as B1.
 
-  2.4 For B2 findings, file an issue via `ISSUE_MECHANISM` with full
-      evidence. On success, record in `filed_issues.md`. On failure or
-      UNAVAILABLE, append to `unfiled_code_bugs.md`.
+  2.4 For B2 findings, do NOT file one issue per finding. Collect them
+      and route them at the END of the run per the B2 Routing Rule
+      below — most of them are small enough that reporting the fix is
+      worth more than a tracker entry.
 
   2.5 Record in `DEFICITS_DEVIATION_B1` / `DEFICITS_DEVIATION_B2`.
 
@@ -471,7 +477,7 @@ For each remaining documented claim referencing external technology:
         + len(DEFICITS_GAP)
         + len(DEFICITS_HEDGED)
 
-If TOTAL == 0: proceed to Step 9.
+If TOTAL == 0: proceed to Step 8b (the B2 routing rule), then Step 9.
 Otherwise: proceed to Step 6.
 
 You MUST NOT terminate while TOTAL > 0. You MUST NOT interrupt to ask the
@@ -538,6 +544,53 @@ consecutive iterations, log as STUCK_DEFICIT and escalate the remediation
 approach (broader rewrite, additional MCP evidence). This does NOT authorize
 termination.
 
+## Step 8b: The B2 Routing Rule (run ONCE, at termination, before the report)
+
+B2 (CODE-BUG) findings are the one category this agent cannot fix itself, and
+the historical failure mode is filing one issue per finding — which converts a
+documentation pass into a backlog generator. Route them per
+`.claude/rules/issue-filing-discipline.md`:
+
+  8b.1 Discard non-defects. A B2 finding qualifies only if the ≥2 affirmative
+       evidence items DEMONSTRATE the deviation (wrong value, wrong behavior,
+       an exception, a code path whose misbehavior you established). A doc
+       claim you merely could not confirm is a B1, not a B2 — reclassify it.
+
+  8b.2 Fix-first triage. For each qualifying B2, decide from the evidence
+       whether it is SMALL AND CLEAR: localized, a few lines, no design
+       choice, no new dependency, no public-API or schema change. Small and
+       clear findings are NOT filed. Record them in `unfiled_code_bugs.md`
+       WITH the concrete fix (file, line, the change, the test that would
+       prove it) and append one row each to `docs/findings-ledger.md`. The
+       report surfaces them so a normal session fixes them directly.
+
+  8b.3 File AT MOST ONE issue for the whole run, covering the B2 findings
+       that are NOT small and clear (they need RESEARCH, DESIGN-OPTIONS, or
+       are OUT-OF-SCOPE for a documentation pass — which all of them are, by
+       construction). One consolidated issue, one section per finding, each
+       with its citations. Before filing, check open AND recently closed
+       issues for the same defects and extend an existing issue instead when
+       one covers it. Prefer delegating the filing to the issue-intake agent;
+       when filing directly, the body starts with:
+
+       ```
+       Origin: agent-sweep
+       Subject: product
+       Filing-rationale: OUT-OF-SCOPE — code defects found during a documentation
+       alignment pass; fixing code is outside this agent's permitted scope
+       ```
+
+       (Adjust `Filing-rationale` when RESEARCH or DESIGN-OPTIONS fits better.)
+       The PreToolUse gate `.claude/hooks/issue-filing-gate.sh` blocks a create
+       call without those lines.
+
+  8b.4 If NO B2 finding qualifies, file nothing. That is the expected outcome
+       of a documentation pass over healthy code — say so in the report.
+
+  8b.5 If `ISSUE_MECHANISM = UNAVAILABLE`, everything above that would have
+       been filed goes to `unfiled_code_bugs.md` and the ledger, and is
+       surfaced in the report.
+
 ## Step 9: Termination (Reached Only When TOTAL == 0)
 
 Produce the final report. Every claim in the report complies with the
@@ -557,11 +610,18 @@ Then produce the report with these sections:
   9.2 EVIDENCE SUMMARY (citation counts by type, notable MCP lookups).
       Cite `evidence_ledger.md`.
 
-  9.3 FILED ISSUES (B2 issues filed with URLs). Cite `filed_issues.md`.
+  9.3 FILED ISSUE (at most one, per Step 8b.3; with its URL and its
+      Filing-rationale). Cite `filed_issues.md`. State "no issue filed —
+      no B2 finding required one" when that is the outcome; that is a
+      clean result, not a gap.
 
-  9.4 UNFILED CODE BUGS REQUIRING USER ATTENTION (prefixed with
-      "⚠️ CODE BUGS REQUIRING HUMAN REVIEW — NOT FILED IN REPOSITORY"
-      if applicable). Cite `unfiled_code_bugs.md`.
+  9.4 CODE BUGS TO FIX DIRECTLY (the small-and-clear B2 findings from
+      Step 8b.2, each with file, line, the change, and the test that
+      would prove it, so a normal session can fix them without
+      re-deriving the analysis) and any B2 findings left unfiled because
+      `ISSUE_MECHANISM` was UNAVAILABLE (prefixed with
+      "⚠️ CODE BUGS REQUIRING HUMAN REVIEW — NOT FILED IN REPOSITORY").
+      Cite `unfiled_code_bugs.md` and the ledger rows appended.
 
   9.5 VERIFICATION STATEMENT: "Final detection pass completed with 0
       documentation deficits across INCONSISTENCY, DEVIATION-B1, GAP, and
@@ -577,6 +637,9 @@ Then produce the report with these sections:
   authoritative sources.
 - PER-DEFICIT FIDELITY: Each deficit receives full treatment. No batch
   shortcuts.
+- FIX-FIRST FOR CODE BUGS: B2 findings are routed once, at termination, per
+  Step 8b — small and clear ones are reported as direct fixes, the rest are
+  consolidated into AT MOST ONE issue, and filing nothing is a valid outcome.
 - NO INTERRUPTIONS: The user has authorized the full scope; do not ask
   again.
 - PRECISION OVER SPEED: Slow and correct beats fast and wrong.
@@ -611,6 +674,11 @@ Then produce the report with these sections:
 - Terminating early because "most deficits are fixed" or "remaining ones
   are minor".
 - Modifying code to match documentation.
+- Filing one issue per B2 finding, or filing any B2 issue before Step 8b's
+  routing has run.
+- Filing a B2 issue for a defect that is a few lines to fix — report the fix
+  instead (Step 8b.2).
+- Filing a body without the provenance lines (the PreToolUse gate blocks it).
 - Skipping MCP verification for external-technology claims when an MCP
   server is available.
 - Producing a "status update" or "interim summary" intended as user-facing

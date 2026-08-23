@@ -62,7 +62,8 @@ evidence-proven code in one session.
 | `phases/spec-phase-*.md` | Phase procedures (shared by conductor + commands) |
 | `rules/agent-state-convention.md` | Cross-agent decision-log convention (all agents) |
 | `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
-| `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) |
+| `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
+| `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) + the issue-filing gate |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
 `spec-prompt-author-agent`). The four `/spec-*` slash commands live in
@@ -87,10 +88,27 @@ the same lifecycle claim-first in its own worktree and stops after that issue. F
 [`issue-work-orchestrator/README.md`](issue-work-orchestrator/README.md).
 `ClaudeCodeSetupPrompt.txt` Part 13 installs it (depends on Part 12).
 
-**Which issue agent to use:** `issue-intake` files one well-formed issue from an
-observation; `issue-housekeeping` batch-triages all issues with local quick-fixes (never
-pushes); `issue-work-orchestrator` delivers issues one at a time through the full remote
-PR/CI/merge lifecycle with proof.
+**Which issue agent to use:** `issue-intake` turns one observation into AT MOST ONE
+well-formed issue — and is the fleet's filing gate, reporting NOT_FILED with a
+recommended direct fix when the defect is small and clear, already resolved, or a
+duplicate; `issue-housekeeping` batch-triages all issues with local quick-fixes (never
+pushes, never creates issues); `issue-work-orchestrator` delivers issues one at a time
+through the full remote PR/CI/merge lifecycle with proof.
+
+**Filing discipline (read this before adding any filing mechanism).** Five agents can
+create tracker issues: `issue-intake`, `product-management`, `doc-review`, `dead-code`,
+and (via intake) `issue-work-orchestrator`. All of them are bound by
+[`spec-workflow/rules/issue-filing-discipline.md`](spec-workflow/rules/issue-filing-discipline.md):
+an issue may be filed only for an OBSERVED defect, only after the mandatory fix-first
+evaluation (a few lines with no design choice gets FIXED, not filed), only when it needs
+extensive research / an evaluation of design options / work outside the current task, and
+only with `Origin:`/`Subject:`/`Spawned-from:`/`Filing-rationale:` lines — which
+[`spec-workflow/hooks/issue-filing-gate.sh`](spec-workflow/hooks/issue-filing-gate.sh)
+enforces as a `PreToolUse` gate. No agent has a filing quota, and **zero filed issues is
+a valid and expected outcome of a run**. Everything not filed goes to
+`docs/findings-ledger.md`. This exists because the fleet was measured spawning most of
+its own backlog: 60% of issues (78% in the last measured month) came from working other
+issues, and the subject mix drifted from the product to the workflow machinery.
 
 ## Mandatory merge agent (`code-merge-reviewer/`)
 
@@ -204,6 +222,7 @@ What this means in practice, per original Kiro restriction:
 | `spec-review`, `spec-prompt-author` write only spec + state dirs | Same: enforce with `permissions.deny` on code dirs if you want a hard guarantee. |
 | `issue-intake`, `product-management`: never modify code, never `git commit` | Add `permissions.deny: ["Bash(git commit:*)", "Bash(git push:*)", "Edit(src/**)", ...]`. |
 | `cv-editor` shell allowlist `python tmp/cv-editor/.../apply_changes.py` and deny `git`/`pip`/`rm`/`curl`/... | Optionally add the deny rules to `.claude/settings.json`; the body already constrains behaviour. |
+| any agent that can create issues (`issue-intake`, `product-management`, `doc-review`, `dead-code`, `issue-housekeeping`) | Install `rules/issue-filing-discipline.md` into `.claude/rules/` AND wire `hooks/issue-filing-gate.sh` as a `PreToolUse` Bash hook — it blocks an issue-create call whose body carries no filing rationale. |
 
 For a single trusted user, the prompt-level restrictions in each body are
 usually sufficient. Add the `permissions.deny` rules (or a `PreToolUse` hook)
