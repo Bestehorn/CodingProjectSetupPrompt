@@ -379,6 +379,7 @@ Apply Rule 1. Create only what is missing. Never delete existing dirs.
   agents/          # Kiro CLI custom agents (the autonomous fleet, PART 8A)
   hooks/           # Kiro agent hooks (.kiro.hook runtime automation, PART 9)
   hooks-bin/       # Gate scripts the custom agents invoke (PART 8A)
+  prompts/         # Reusable file-based prompts, invoked as @name (PART 8A.5)
   settings/        # MCP and other settings
   specs/
     templates/     # Reusable spec templates
@@ -409,6 +410,7 @@ tmp/               # Temporary files (gitignored)
 | `.clinerules/aws-config-rule.md` | `.kiro/steering/aws-config.md` |
 | anything else under `.clinerules/` | `.kiro/steering/project-specific.md` |
 | `.clinerules/workflows/*.md` | `.kiro/hooks/<same-name>.kiro.hook` (one-to-one, see Part 10) |
+| Claude Code `.claude/commands/<name>.md` (`/name`) | `.kiro/prompts/<name>.md` (`@name`, Part 8A.5) and/or a `userTriggered` `.kiro.hook` for the IDE |
 | `.amazonq/*` | merge into `.kiro/steering/project-specific.md` |
 
 Only delete `.clinerules/` and `.amazonq/` after every file has been
@@ -2426,6 +2428,50 @@ wiring is needed beyond the copy):
   cap entirely. The orchestrator's per-run registry/locks (8.27) and the
   never-move-local-`main` + `gc.auto 0` git rules (8.29) make sharing one clone safe.
 
+### 8A.5 Reusable prompts (`.kiro/prompts/`) — the `/auto-work` equivalent
+
+Kiro has NO user-defined `/name` slash commands (that is a Claude Code concept; see the
+mapping table in Part 1). The equivalent surface is Kiro's **file-based prompts**: a
+markdown file in `.kiro/prompts/` (workspace) or `~/.kiro/prompts/` (global), invoked in
+`kiro-cli` chat with the **`@` prefix** — `@auto-work`, not `/auto-work`. Local prompts
+override global ones of the same name and take precedence over same-named file references.
+File-based prompts do NOT accept arguments (only MCP prompts do), which is fine for
+`auto-work` — it takes none. `/prompts list`, `/prompts edit <name>`, and
+`/prompts details <name>` manage them.
+
+Install the never-stop autonomous backlog prompt, the counterpart of Claude Code's
+`/auto-work` command (`ClaudeCodeSetupPrompt.txt` Part 13.1c):
+
+```bash
+mkdir -p .kiro/prompts
+cp kiro-prompts/auto-work.md .kiro/prompts/
+```
+
+Then, with the `issue-work-orchestrator` agent active, type `@auto-work`. It runs the whole
+backlog with no questions and no intermediate reports: the five non-negotiables are
+(1) never ask which issue, (2) never stop, (3) claim on pick via the fail-closed
+`issue start <N>` before fetching or branching, (4) always work the latest code (Remote
+Sync at all six points, fresh issue list per iteration, every conflict to
+`code-merge-reviewer`), (5) one worktree per issue under `.kiro/worktrees/issue-<N>/` with
+full teardown. Non-negotiable #2 is enforced mechanically by `kiro-loop-gate.sh` (the CLI
+`stop` hook), which blocks turn-end while `WORKABLE_ISSUES_REMAIN: yes` — subject to its
+deliberate `LOOP_BLOCK_CAP` consecutive-block safety valve, after which the run must be
+re-launched to continue.
+
+On context exhaustion the prompt relies on Kiro's AUTOMATIC compaction (older history
+replaced by a structured summary of goals/decisions/progress/next-steps while recent
+messages stay verbatim; continuation is uninterrupted). It does NOT tell the agent to
+compact itself: compaction is not agent-triggerable — it is automatic everywhere, and
+manual `/compact` exists only in the CLI as a USER command (the IDE has no manual trigger
+at all). Instead the prompt makes compaction lossless: checkpoint
+`runs/<run-id>/resume_state.md` plus the registry heartbeat after every step, keep the
+issue itself updated live, and re-read the state files immediately after a compaction
+before acting. `inclusion: always` steering survives; `fileMatch` steering reloads when a
+matching file is next touched. Compacted history is unrecoverable within the session, so
+anything that must outlive it belongs on disk or on the issue. The CLI settings
+`compaction.excludeMessages` and `compaction.excludeContextWindowPercent` (both default
+`2`, the more conservative value winning) tune how much recent history stays verbatim.
+
 ---
 
 
@@ -2606,6 +2652,45 @@ doc servers and project docs as appropriate) and loop back to Step B.
   `.kiro/steering/git-workflow-shared.md`. Run Step B (fetch and
   rebase onto origin/<current-branch>; if no upstream, rebase onto
   origin/main). Then run the git-commit hook (Steps A, B, C, D)."
+
+#### 9.4a `auto-work.kiro.hook`
+
+Only create this if Part 8A installed the advanced fleet (it needs
+`issue-work-orchestrator` and `.kiro/prompts/auto-work.md`). This is the
+IDE-side entry point to the same never-stop backlog run that Kiro CLI
+reaches with `@auto-work` and Claude Code reaches with `/auto-work` — the
+IDE has no `@prompt` invocation, so a `userTriggered` hook is the button.
+
+- name: "Auto-Work the Issue Backlog"
+- description: "Work the open-issue backlog fully autonomously and without
+  stopping: claim each issue in-progress on pick, work it in its own git
+  worktree off the latest origin/main, spec-review where needed, PR, CI,
+  merge, close, repeat."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Switch to the `issue-work-orchestrator` agent. Read
+  `.kiro/prompts/auto-work.md` COMPLETELY and execute it exactly as
+  written — it is the full workflow definition, not a summary. Its five
+  non-negotiables govern this run: never ask which issue to work on;
+  never stop working (no intermediate summaries, no waiting for further
+  instruction); claim each issue with the fail-closed `issue start <N>`
+  the moment you pick it, before fetching or branching; always work on
+  the latest code (Remote Sync at all six points, fresh issue list every
+  iteration, every conflict delegated to `code-merge-reviewer`); one git
+  worktree per issue under `.kiro/worktrees/issue-<N>/` with full
+  teardown and a clean local git. Do not stop when the context window
+  fills — compaction is automatic and you continue through it; your
+  obligation is to checkpoint `resume_state.md` and the issue itself
+  after every step so nothing is lost, and to re-read that state
+  immediately after a compaction. Stop only at DONE (no workable issue
+  remains), a single recorded escalation, or a fatal missing
+  ISSUE_MECHANISM."
+
+Unlike the other Part 9 hooks, this one deliberately does NOT inline its
+workflow: `.kiro/prompts/auto-work.md` is the single source of truth
+shared with the CLI's `@auto-work`, and duplicating it would let the two
+surfaces drift. The hook prompt above is self-contained enough that the
+agent still knows the non-negotiables even before it opens the file.
 
 #### 9.7 `git-push.kiro.hook`
 - name: "Git Push"
@@ -2851,6 +2936,8 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
   product-management, spec-review, spec-prompt-author): [count installed / list]
 - CV suite: [installed / skipped — domain pack]
 - Gate scripts in `.kiro/hooks-bin/`: [present + executable / missing]
+- Reusable prompts in `.kiro/prompts/` (PART 8A.5): [list — e.g. auto-work,
+  invoked as `@auto-work`]
 - Delegation rosters resolve (no orchestrator/conductor `availableAgents`
   entry points at an uninstalled agent): [yes / no — list gaps]
 
@@ -2980,6 +3067,15 @@ All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
   (`kiro-session-register.sh`, `kiro-tdd-gate.sh`, `kiro-stop-gate.sh`,
   `kiro-loop-gate.sh`, `kiro-claim-before-worktree.sh`, `red-for-right-reason.sh`).
 - Not installed by default: the `cli-agents/cv/` CV-customization suite (domain pack).
+
+### Reusable prompts (PART 8A.5)
+`kiro-prompts/*.md` in the prompt repository → `.kiro/prompts/` (workspace) or
+`~/.kiro/prompts/` (global). Invoked in `kiro-cli` chat as **`@name`** (NOT `/name` — Kiro
+has no user-defined slash commands). File-based prompts take no arguments; local overrides
+global overrides MCP. Managed with `/prompts list|edit|details`.
+- `auto-work.md` → `@auto-work`: never-stop autonomous open-issue backlog run (the
+  counterpart of Claude Code's `/auto-work`). The IDE reaches the same body through the
+  `auto-work.kiro.hook` `userTriggered` hook (Part 9.4a), which reads the prompt file.
 
 ### Custom-agent hook trigger types (PART 8A, Kiro CLI agent JSON `hooks`)
 Distinct from the Part 9 `.kiro.hook` triggers above. Keyed by trigger, each an array

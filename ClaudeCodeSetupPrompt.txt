@@ -1196,7 +1196,11 @@ TDD/evidence hooks). Install Part 12 first.
 - `claude-agents/code-merge-reviewer/code-merge-reviewer.md` → `.claude/agents/` (the
   mandatory conflict-resolution agent the orchestrator delegates every merge to).
 - `claude-commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
-  resume).
+  resume the WHOLE backlog).
+- `claude-commands/work-issue.md` → `.claude/commands/` (`/work-issue <X>`, work ONE
+  named issue end to end — see Part 13.1b).
+- `claude-commands/auto-work.md` → `.claude/commands/` (`/auto-work`, the never-stop
+  autonomous backlog run — see Part 13.1c).
 - The `session-register.sh` (SessionStart) and `issue-loop-gate.sh` (Stop) hooks —
   installed and wired by Part 12.2's settings block (which already lists them) — give the
   orchestrator its per-run identity and keep it looping autonomously.
@@ -1205,6 +1209,8 @@ TDD/evidence hooks). Install Part 12 first.
 cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md .claude/agents/
 cp claude-agents/code-merge-reviewer/code-merge-reviewer.md         .claude/agents/
 cp claude-commands/issues-work.md                                   .claude/commands/
+cp claude-commands/work-issue.md                                    .claude/commands/
+cp claude-commands/auto-work.md                                     .claude/commands/
 ```
 
 Also: ensure the git wrapper implements the PR/merge/CI subcommands AND the issue
@@ -1242,6 +1248,93 @@ Separate clones remain available for hard blast-radius isolation, but are no lon
 required for correctness. A clean rule of thumb: **one orchestrator per launch
 directory** (its own worktree/clone) — two runs launched from the *same* directory share
 session storage, so distinct launch dirs keep them cleanly separate.
+
+### Part 13.1b — Single-issue mode (`/work-issue <X>`)
+
+`/issues-work` drains the whole backlog. `/work-issue <X>` runs the SAME lifecycle for
+exactly ONE issue the user names — `/work-issue 77`, `/work-issue #77`, or a host-native
+ID like `/work-issue PROJ-123`. Claude Code substitutes the typed argument into the
+command body via `$ARGUMENTS` (`argument-hint` drives autocomplete; `$ARGUMENTS[N]`/`$N`
+are available for positional access, 0-based, if the command ever takes more than one
+argument). The command carries `disable-model-invocation: true` so only the user can
+trigger it — an autonomous merge-and-close run must never start because a prompt merely
+mentioned an issue.
+
+Four things differ from the backlog command, and they are the whole point of the mode:
+
+1. **Claim before anything else.** The local `.locks/issue-<X>.lock` is acquired, then the
+   issue is claimed on the tracker with the fail-closed `issue start <X>`, then the remote
+   is fetched, then the worktree is created — in that order, so no other worker (human or
+   agent) can pick X up. The `claim-before-worktree.sh` PreToolUse hook enforces the
+   ordering mechanically.
+2. **Named issue, no substitution.** If X is already closed, or the claim fails because X
+   was claimed elsewhere in the race window, the command STOPS and reports with quoted
+   evidence. It does NOT fall through to the next-best issue the way SELECT does — the
+   user named this one. Takeover of an issue held by someone else needs an explicit
+   go-ahead.
+3. **Per-issue worktree for parallel work.** The fix is developed in
+   `.claude/worktrees/issue-<X>/` off freshly-fetched `origin/<main>`, so several
+   `/work-issue` sessions (and `/issues-work` runs) coexist on one machine and one clone
+   under the Part 13.1a concurrency model. The shared local `main` is never moved.
+4. **Spec artifacts committed BEFORE implementation.** After the spec passes review
+   (`spec-author` + `spec-review-agent`, full six-reviewer panel for Type2) and before the
+   first line of implementation, the spec is committed as its OWN commit on the issue
+   branch and pushed. The gate is evidence-backed (`git log --stat -1` showing the spec
+   files) so the reviewed spec exists in history independently of the code.
+
+Autonomy still holds inside the issue — the command does not stop to report progress or
+ask whether to continue. It ends after X is merged and closed. The mechanism is
+`WORKABLE_ISSUES_REMAIN: no` in this run's `resume_state.md`: `issue-loop-gate.sh` blocks
+turn-end only while that field is `yes`, so single-issue mode records `no` from the start
+and is therefore free to finish after one issue instead of being pushed into the backlog.
+Everything else — Discovery, Remote Sync, `code-merge-reviewer` on every conflict,
+PROOF_GATE, wrapper-only remote ops, `keep-git-clean` teardown, time-spent at closure — is
+the Part 13.3 lifecycle unchanged.
+
+### Part 13.1c — Never-stop autonomous mode (`/auto-work`)
+
+`/auto-work` is the "set it running and walk away" entry point: the whole backlog, no
+questions, no intermediate reports, straight through context compaction until the backlog
+is empty. It takes no argument (an issue number is accepted as a starting preference), and
+carries `disable-model-invocation: true` so an unattended push-PR-merge run can never begin
+because a prompt merely mentioned issues. Same lifecycle as `/issues-work`; what it adds is
+explicit, front-loaded pressure on the five things that break long unattended runs:
+
+1. **Never ask which issue.** Selection is the agent's; order is irrelevant because every
+   workable issue gets done.
+2. **Never stop.** A finished issue is a checkpoint, not a stopping point. The command
+   explicitly overrides the model's general habit of offering intermediate summaries,
+   proposing next steps, or handing control back — for this run only, and without
+   overriding a new instruction the user actually types. Enforced mechanically by
+   `issue-loop-gate.sh`, which blocks turn-end while `WORKABLE_ISSUES_REMAIN: yes`; the
+   command therefore sets that field `yes` and holds it there until DONE (the exact
+   opposite of `/work-issue`, which sets `no` so it can finish after one issue).
+3. **Claim on pick.** Lock + fail-closed `issue start <N>` before fetch, branch, or edit —
+   because other agents are on the same backlog and an unclaimed issue is duplicated work.
+4. **Always the latest code.** Remote Sync at all six points, fresh issue list every
+   iteration, every conflict delegated to `code-merge-reviewer`.
+5. **Worktree per issue, clean git.** `.claude/worktrees/issue-<N>/` off `origin/<main>`,
+   main-checkout-free, full teardown after each merge.
+
+**Compaction (the part worth getting right).** Claude Code compacts AUTOMATICALLY as the
+context window fills and the session continues uninterrupted — and `/compact` /
+`/autocompact` are user-invoked built-ins that the model CANNOT call. So the command does
+not instruct the agent to summarize itself; it instructs it not to stop, warn, or wait when
+context gets tight, and to make compaction lossless instead: checkpoint
+`runs/<run-id>/resume_state.md` + the registry heartbeat after every step, keep the issue
+updated live so work is reconstructible from the issue alone, and re-read the state files
+immediately after a compaction before acting. Two mechanics drive the file's shape:
+compaction re-injects an invoked command body but truncates it from the START (5,000 tokens
+per skill, 25,000 total), so the five non-negotiables sit at the very top of
+`auto-work.md`; and root `CLAUDE.md` + unscoped rules are re-injected from disk while
+`paths:`-scoped rules are NOT (they reload only when a matching file is next read), so the
+command tells the agent to re-read a scoped rule if it is mid-task in a scoped area. Users
+who want a larger safety margin on very long runs can set `/autocompact <tokens>`
+themselves; the agent never pauses to ask about it.
+
+Only three exits: DONE (no workable issue → `Status: COMPLETED`), a single batched
+escalation with `AWAITING_USER` recorded (then it keeps working other issues rather than
+idling), or a fatal missing `ISSUE_MECHANISM`.
 
 ### Part 13.2 — How it drives the fix (architecture)
 
@@ -1306,7 +1399,10 @@ issue/worktree/branch/PR, the issue queue) plus a mirrored `workflow_state.md` (
 TDD hooks fire during FIX) and a `DL-NNN` decision log. Relaunch with `claude --agent
 issue-work-orchestrator`, `/issues-work`, or simply "continue the work on the existing
 issues of this project" — it resumes mid-lifecycle (including re-attaching to an open
-PR mid-CI or a half-built worktree).
+PR mid-CI or a half-built worktree). `/work-issue <X>` resumes the same way: re-running it
+for an issue already recorded `IN_PROGRESS` in this run's state re-attaches to the existing
+worktree/branch/PR instead of restarting, and re-running it while a DIFFERENT issue is
+in flight reports that issue rather than abandoning it.
 
 ### Part 13.5 — Permission posture
 
@@ -1398,7 +1494,11 @@ orchestrator autonomously delivers the real fixes to `main`.
 - Mandatory merge agent: `code-merge-reviewer` — every rebase/merge conflict is
   delegated to it (holistic + line-by-line, both intents preserved, no blind
   take-a-side, regression-gated). Never resolve conflicts inline.
-- Command: /issues-work (start or resume; "continue the work on the existing issues").
+- Commands: /issues-work (whole backlog; start or resume; "continue the work on the
+  existing issues"), /work-issue <X> (one named issue end to end — claim-first, own
+  worktree, spec artifacts committed before implementation, stops after that issue), and
+  /auto-work (never-stop unattended backlog run: no questions, no intermediate reports,
+  survives auto-compaction via on-disk checkpoints).
 - New wrapper subcommands required (Part 5.3): GitHub get-pr, get-pr-checks, approve-pr,
   merge-pr, delete-remote-branch, list-issues --state/--assignee/--label, plus
   best-effort issue metadata/checklist ops; GitLab mr get/checks/approve/merge,

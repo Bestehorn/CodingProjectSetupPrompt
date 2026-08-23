@@ -109,6 +109,7 @@ the leaf agents, the phase fragments under `.claude/specs/_workflow/phases/`, th
 mkdir -p .claude/agents .claude/commands
 cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md  .claude/agents/
 cp claude-commands/issues-work.md                                    .claude/commands/
+cp claude-commands/work-issue.md                                     .claude/commands/
 ```
 
 Also ensure the git wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
@@ -125,7 +126,17 @@ claude --agent issue-work-orchestrator      # work the whole backlog
 # or, in an existing session:
 /issues-work                                # start or resume
 /issues-work 42                             # prioritize issue #42 first
+/work-issue 42                              # work ONLY issue #42, then stop
 ```
+
+`/work-issue <X>` runs this same lifecycle for exactly one named issue: it claims X
+in-progress on the tracker (fail-closed `issue start <X>`) before it fetches or creates
+anything, works X in its own `.claude/worktrees/issue-<X>/` so it runs in parallel with
+sibling sessions, commits the reviewed spec artifacts as their own commit BEFORE
+implementation, and stops after X is merged and closed instead of continuing into the
+backlog (it records `WORKABLE_ISSUES_REMAIN: no`, which is what releases the
+`issue-loop-gate.sh` Stop hook). If X turns out to be closed or claimed elsewhere, it
+reports and stops rather than substituting a different issue.
 
 To resume after any interruption, just relaunch the same way (or say "continue the work
 on the existing issues of this project") — the agent reads

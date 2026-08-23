@@ -82,7 +82,8 @@ drives CI green, self-approves + merges where allowed, cleans up, closes the iss
 repeats — fully resumable via `.claude/agent-state/issue-work-orchestrator/`.
 
 Run: `claude --agent issue-work-orchestrator` (or `/issues-work`, or "continue the work
-on the existing issues of this project"). Full docs:
+on the existing issues of this project"). For a single named issue, `/work-issue <X>` runs
+the same lifecycle claim-first in its own worktree and stops after that issue. Full docs:
 [`issue-work-orchestrator/README.md`](issue-work-orchestrator/README.md).
 `ClaudeCodeSetupPrompt.txt` Part 13 installs it (depends on Part 12).
 
