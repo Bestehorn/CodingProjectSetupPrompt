@@ -145,3 +145,11 @@ already achieves:
 
 Anything else — a finished issue, a long fix, a filling context window, an urge to
 summarize — is not a stopping point. Select the next issue and keep going.
+
+**Belt and braces.** For a genuinely unattended run the user should pair this command with a
+completion condition — `/goal every open issue is merged and closed, or no workable issue
+remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
+message, so this command cannot set it for them). `/goal` has an independent evaluator judge
+after every turn whether the condition holds, which takes the "am I done?" decision out of
+your hands entirely. If you end this run with workable issues still remaining, say in one
+line that `/goal` would have prevented it.

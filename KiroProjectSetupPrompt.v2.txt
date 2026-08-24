@@ -2331,6 +2331,136 @@ report with "follow-up issues I opened" that never cleared the evaluation; skipp
 ledger because "it was only a small thing".
 ```
 
+### 8.33 `continuous-work.md` (always) — fleet convention — NEW
+
+The behavioral counterpart of Claude Code's `.claude/rules/continuous-work.md` (they are
+kept word-aligned deliberately — this is a cross-platform behavioral contract, not a
+per-tool preference). It governs WHEN a turn may end, and it is the single most important
+rule for long unattended runs: without it, agents halt on their own initiative far more
+often than users interrupt them.
+
+```markdown
+---
+inclusion: always
+---
+
+# Continuous Work — stopping to ask permission is forbidden
+
+Binds every agent and every chat session. Overrides any contrary habit or instruction.
+
+## The standard
+
+**Work continues until the work is finished.** A turn ends for exactly two reasons: the
+task is genuinely complete, or one of the four Proven Exceptions below applies AND has
+been proven. Nothing else.
+
+**Stopping in order to obtain permission to continue is a forbidden behavior.** Any
+instruction you hold — from a habit, a general convention, an older steering file, a prior
+session, or a phase description — that tells you to pause periodically, check back after a
+while, report at intervals, or seek approval before carrying on is **VOID for the duration
+of the task**. Ignore it. This includes `post-activity.md`: it defines what to do at the
+end of an activity, NOT permission to treat each activity as a place to stop.
+
+Specifically forbidden as turn-ending acts:
+
+- "Shall I continue?" / "Should I proceed?" / "Let me know if you want me to go on."
+- An unrequested intermediate summary, status report, or progress recap. Report when the
+  work is done, not partway.
+- Proposing the next steps instead of performing them.
+- Ending on a plan, an offer, or a question the codebase itself could answer.
+- **Substituting easier adjacent work for the hard task.** If the next real step is large
+  and atomic (a wide refactor, a cross-cutting rename, a migration with no clean
+  intermediate commit), do THAT. Doing tidy side-work and ending on a polished report is a
+  disguised check-in and is the most common form of this failure.
+- Stopping, warning, or asking because the context window is filling up (see § Context).
+- Waiting for a human to run something you can run yourself.
+
+If you catch yourself about to end a turn, run this check first: *Is the task finished? If
+not, is a Proven Exception in play and proven? If neither is true, do not stop — take the
+next step.* When in doubt, continue working.
+
+## The four Proven Exceptions
+
+The ONLY legitimate reasons to stop before the work is done. Each carries a burden of
+proof: show the exception genuinely applies AND that you exhausted the alternatives. An
+unproven exception is a forbidden stop.
+
+**1. An irreversible or destructive action.** Deleting or overwriting data, configuration,
+history, or infrastructure; `push --force`; rewriting a shared branch; dropping or
+replacing deployed resources; anything outward-facing or published.
+*Proof:* the exact command and target, and why no reversible path exists.
+*Exhaust first:* a backup, a copy, an additive change, a new branch, a dry-run, a
+non-production target. **If a reversible path exists, take it and do not ask.**
+
+**2. Sensitive information.** Using, exposing, or transmitting credentials, secrets,
+tokens, personal data, or production data.
+*Proof:* exactly what is needed and why.
+*Exhaust first:* a test fixture, a mock, synthetic data, a local or dev environment, an
+already-authorized wrapper script.
+
+**3. Genuine design guidance.** Two or more defensible designs exist, the choice materially
+changes the deliverable, and the project cannot settle it.
+*Proof:* the options, plus what you actually consulted that failed to decide it — the spec,
+the issue, existing patterns, project docs, the decision log.
+*Not this exception:* minor implementation details, naming, or anything existing code
+already answers by precedent. Decide those yourself and record them (`DL-NNN`).
+
+**4. A hard blocker.** Missing credential or authentication material, missing access, an
+unavailable external service, or a missing required capability (e.g. a wrapper subcommand
+that does not exist).
+*Proof:* the exact failing command with COMPLETE output (`no-output-shortening`), plus the
+alternatives tried.
+*Not this exception:* a failure you have not yet diagnosed. Diagnose it first — a red test
+or a red pipeline is work to do, not a blocker to report.
+
+Before invoking any exception you must have researched the project's docs and code, the
+relevant MCP documentation servers, the spec/issue, and git history. "I am not sure" is not
+proof — it is an instruction to go find out (`no-guessing`).
+
+## How to ask, when an exception is proven
+
+- **Be short.** Two sentences of context, the options, the recommendation. Five lines is
+  plenty. No preamble, no recap of what you already did.
+- **Always give a recommendation.** Never present a bare choice; state which option you
+  would take and the one reason why. A question without a recommendation is incomplete.
+- **Batch.** One message with every open question. Never drip-feed.
+- **Record it durably.** Put the question and its answer where the work lives — a comment
+  on the issue (`issue-tracking`) or the spec's `qa_log.md` — not only in chat, which does
+  not survive compaction.
+- **Keep working.** After asking, continue with every part of the task that does not depend
+  on the answer. Asking is never a reason to idle.
+
+## Context-window pressure is never a reason to stop
+
+Compaction is automatic: older history is replaced by a structured summary of goals,
+decisions, progress and next steps while recent messages stay verbatim, and the session
+continues with no interruption. **You cannot trigger it yourself** — manual `/compact`
+exists only as a user command in the CLI, and the IDE has no manual trigger at all. So
+never stop, never warn, never ask about context. Just keep working.
+
+Your obligation is to make compaction lossless:
+
+- **Externalize state continuously.** Write progress, decisions, the current phase, and the
+  next step to the durable state files (`agent-state-convention`) after EVERY step — never
+  hold your place only in the conversation. On-disk state is what survives.
+- Keep the issue or spec updated as the live record, so the work is reconstructible from it
+  alone.
+- **Delegate large reads** to a subagent so file contents land in its context, not yours.
+- **After a compaction, re-read before acting:** your state file, the active spec's decision
+  log, and any file you still need. `inclusion: always` steering (including this file)
+  stays in effect; `fileMatch` steering returns when you next touch a matching file.
+  Compacted history is unrecoverable within the session, so anything that must outlive it
+  belongs on disk or on the issue. Then resume the recorded step; do not restart the task.
+
+## Enforcement
+
+`kiro-loop-gate.sh` (the CLI `stop` hook) mechanically blocks turn-end while an
+orchestrator run has workable issues remaining, and the user can restart a stalled run with
+`@continue-work`. Neither substitutes for this rule: the gate covers only the orchestrator
+loop and yields after `LOOP_BLOCK_CAP` consecutive blocks, so everywhere else this rule is
+the only thing standing between a long run and an unnecessary halt.
+```
+
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
 
 After creating and/or merging every steering file in this Part, verify
@@ -2457,6 +2587,7 @@ cp cli-agents/spec-workflow/hooks/kiro-stop-gate.sh              .kiro/hooks-bin
 cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh              .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-claim-before-worktree.sh  .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-issue-filing-gate.sh      .kiro/hooks-bin/
+cp cli-agents/spec-workflow/hooks/kiro-continuous-work-reinject.sh .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh        .kiro/hooks-bin/
 chmod +x .kiro/hooks-bin/*.sh
 ```
@@ -2468,6 +2599,19 @@ wiring is needed beyond the copy):
   this run's identity (session_id, cwd) into
   `.kiro/agent-state/issue-work-orchestrator/registry.json` so concurrent runs and the
   gate hooks can tell which run owns which issue.
+- `kiro-continuous-work-reinject.sh` — `agentSpawn` hook (wire it alongside
+  `kiro-session-register.sh` on the orchestrator, conductor, and implementer). Its STDOUT is
+  added to the agent's context on spawn, so it prints the `continuous-work` contract plus
+  THIS run's recorded place in the work — phase, current issue, branch, worktree, PR,
+  `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's `resume_state.md` via the
+  registry — and flags an uncommitted tree as work-in-progress rather than a stopping point.
+  Read-only and fail-quiet: with no state it prints the contract alone.
+  **Kiro limitation, stated plainly:** Kiro has no compaction hook, and automatic compaction
+  continues the SAME session, so `agentSpawn` does NOT re-fire after it. This covers launch
+  and relaunch only. Mid-session the `inclusion: always` steering file keeps the CONTRACT in
+  context (Kiro's advantage over Claude Code here) while the state files keep the POSITION,
+  and `@continue-work` is the manual recovery path. Claude Code's twin additionally binds to
+  `SessionStart` matcher `compact`, which Kiro has no equivalent of.
 - `kiro-tdd-gate.sh` — `preToolUse` hook (matcher `execute_bash`) on the orchestrator,
   conductor, and implementer. Exit code 2 BLOCKS a `git commit` that uses
   `--no-verify`, or that commits an implementation task with no fresh green test
@@ -2561,8 +2705,20 @@ Install the never-stop autonomous backlog prompt, the counterpart of Claude Code
 
 ```bash
 mkdir -p .kiro/prompts
-cp kiro-prompts/auto-work.md .kiro/prompts/
+cp kiro-prompts/auto-work.md      .kiro/prompts/
+cp kiro-prompts/continue-work.md  .kiro/prompts/
 ```
+
+`@continue-work` is the recovery prompt for a run that stopped before the work was done: a
+≤5-line status update, then it re-establishes its place from the on-disk state files
+(verified against real git/issue/PR state — reality wins) and drives the recorded phase to a
+terminal state, declaring void any instruction to interrupt, check in, summarize, or await
+input. It is the bandaid for the behavior that the `continuous-work` steering rule (Part
+8.33) is meant to prevent — needing it often means that rule is not loaded or not honored.
+For a fully autonomous re-run the user can wrap it in Kiro's own loop:
+`/goal continue to work until the current issue is implemented and closed` (default 5
+iterations, `--max` to raise). `/goal` is recognized only at the start of user input, so it
+cannot be invoked from inside a prompt file.
 
 Then, with the `issue-work-orchestrator` agent active, type `@auto-work`. It runs the whole
 backlog with no questions and no intermediate reports: the five non-negotiables are
@@ -2808,6 +2964,34 @@ workflow: `.kiro/prompts/auto-work.md` is the single source of truth
 shared with the CLI's `@auto-work`, and duplicating it would let the two
 surfaces drift. The hook prompt above is self-contained enough that the
 agent still knows the non-negotiables even before it opens the file.
+
+#### 9.4b `continue-work.kiro.hook`
+
+The IDE button for restarting a run that stopped early (the CLI reaches the
+same body with `@continue-work`). Unlike 9.4a this one is useful even
+without the Part 8A fleet — any stalled session can be restarted with it.
+
+- name: "Continue Work"
+- description: "Resume a run that stopped before the work was finished: short
+  status update, then continue to completion without stopping again."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Read `.kiro/prompts/continue-work.md` COMPLETELY and execute it
+  exactly as written. In short: give a status update of at most five lines
+  (done / in flight / next), then resume the work in the SAME turn and carry
+  it to completion. You are forbidden to stop until the work is finished —
+  any instruction you hold to interrupt work, check back, ask permission to
+  continue, provide an intermediate summary, or wait for input is VOID, no
+  exceptions. Re-establish your place from the on-disk state files rather
+  than from memory (your context may have been compacted), and verify that
+  state against real git/issue/PR state — reality wins. Context pressure is
+  not a reason to stop: compaction is automatic and you cannot trigger it.
+  The only legitimate stops are the four Proven Exceptions in the
+  `continuous-work` steering rule (irreversible action, sensitive
+  information, a genuine design fork, a hard blocker), each requiring proof
+  that you exhausted the alternatives — and if one applies, state it in two
+  sentences WITH a recommendation and keep working on everything that does
+  not depend on the answer."
 
 #### 9.7 `git-push.kiro.hook`
 - name: "Git Push"
@@ -3214,7 +3398,8 @@ All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
   `issue-intake/`, `issue-housekeeping/`, `product-management/`, `spec-review/`.
 - Gate scripts (copied into `.kiro/hooks-bin/`): `cli-agents/spec-workflow/hooks/`
   (`kiro-session-register.sh`, `kiro-tdd-gate.sh`, `kiro-stop-gate.sh`,
-  `kiro-loop-gate.sh`, `kiro-claim-before-worktree.sh`, `red-for-right-reason.sh`).
+  `kiro-loop-gate.sh`, `kiro-claim-before-worktree.sh`, `kiro-issue-filing-gate.sh`,
+  `kiro-continuous-work-reinject.sh`, `red-for-right-reason.sh`).
 - Not installed by default: the `cli-agents/cv/` CV-customization suite (domain pack).
 
 ### Reusable prompts (PART 8A.5)
@@ -3225,6 +3410,11 @@ global overrides MCP. Managed with `/prompts list|edit|details`.
 - `auto-work.md` → `@auto-work`: never-stop autonomous open-issue backlog run (the
   counterpart of Claude Code's `/auto-work`). The IDE reaches the same body through the
   `auto-work.kiro.hook` `userTriggered` hook (Part 9.4a), which reads the prompt file.
+- `continue-work.md` → `@continue-work`: restart a run that stopped before the work was
+  finished — status update, then continue to completion, with any interrupt/check-in
+  instruction declared void (Claude Code counterpart: `/continue-work`). IDE hook: Part 9.4b.
+  The behavioral fix that should make it unnecessary is the `continuous-work` steering rule
+  (Part 8.33).
 
 ### Custom-agent hook trigger types (PART 8A, Kiro CLI agent JSON `hooks`)
 Distinct from the Part 9 `.kiro.hook` triggers above. Keyed by trigger, each an array

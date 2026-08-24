@@ -26,6 +26,7 @@ one source of truth instead of duplicating the workflow into the hook JSON. See
 | File | Invoke as | Claude Code counterpart |
 |---|---|---|
 | `auto-work.md` | `@auto-work` (CLI) / "Auto-Work the Issue Backlog" hook (IDE) | `/auto-work` (`claude-commands/auto-work.md`) |
+| `continue-work.md` | `@continue-work` (CLI) / "Continue Work" hook (IDE) | `/continue-work` (`claude-commands/continue-work.md`) |
 
 ## Install
 
@@ -33,7 +34,8 @@ one source of truth instead of duplicating the workflow into the hook JSON. See
 
 ```bash
 mkdir -p .kiro/prompts
-cp kiro-prompts/auto-work.md .kiro/prompts/
+cp kiro-prompts/auto-work.md      .kiro/prompts/
+cp kiro-prompts/continue-work.md  .kiro/prompts/
 ```
 
 `auto-work` depends on the Part 8A advanced fleet (`issue-work-orchestrator`, the
@@ -41,3 +43,7 @@ spec-workflow specialists, `code-merge-reviewer`) and the Part 8A.2 gate scripts
 `.kiro/hooks-bin/` — in particular `kiro-loop-gate.sh`, the `stop` hook that mechanically
 holds the agent in the backlog loop, and `kiro-claim-before-worktree.sh`, which blocks
 creating a worktree for an unclaimed issue.
+
+`continue-work` has no fleet dependency — it restarts any stalled session. Both prompts
+assume the `continuous-work` steering rule (Part 8.33) is installed; that rule is the
+behavioral fix, and `@continue-work` is only the manual recovery path for when it fails.

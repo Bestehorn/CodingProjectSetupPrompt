@@ -11,16 +11,20 @@
 # stopping on an unproven "done". Exit 0 allows the turn to end.
 #
 # It is intentionally conservative: it only blocks while CURRENT_SPEC is set and the
-# phase is IMPLEMENT/VERIFY. Outside the workflow it is a no-op. Claude Code overrides
-# a Stop hook after several consecutive blocks, so this cannot wedge a session.
-
+# phase is IMPLEMENT/VERIFY. Outside the workflow it is a no-op.
+#
+# LOOP-SAFETY (fixed): Claude Code overrides a Stop hook after it blocks EIGHT times in a
+# row without progress (raise with CLAUDE_CODE_STOP_HOOK_BLOCK_CAP), so a gate cannot wedge
+# a session. This hook previously exited early whenever `stop_hook_active` was true, which
+# meant it blocked AT MOST ONCE per continuation chain — a one-shot nudge, not a gate: the
+# agent could stop on an unproven implementation on its second attempt. Instead we keep our
+# OWN consecutive-block counter (like kiro-loop-gate.sh) and keep blocking up to the cap,
+# which the harness enforces anyway. Any non-blocking pass resets the counter.
 set -u
 
-input="$(cat)"   # hook JSON on stdin; used to resolve THIS session's run
+BLOCK_CAP="${CLAUDE_CODE_STOP_HOOK_BLOCK_CAP:-8}"
 
-# Loop-safety: never re-block a turn already continued by a Stop hook.
-sa="$(printf '%s' "$input" | { command -v jq >/dev/null 2>&1 && jq -r '.stop_hook_active // empty' 2>/dev/null; })"
-[[ "$sa" == "true" ]] && exit 0
+input="$(cat)"   # hook JSON on stdin; used to resolve THIS session's run
 
 # Resolve the active workflow state, SESSION-AWARE (see spec-tdd-gate for the rationale):
 # prefer this session_id's run via the orchestrator registry; else fall back to the
@@ -37,24 +41,30 @@ if [[ -n "$sid" && -f "$reg" ]] && command -v jq >/dev/null 2>&1; then
     state_file="$base/issue-work-orchestrator/$sd/workflow_state.md"
 fi
 [[ -z "$state_file" ]] && state_file="$( { ls -t "$base"/*/workflow_state.md "$base"/*/runs/*/workflow_state.md 2>/dev/null; } | head -1)"
-[[ -n "$state_file" && -f "$state_file" ]] || exit 0   # no active workflow
+
+# Consecutive-block counter, keyed by session so concurrent runs never share one.
+counter_dir="$base/.stop-gate-counters"
+counter="$counter_dir/spec-${sid:-nosession}.count"
+reset_counter() { rm -f "$counter" 2>/dev/null || true; }
+
+[[ -n "$state_file" && -f "$state_file" ]] || { reset_counter; exit 0; }   # no active workflow
 
 phase="$(grep -iE '^[*-]?[[:space:]]*Phase:' "$state_file" | tail -1 | sed -E 's/.*Phase:[[:space:]]*//')"
 status="$(grep -iE '^[*-]?[[:space:]]*Status:' "$state_file" | tail -1 | sed -E 's/.*Status:[[:space:]]*//')"
 spec_dir="$(grep -iE '^[*-]?[[:space:]]*CURRENT_SPEC:' "$state_file" | tail -1 | sed -E 's/.*CURRENT_SPEC:[[:space:]]*//' | tr -d '\r')"
 
 # Once the workflow is COMPLETED, never block.
-grep -qiE 'COMPLETED' <<<"$status" && exit 0
+grep -qiE 'COMPLETED' <<<"$status" && { reset_counter; exit 0; }
 
 case "$phase" in
   *IMPLEMENT*|*VERIFY*) : ;;
-  *) exit 0 ;;
+  *) reset_counter; exit 0 ;;
 esac
 
-[[ -n "$spec_dir" ]] || exit 0
+[[ -n "$spec_dir" ]] || { reset_counter; exit 0; }
 [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "$CLAUDE_PROJECT_DIR/$spec_dir" ]] && spec_dir="$CLAUDE_PROJECT_DIR/$spec_dir"
 tasks="$spec_dir/tasks.md"
-[[ -f "$tasks" ]] || exit 0
+[[ -f "$tasks" ]] || { reset_counter; exit 0; }
 
 problems=""
 
@@ -82,10 +92,25 @@ if [[ -n "$latest_green" ]]; then
 fi
 
 if [[ -n "$problems" ]]; then
+  # Bounded loop-safety: stop blocking after BLOCK_CAP consecutive blocks. Claude Code
+  # enforces the same cap itself; counting here keeps the message honest and lets a
+  # project raise/lower it via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP.
+  n=0
+  [[ -f "$counter" ]] && n="$(tr -dc '0-9' < "$counter" 2>/dev/null)"; n="${n:-0}"
+  if (( n >= BLOCK_CAP )); then
+    echo "spec-stop-gate: ${n} consecutive blocks without the proof landing — allowing the stop so the session cannot wedge. The implementation is still UNPROVEN; re-run /continue-work after fixing what is listed below." >&2
+    printf '%s' "$problems" >&2
+    reset_counter
+    exit 0
+  fi
+  mkdir -p "$counter_dir" 2>/dev/null || true
+  echo $(( n + 1 )) > "$counter" 2>/dev/null || true
+
   echo "spec-stop-gate: not safe to stop — the implementation is not yet proven:" >&2
   printf '%s' "$problems" >&2
   echo "Continue: finish the task, run its tests, capture the evidence, and only mark it complete when green." >&2
   exit 2
 fi
 
+reset_counter
 exit 0

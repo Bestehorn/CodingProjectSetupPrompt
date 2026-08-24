@@ -63,6 +63,7 @@ evidence-proven code in one session.
 | `rules/agent-state-convention.md` | Cross-agent decision-log convention (all agents) |
 | `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
 | `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
+| `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; questions must carry a recommendation; context pressure is not a stop reason (all agents + main session) |
 | `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) + the issue-filing gate |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the

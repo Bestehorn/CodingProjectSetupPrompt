@@ -510,6 +510,17 @@ Five things the Kiro CLI gives you that you had to hand-build or cannot do in Cl
 4. **Built-in resumable sessions + a native autonomous loop.** `--resume-id` and the
    `/goal` plan→implement→verify→correct loop give you, natively, machinery you assembled
    from `resume_state.md` + the Stop-hook in Claude.
+
+   **CORRECTION (Aug 2026): this is no longer a Kiro advantage — Claude Code has `/goal`
+   too**, and its version is the stronger of the two. `/goal <condition>` is a Claude Code
+   built-in that sets a completion condition and keeps working across turns until it is met;
+   it is implemented as a session-scoped prompt-based Stop hook whose evaluator is a separate
+   small fast model, so *completion is judged by a fresh model rather than the one doing the
+   work*. Kiro's `/goal` is iteration-bounded (default 5, `--max`); Claude's is
+   condition-bounded with an independent verdict of not-yet-met / met / impossible, survives
+   session resume, and runs headless via `claude -p "/goal …"`. Treat item 4 as a **1:1**,
+   with the edge to Claude Code on autonomy semantics. See `ClaudeCodeSetupPrompt.txt`
+   Part 8.2a.
 5. **Native spec mode available when you want it.** Even though the *autonomous loop* can't
    call it, you can drop into interactive spec mode (EARS, Analyze Requirements, the
    dependency-wave task runner) for hands-on work — Claude Code has no equivalent; you

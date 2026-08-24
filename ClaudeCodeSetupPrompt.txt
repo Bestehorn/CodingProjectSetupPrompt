@@ -661,8 +661,19 @@ go-ahead. It leans on the always-loaded rules `no-output-shortening.md`,
 `remote-ci-must-pass.md`; the worktree/lock steps are best-effort and degrade
 gracefully when the issue-work-orchestrator (Part 13) is not installed.
 
+`.claude/commands/continue-work.md` (`/continue-work`): the recovery command for a run that
+stopped before the work was done. It emits a ≤5-line status update, re-establishes its place
+from the on-disk state files (verifying them against real git/issue/PR state — reality wins),
+then resumes the recorded phase and drives it to a terminal state. It declares any
+instruction to interrupt, check in, summarize, or await input VOID for the turn, sets
+`disallowed-tools: AskUserQuestion` so the "shall I continue?" question is mechanically
+unavailable, and treats context pressure as a non-reason to stop. It is the bandaid for the
+behavior that `.claude/rules/continuous-work.md` (Part 8.2a) is meant to prevent — if you
+need it often, that rule is not being loaded or not being honored.
+
 ```bash
-cp claude-commands/close-session.md .claude/commands/
+cp claude-commands/close-session.md  .claude/commands/
+cp claude-commands/continue-work.md  .claude/commands/
 ```
 
 ### Part 6.2 — Event-driven automation → settings.json `hooks`
@@ -798,7 +809,17 @@ in `.claude/rules/`. The non-negotiable essentials:
 - Pre-work: read docs/forLLMConsumption.md, docs/ProjectDesign.md,
   docs/lessons-learned.md. See `.claude/rules/pre-work.md`.
 - Post-activity: run tests + ruff + mypy + bandit; update docs; clean tmp/.
-  See `.claude/rules/post-activity.md`.
+  See `.claude/rules/post-activity.md`. Finishing an activity's post-work is
+  NOT permission to stop — see `continuous-work.md`.
+
+## Keep working
+- Work continues until it is finished. Stopping to ask permission to continue
+  is forbidden; any instruction to pause, check in, or summarize partway is void.
+  Context pressure is never a reason to stop (compaction is automatic).
+- Only four things justify stopping early — an irreversible action, sensitive
+  information, a genuine design fork, or a hard blocker — each needing proof
+  that the alternatives were exhausted. Questions must be short and carry a
+  recommendation. See `.claude/rules/continuous-work.md`.
 
 ## Documentation MCP servers
 - Before using AWS/CDK/Strands/AgentCore APIs, consult the corresponding MCP
@@ -853,10 +874,10 @@ Always-on (no `paths:`):
   `no-cli-temp-variables.md`, `use-lessons-learned.md`,
   `use-doc-mcp-servers.md`, `document-user-prompts.md`, `no-guessing.md`,
   `always-test-e2e.md`, `tests-must-not-fail.md`, `use-git-wrapper-scripts.md`,
-  `remote-ci-must-pass.md`, `project-specific.md`, and — for any project whose
-  agents can reach an issue tracker — `issue-filing-discipline.md` (ships in
+  `remote-ci-must-pass.md`, `project-specific.md`, `continuous-work.md` (ships in
   `claude-agents/spec-workflow/rules/`; installed with the other fleet rules in
-  Part 12.1).
+  Part 12.1 — see Part 8.2a), and — for any project whose agents can reach an issue
+  tracker — `issue-filing-discipline.md` (same location).
 
 Path-scoped (`paths:`):
 - `testing.md` → `["test/**/*.py"]`
@@ -882,6 +903,109 @@ keep the rule TEXT and ALSO back them with the `permissions.deny` rules
 enforced, not merely requested. For `issue-filing-discipline` the mechanical
 half is `issue-filing-gate.sh`, which blocks an issue-create call whose body
 carries no filing rationale.
+
+### Part 8.2a — `continuous-work.md`: the anti-stopping contract (install this)
+
+`claude-agents/spec-workflow/rules/continuous-work.md` → `.claude/rules/` (always loaded;
+copied by the Part 12.1 wildcard). It is the single highest-leverage rule in this setup for
+long unattended runs, and its Kiro twin is `KiroProjectSetupPrompt.v2.txt` Part 8.33 — the
+two are kept word-aligned on purpose, because this is a cross-platform behavioral contract,
+not a per-tool preference.
+
+**Why it exists.** Agents halt on their own initiative far more than users interrupt them.
+Anthropic's published telemetry over 500k interactive sessions and 500k interruptions gives
+the breakdown of *agent-initiated* stops: presenting a choice among approaches 35%,
+gathering diagnostics 21%, clarifying a vague request 13%, requesting missing credentials or
+access 12%, and getting approval or confirmation before acting 11%. On the hardest tasks
+Claude Code "stops to ask for clarification more than twice as often as humans interrupt
+it", and the authors conclude there is "a significant deployment overhang, where the autonomy
+models are capable of handling exceeds what they exercise in practice". Note what this means
+for a project like this one: roughly a third of those stops (the 35% "choice among
+approaches" plus the 11% "approval") are exactly the ones a rule can eliminate, because the
+project's own spec, decision log, and conventions already contain the answer. There is no
+timer and no built-in "check back after N minutes" instruction — that is a folk explanation.
+The real causes are this trained-in check-in behavior plus harness-level boundaries
+(compaction, turn caps, usage limits).
+
+**What it mandates.** Four things, and the rule is worth reading in full rather than
+paraphrasing here:
+(a) a turn may end only when the work is finished or a Proven Exception applies — stopping to
+obtain permission to continue is forbidden, and any contrary instruction is void for the
+duration of the task (`post-activity.md` is called out explicitly: end-of-activity duties are
+not permission to treat each activity as a stopping point);
+(b) exactly four exceptions — irreversible/destructive action, sensitive information, a
+genuine design fork, a hard blocker — each carrying a burden of proof that it applies AND
+that the alternatives were exhausted, with "if a reversible path exists, take it and do not
+ask" as the governing test;
+(c) when a proven exception forces a question: short, batched, recorded durably on the issue
+or in the spec's `qa_log.md`, and **always carrying a recommendation** (via `AskUserQuestion`
+with the recommended option first, labelled `(Recommended)`);
+(d) context-window pressure is never a stop reason — compaction is automatic and is NOT
+model-invocable, so the obligation is to make it lossless by externalizing state after every
+step and re-reading it afterwards.
+
+It also names the failure mode that pure instruction-following misses: **substituting easier
+adjacent work for a hard atomic task** and ending on a polished report. That is a disguised
+check-in, and it is what defeats naive "don't stop" instructions.
+
+**`/goal` is the strongest lever available — use it for any substantial unattended run.**
+`/goal <condition>` is a Claude Code BUILT-IN command (not a Kiro-only concept): it sets a
+completion condition and "Claude keeps working across turns until the condition is met".
+Mechanically it is a wrapper around a session-scoped **prompt-based Stop hook** — after every
+turn the configured small fast model (Haiku by default) evaluates the condition against the
+conversation and returns not-yet-met / met / impossible. That is exactly the right shape for
+this problem, because **completion is decided by a fresh evaluator rather than by the model
+doing the work** — it removes the agent's own discretion to declare itself done, which is
+what no amount of prompt text can achieve.
+
+What matters operationally:
+- Set it as a directive, not a wish: the condition must be something Claude's own output can
+  demonstrate, since the evaluator reads the transcript and does NOT run commands or read
+  files. "issue #77 is merged and closed and the full suite passes" works; "the code is
+  good" does not. Up to 4,000 characters; add a bound like `or stop after 20 turns` if you
+  want one.
+- It survives session resume (`--continue`, `--resume`, the picker) — the condition carries
+  over, though the turn/token counters reset.
+- It works headless: `claude -p "/goal <condition>"` runs the loop to completion in one
+  invocation (add `--output-format stream-json --verbose`, or it looks hung).
+- A goal does NOT change permission mode — run it in auto mode for genuinely unattended
+  turns. It also has its own no-progress guard: if Claude answers the evaluator without
+  using tools for several turns, Claude Code stops the loop and hands control back with the
+  goal still set.
+- **Context overflow that auto-compaction could not clear is one of only four failures that
+  clear a goal** (with auth failure, exhausted credit, and an unavailable model). Ordinary
+  compaction does not. So `/goal` + the durable-state discipline is the combination that
+  survives long runs.
+- It is unavailable if hooks are disabled (`disableAllHooks`, `allowManagedHooksOnly`, or an
+  untrusted workspace), since the evaluator is part of the hooks system.
+
+Recommended invocation for the two autonomous commands — set the goal first, then the
+command, because a command body cannot invoke `/goal` (built-ins are recognized only at the
+start of a user message):
+
+```text
+/goal every open issue in the backlog is merged and closed, or no workable issue remains
+/auto-work
+```
+
+```text
+/goal issue 77 is merged and closed with green CI and its worktree removed
+/continue-work
+```
+
+**Also back it mechanically at the settings level.** `/goal` is per-session and
+user-initiated; these apply to every session:
+- The Stop-hook gates from Part 12.2 (`issue-loop-gate.sh`, `spec-stop-gate.sh`). Exit code 2
+  on a `Stop` hook "prevents Claude from stopping, continues the conversation"; exit 1 does
+  NOT block, so a policy gate must use `exit 2`.
+- `disallowed-tools: AskUserQuestion` in any command meant to run unattended (`/auto-work`,
+  `/continue-work` do this) — it removes the "shall I continue?" affordance for the turn
+  instead of merely forbidding it.
+- `continuous-work-reinject.sh` as a `SessionStart` hook with matcher `compact|resume|startup`
+  — installed and wired by Part 12.2. Its stdout is injected as context, and it echoes the
+  contract plus the run's recorded phase/issue/branch/worktree/PR, so the moment most likely
+  to produce a spurious stop — the first turn after a compaction — starts with both the rule
+  and the agent's place already in context. Cheapest, highest-value hook in the setup.
 
 ### Part 8.3 — Install the custom agents (.claude/agents/)
 
@@ -1120,7 +1244,8 @@ cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-convention,
                                                                # no-ai-attribution,
                                                                # keep-git-clean, issue-tracking,
-                                                               # issue-filing-discipline
+                                                               # issue-filing-discipline,
+                                                               # continuous-work
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 ```
 NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
@@ -1140,6 +1265,13 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
         "hooks": [
           { "type": "command", "command": "bash",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-register.sh"] }
+        ]
+      },
+      {
+        "matcher": "compact|resume|startup",
+        "hooks": [
+          { "type": "command", "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/continuous-work-reinject.sh"] }
         ]
       }
     ],
@@ -1182,6 +1314,25 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
   is marked done without green evidence, or the latest run is red / contains
   skipped/xfail tests.
 - `issue-loop-gate.sh` keeps the orchestrator looping autonomously (Part 13).
+- `continuous-work-reinject.sh` (SessionStart, matcher `compact|resume|startup`) prints the
+  `continuous-work` contract plus THIS run's recorded place in the work — phase, current
+  issue, branch, worktree, PR, `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the
+  run's `resume_state.md` via the registry. `SessionStart` is one of the few events whose
+  plain stdout Claude Code injects as CONTEXT the model can act on, which is the whole point:
+  the first turn after an automatic compaction is the likeliest moment for a spurious "shall
+  I continue?" stop, because the conversation holding the agent's place was just summarized
+  away. The rule itself is re-injected from disk automatically (unscoped rules always are) —
+  the agent's POSITION is not, so this hook reads it for the agent. It also flags an
+  uncommitted working tree as work-in-progress rather than a stopping point. Fail-quiet and
+  read-only: with no state it prints the contract alone, and it can never block (exit 2 on
+  `SessionStart` only shows stderr to the user).
+- **Both Stop gates count their own consecutive blocks** (`BLOCK_CAP`, default 8, override
+  with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`) and reset on any non-blocking pass. Do NOT replace
+  this with an early `exit 0` when `stop_hook_active` is true: that is the documented pattern
+  for a one-shot nudge hook, and in a policy gate it silently reduces the gate to a SINGLE
+  block per continuation chain — the agent gets nudged once and is then free to stop on
+  unproven work. Claude Code enforces the same 8-block cap itself, so blocking repeatedly up
+  to it cannot wedge a session.
 - `issue-filing-gate.sh` blocks an issue-CREATE call whose body carries no
   `Origin:`/`Subject:`/`Filing-rationale:` line, and hands the agent the fix-first
   evaluation instead. Unlike the other gates it is NOT scoped to an active spec workflow —
@@ -1426,6 +1577,22 @@ themselves; the agent never pauses to ask about it.
 Only three exits: DONE (no workable issue → `Status: COMPLETED`), a single batched
 escalation with `AWAITING_USER` recorded (then it keeps working other issues rather than
 idling), or a fatal missing `ISSUE_MECHANISM`.
+
+**Pair it with `/goal` for a truly unattended run.** Type the condition first, then the
+command — a command body cannot set a goal, because built-ins are only recognized at the
+start of a user message:
+
+```text
+/goal every open issue in the backlog is merged and closed, or no workable issue remains
+/auto-work
+```
+
+`/goal` has an independent evaluator (the small fast model) judge after every turn whether
+the condition holds, which takes the "am I done?" decision away from the working model
+entirely — the one thing prompt text cannot do. Ordinary compaction does not clear a goal;
+only a context overflow that auto-compaction could not clear, an auth failure, exhausted
+credit, or an unavailable model does. Run it in auto mode so goal turns are not gated on
+per-tool approval, and see Part 8.2a for the full semantics.
 
 ### Part 13.2 — How it drives the fix (architecture)
 
