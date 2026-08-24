@@ -1077,6 +1077,68 @@ damage, and record the issue number here.
 |---|---|---|---|---|---|
 ```
 
+### The CI capacity-fallback guide (INSTALL IT, always)
+
+Copy it verbatim from this prompt's repository — on setup, on migration, AND
+when re-configuring an existing project. A project that hits a CI capacity
+outage must already have the implementation instructions on disk, because that
+is exactly the moment it cannot go and fetch them:
+
+```bash
+mkdir -p docs
+cp project-docs/codebuild-ci-backup-mechanism.md docs/
+```
+
+This is what `remote-ci-must-pass.md`'s capacity ladder (Rung 2) points an
+implementing worker at, so installing the rule without the guide leaves that rung
+dangling.
+
+It is deliberately **project-agnostic**: placeholders for every name the project
+must choose (`<runner-project-name>`, `<mode-variable>`, `<fallback-token>`, …),
+a three-phase plan where each phase ships alone, the runner-label contract, the
+refusal classifier, the sizing arithmetic, and a verification checklist. The
+point of shipping it is that **no project has to redesign the mechanism** — so
+if a future edit puts a concrete stack, account or repository name into it, that
+is a regression to revert, not an improvement.
+
+The originating project's own runbook is deliberately NOT installed: it carries
+the same design but names that project's stack, repository, variable, issue
+numbers and source paths, so an agent following it literally elsewhere would try
+to deploy a stack that does not exist. Its measured evidence is already folded
+into the guide as MEASURED claims, which is the part that transfers. A project
+that builds the mechanism writes its own runbook for its own coordinates; the
+guide's §12 checklist is the skeleton.
+
+Apply Rule 1 if the project already has a `docs/` file of that name: where its
+version is a genuine local evolution, keep it and record the divergence rather
+than overwriting it.
+
+**And confirm the ported `remote-ci-must-pass.md` actually carries the ladder.**
+Part 8.2 ports rule bodies from `.kiro/steering/` or from
+KiroProjectSetupPrompt.v2.txt Part 8, and the capacity ladder lives in that
+rule's Part 8.25 body. It is the section that makes "CI has no minutes left" a
+three-rung decision instead of a licence, so verify all three rungs are present
+after porting:
+
+1. **Fallback already implemented → USE it.** Relocating the pipeline is
+   MANDATORY and local execution is FORBIDDEN, because a relocated run is a real
+   run of the same workflow and therefore discharges the rule with no exception
+   at all.
+2. **Not implemented → file it ONCE via the `issue-intake` agent**, after
+   checking open AND closed issues for an existing one (an open one gets a
+   new-occurrence comment instead; a closed-as-rejected one means the project has
+   decided against it). The filing is pre-authorised against
+   `issue-filing-discipline.md` as OUT-OF-SCOPE + HUMAN-REQUEST and still carries
+   the `Origin:`/`Subject:`/`Filing-rationale:` lines `issue-filing-gate.sh`
+   checks, so it passes the gate rather than being blocked by it.
+3. **Not implemented but already filed → run the pipeline locally**, completely,
+   as a disclosed workaround with the gaps named.
+
+Rung 0 gates all three: classify the refusal structurally (an empty runner name,
+hosted labels still naming the request, zero steps) rather than by duration — a
+~9-second failure with an empty log archive is equally an unresolvable action
+reference, and keying on duration relocates a whole pipeline because of a typo.
+
 You MAY run Claude Code's built-in `/init` first to bootstrap a `CLAUDE.md`
 from the codebase, then layer Part 8.1's standards on top (merge, do not
 overwrite).
@@ -1116,6 +1178,15 @@ this prompt (leave any existing one alone).
 10. Git wrapper — for the detected host, the wrapper + credential stub exist.
 11. Coexistence (Kiro projects) — `.kiro/` is byte-for-byte unchanged; both
     `.kiro/agents/` and `.claude/agents/` are present.
+11a. CI capacity fallback — `docs/codebuild-ci-backup-mechanism.md` exists
+    (Part 9) and still reads as project-agnostic (its placeholder table is intact;
+    no concrete stack/account/repository name has crept in), and
+    `.claude/rules/remote-ci-must-pass.md` carries the capacity ladder: Rung 1
+    (use an implemented fallback; local execution forbidden), Rung 2 (file once
+    via `issue-intake` after checking open AND closed issues), Rung 3 (local
+    pipeline as a disclosed workaround). Grep the rule for all three rungs — a
+    ported body that stops at the debugging loop means the ladder was dropped,
+    and the project will fall back to local execution as its FIRST move.
 12. Issue-filing containment (if any tracker-capable agent was installed) —
     `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no
     `paths:`); `docs/findings-ledger.md` exists with its table header;
