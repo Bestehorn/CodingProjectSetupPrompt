@@ -26,13 +26,34 @@ case "$GIT_COMMON_DIR" in
 esac
 MAIN_CHECKOUT="$(cd "$(dirname "$GIT_COMMON_DIR")" && pwd)"
 
-# Locate the venv pre-commit executable (Windows vs *nix layout).
+# NOT APPLICABLE vs BROKEN — these are different, and conflating them made this hook block a
+# repository it has nothing to check in.
+#
+# This same file is copied into every project generated from this repo, and in a Python project a
+# missing venv IS an error worth refusing a commit for. But THIS repository is a prompt/template
+# tree: it has no `pyproject.toml`, no `.pre-commit-config.yaml`, and no `.py` sources for ruff to
+# read. There, "pre-commit is not installed" is not a broken environment — there is simply nothing
+# for this hook to do, and hard-failing turns the hook into an unconditional commit block whose only
+# escapes are `--no-verify` (banned by this project's own rules) or switching the hook off entirely.
+#
+# So the applicability test comes FIRST and is about the CONFIG, not the tooling: with no
+# `.pre-commit-config.yaml` there is nothing to run, whatever is installed. Only once the repo
+# declares that config does an absent venv become the error it should be.
+if [ ! -f "$MAIN_CHECKOUT/.pre-commit-config.yaml" ]; then
+    echo "pre-commit: no .pre-commit-config.yaml in $MAIN_CHECKOUT — nothing for this hook to run." >&2
+    echo "pre-commit: skipping (this is expected in a repository with no Python package to check)." >&2
+    exit 0
+fi
+
+# Locate the venv pre-commit executable (Windows vs *nix layout). Past this point the repo HAS
+# declared a pre-commit config, so a missing venv is a genuine misconfiguration and must refuse.
 if [ -x "$MAIN_CHECKOUT/venv/Scripts/pre-commit.exe" ]; then
     PRECOMMIT="$MAIN_CHECKOUT/venv/Scripts/pre-commit.exe"
 elif [ -x "$MAIN_CHECKOUT/venv/bin/pre-commit" ]; then
     PRECOMMIT="$MAIN_CHECKOUT/venv/bin/pre-commit"
 else
     echo "ERROR: pre-commit not found in the project venv under $MAIN_CHECKOUT/venv" >&2
+    echo "This repo DOES declare .pre-commit-config.yaml, so the venv is required." >&2
     echo "Create/refresh the venv:  python -m venv venv && pip install -e '.[dev]'" >&2
     exit 1
 fi

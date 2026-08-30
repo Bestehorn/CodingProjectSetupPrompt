@@ -25,24 +25,68 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
 (`agent-state-convention.md`). Never touch `.kiro/`.
 
 **Step 0: Single-issue mode (state + autonomy)**
-   - Establish identity per the orchestrator's D0: read
-     `.claude/agent-state/issue-work-orchestrator/registry.json` for THIS session's entry
-     (the `session-register.sh` SessionStart hook wrote it keyed by `session_id`), derive
-     `RUN_ID`, and use `runs/<run-id>/` as your state dir. Create it if absent.
-   - If `runs/<run-id>/resume_state.md` already shows `Status: IN_PROGRESS` for a
+   - **Run identity — read this before writing any state (NON-NEGOTIABLE).**
+     `session-register.sh` (SessionStart) has ALREADY created this session's `runs/<run-id>/`
+     directory and seeded `resume_state.md` and `workflow_state.md` in it. **Your job is to
+     UPDATE those files. You do not choose where they live.** Read
+     `.claude/agent-state/issue-work-orchestrator/registry.json`, find the entry whose KEY is
+     THIS session's `session_id`, and use that entry's `state_dir` value VERBATIM (it is
+     relative to `.claude/agent-state/issue-work-orchestrator/`). The `State file:` line in
+     the `## Your recorded place in the work` block that `continuous-work-reinject.sh` prints
+     at session start / resume / compaction is the same path character for character — use it
+     if you have it.
+   - **NEVER invent a readable run-id label** such as `run-issue<N>-<timestamp>`, and do not
+     read "derive `RUN_ID`" as licence to author one. Every Stop gate resolves this session's
+     state from the registry-derived path; state written anywhere else is read by NOTHING,
+     which silently disables every gate for the whole session. MEASURED: exactly this
+     deviation left both Stop hooks inert and cost four spurious turn-ends under a standing
+     instruction never to stop without a proven reason.
+   - **Field mechanics, because the hooks are literal.** State fields are plain `Name: value`
+     lines and every hook reads the **LAST** occurrence of each, so **correct a value by
+     APPENDING a new block at the END of the file** — never edit an earlier line, never
+     prepend. A bold `**Name:** value` spelling is read by NO hook, and a line inside a fenced
+     code block is ignored. Keep `SESSION_ID:` intact: it is the rung by which a hook recovers
+     this run if its state ever lands under a differently-named directory. Use the seeded
+     field NAMES exactly — `BRANCH`, `WORKTREE`, `PR`, not `CURRENT_BRANCH`/`CURRENT_WORKTREE`/
+     `CURRENT_PR`; `spec-stop-gate.sh` reads `WORKTREE` to find a spec that lives inside a
+     per-issue worktree, and a renamed field is invisible rather than merely untidy. Prose you
+     add to that file for a human reader must contain no `Name: value` lines of its own — an
+     accidental one becomes an authoritative field, and last-occurrence-wins means a late
+     example beats the real record.
+   - If this run's `resume_state.md` already shows `Status: IN_PROGRESS` for a
      DIFFERENT `CURRENT_ISSUE`, do not abandon it: report the in-flight issue and ask
      whether to finish that one first or run X in a separate session. If it shows
      `Status: IN_PROGRESS` for issue X, RESUME at the recorded phase (re-attach to the
      existing worktree / branch / PR) instead of restarting.
-   - Record `MODE: single-issue`, `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`,
-     `AWAITING_USER: none`, and — critically — **`WORKABLE_ISSUES_REMAIN: no`**. The
-     `issue-loop-gate.sh` Stop hook blocks turn-end only while that field is `yes`; `no` is
-     what lets this command finish after ONE issue instead of being forced into the
-     backlog. Do not set it to `yes` at any point.
+   - Record `MODE: SINGLE_ISSUE` (that exact spelling — the loop gate's MODE claim predicate matches
+     `ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO`), `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`,
+     `AWAITING_USER: none`, and `WORKABLE_ISSUES_REMAIN: no`.
+   - **What `WORKABLE_ISSUES_REMAIN: no` does and does NOT do.** It ONLY chooses the WORDING
+     of an `issue-loop-gate.sh` refusal — finish the issue in flight, versus select the next
+     one. **It does NOT release the gate and it does not let you stop mid-issue.** The gate
+     blocks turn-end while this run has claimed tracked work and has not recorded an idle
+     `Status`, a terminal `Phase`/`Status`, or a substantive `AWAITING_USER`, regardless of
+     that field. It used to BE the block condition, so a single-issue run setting it to `no`
+     switched the gate off for itself — that is fixed, and the belief that `no` releases you
+     is precisely what the old gate rewarded. What lets this command finish after ONE issue is
+     reaching a terminal `Phase` on X and not selecting another, not this field.
    - Autonomy still applies WITHIN the issue: do not stop mid-lifecycle to report progress
      or ask whether to continue. The only permitted pauses are a genuine escalation, a
      branch-protection approval wait, and the "already claimed by someone else" decision in
-     Step 2. Checkpoint `resume_state.md` + your registry heartbeat after every step.
+     Step 2 — and each is recorded MECHANICALLY as `AWAITING_USER: <the actual reason>`, not
+     merely described in chat. That field is checked for SUBSTANCE, not presence: a
+     placeholder, an angle-bracketed template, or a one-word token (`no`, `false`, `0`,
+     `waiting`, `blocked`, `?`) is rejected, and an escalation the gate cannot see is
+     indistinguishable from abandoning the work — the turn-end will be REFUSED. Checkpoint
+     `resume_state.md` + your registry heartbeat after every step.
+   - **EVERY exit from this command needs a RECORDED release, including the early ones.** The
+     "X is already closed" stop in Step 1, the "claimed by someone else" stop in Step 2, the
+     ambiguous-issue path, and normal completion are all turn-ends, and the Stop gate judges
+     the FILE, not the report. So before ending any of them, APPEND at the END of
+     `resume_state.md` either a terminal `Phase`/`Status` (`DONE` when X is genuinely
+     finished, `ABANDONED` when you are standing down, `ESCALATED` when handing back) or a
+     substantive `AWAITING_USER` — with the human-readable reason in prose beside it. Writing
+     the reason only in chat is what makes a legitimate stop look like an abandoned one.
    - Complete Discovery D1–D2 if `environment.md` is not already recorded: source/test
      layout, venv, the parallel test command and full CI command, the one-time
      concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
@@ -91,8 +135,9 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      (`no-ai-attribution.md`). The `claim-before-worktree.sh` PreToolUse hook independently
      blocks this call until X's claim is visible on the remote — if it blocks, your Step 2
      claim did not land: fix the claim, do not work around the hook.
-   - Record the ABSOLUTE worktree path as `CURRENT_WORKTREE` and the branch as
-     `CURRENT_BRANCH` (also in your registry entry). This per-issue worktree is what lets
+   - Record the ABSOLUTE worktree path as `WORKTREE` and the branch as
+     `BRANCH` (also in your registry entry) — those exact field names, because they are the
+     ones the hooks read. This per-issue worktree is what lets
      this session work in parallel with other workers on the same machine — every command
      from here runs as `git -C <worktree> …` or `cd <worktree> && <venv> …`, never against
      the main checkout.
@@ -186,7 +231,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      CI command locally in the worktree until green (capture evidence), then push.
    - Open the PR via `create-pr` (base `main`, head `<branch>`, body linking issue X and
      the evidence). Title and body describe the change only — strip any AI-attribution
-     line the tool adds. Record `CURRENT_PR`.
+     line the tool adds. Record `PR` (that field name).
    - Approve + merge per the recorded authority: `approve-pr` then `merge-pr`. If branch
      protection forbids self-approval, set `AWAITING_USER: waiting for external approval
      of PR #<n>`, poll `get-pr` on an interval, checkpoint between polls, and merge once
@@ -210,12 +255,20 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      checklist fully ticked (or remaining items explicitly deferred with a reason — routed
      per `issue-filing-discipline.md`, never as an automatic follow-up issue), time
      spent recorded (elapsed from the Step 2 start time), then close X via `update-issue`.
-   - Release the local lock (`rmdir .locks/issue-<X>.lock`), set `Status: COMPLETED` and
-     `WORKABLE_ISSUES_REMAIN: no` in `resume_state.md`, and update your registry entry.
+   - Release the local lock (`rmdir .locks/issue-<X>.lock`) — and remove the tracker's
+     in-progress marker BEFORE releasing that lock, since the lock is the ownership evidence
+     the removal guard reads. Then, by APPENDING at the END of `resume_state.md`, record
+     `Status: COMPLETED` and a terminal `Phase: DONE`, plus `WORKABLE_ISSUES_REMAIN: no`, and
+     update your registry entry. **The terminal value is what actually releases the Stop gate**
+     — it must be the WHOLE value of the field (`Phase: DONE`, never
+     `Phase: DONE (was IMPLEMENT)`), and an unrecorded belief that you are finished releases
+     nothing.
    - **Then STOP.** Report: issue X, the PR link, the spec-artifact commit, the proof
      summary, and confirmation that no worktree, branch, or lock of this run survives and
      the shared local `main` was never moved. Do NOT select another issue — that is what
-     `/issues-work` is for. If other workable issues remain, say so and let the user decide.
+     `/issues-work` (or `/auto-work`, for an unattended whole-backlog run) is for. Use those
+     when you want the next workable issue picked for you. If other workable issues remain,
+     say so and let the user decide.
 
 **Escalation and the ambiguous-issue path**
    - If X is too ambiguous to derive testable acceptance criteria even after research, post
@@ -227,4 +280,5 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Otherwise escalate ONCE, batched, only when genuinely blocked (proof gate exhausted, a
      genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
      subcommand): post the specifics to the issue, record the blocked state with
-     `AWAITING_USER: <reason>` in `resume_state.md`, and surface one clarity-first message.
+     an `AWAITING_USER` line in `resume_state.md` naming the ACTUAL reason (the literal `<reason>` is
+     rejected as a placeholder), and surface one clarity-first message.

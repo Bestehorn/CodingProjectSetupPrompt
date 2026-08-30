@@ -50,11 +50,55 @@ run owns its OWN namespaced state subtree — runs NEVER share a `resume_state.m
     iteration_log.md                 # THIS run's append-only step log
 ```
 
-`resume_state.md` MUST carry these machine-readable fields (the issue-loop Stop-hook
-reads THIS run's copy): `Status:` (IN_PROGRESS/COMPLETED/BLOCKED),
-`WORKABLE_ISSUES_REMAIN:` (yes/no — set in LOAD_ISSUES/SELECT), `AWAITING_USER:` (a reason
-string ONLY during a genuine escalation or an approval-poll wait, else `none`), and
-`RUN_ID:`/`SESSION_ID:`/`CWD:` (this run's identity, from the registry).
+`resume_state.md` MUST carry these machine-readable fields as plain `Name: value` lines (the
+issue-loop Stop-hook reads THIS run's copy, and takes the LAST occurrence of each):
+`Status:` (IN_PROGRESS/COMPLETED/BLOCKED), `Phase:` (the outer-loop phase),
+`CURRENT_ISSUE:`, `MODE:` (`ISSUE_LOOP` for a backlog run — the gate's claim predicate accepts
+`ISSUE_LOOP`/`SINGLE_ISSUE`/`SPEC`/`BACKLOG`/`AUTO`, reading a hyphen as an underscore, and the
+seeded `unset` is a claim of nothing), `AWAITING_USER:` (a reason string ONLY during a genuine
+escalation or an
+approval-poll wait, else `none`), `WORKABLE_ISSUES_REMAIN:` (yes/no — set in
+LOAD_ISSUES/SELECT), and `RUN_ID:`/`SESSION_ID:`/`CWD:` (this run's identity, taken from the
+registry — never invented; see the next section).
+
+**`Status` + `Phase` + `AWAITING_USER` + a CLAIM are the gate condition.
+`WORKABLE_ISSUES_REMAIN` is NOT.** The issue-loop Stop-hook blocks turn-end whenever this run
+has CLAIMED tracked work — a real `CURRENT_ISSUE`, a `CURRENT_SPEC`, or a `MODE` naming an
+orchestrator mode — and has recorded NONE of: an idle `Status`, a terminal `Phase`/`Status`, or
+a substantive `AWAITING_USER`.
+
+Two properties of that follow, and both matter more than they look:
+
+- **The polarity is INVERTED, so an UNRECOGNISED `Status` means WORK IN FLIGHT.** The brake does
+  not arm on the single literal `IN_PROGRESS`; it releases only on an explicit idle vocabulary
+  (`NOT_STARTED`, `NOT_YET_STARTED`, `UNSTARTED`, `NOT_IN_PROGRESS`, `NOT_WORKING`, `IDLE`,
+  `PENDING`, `NEW`, `NONE`, `UNSET`). Guessing a status word wrong is therefore SAFE — it holds
+  the turn rather than silently freeing it. Arming on one magic token was measured letting
+  `WORKING`, `ACTIVE`, `RUNNING`, `in progress` and three more each disable the gate.
+- **The claim requirement is what keeps an ordinary session free.** Every session is now seeded
+  and registered, so without it a plain chat session that recorded a Status was refused and told
+  to "FINISH issue none end to end".
+
+`WORKABLE_ISSUES_REMAIN` only selects the WORDING of the refusal (finish the issue in flight vs.
+select the next one). It
+used to BE the block condition, which meant a single-issue run that set it to `no` switched
+the gate off for itself — so do NOT expect `WORKABLE_ISSUES_REMAIN: no` to let you stop
+mid-issue.
+
+**There are FOUR releases — exactly the negation of the block condition above, and nothing
+else**: an explicitly idle `Status`; a
+terminal `Phase` **or** a terminal `Status`
+(`DONE`/`COMPLETE`/`COMPLETED`/`FINISHED`/`CLOSED`/`ABANDONED`/`ESCALATED`/`CANCELLED`/
+`CANCELED`, matched as the WHOLE value of the field — `Phase: DONE` releases,
+`Status: COMPLETED (was IN_PROGRESS)`
+does not, and BOTH Stop gates now run that whole-value test through the same library predicate,
+so the evidence gate can no longer release on a narrative value the loop gate refuses; it once
+could, because it prefix-matched); a substantive `AWAITING_USER` reason; or no tracked work
+claimed at all.
+For a run of THIS agent only the middle two are honest exits: you claim an issue at SELECT, so
+until this run is finished the idle vocabulary and the no-claim release would both be false
+record-keeping — and writing a false release is worse than a refused turn-end, because it
+disarms the brake instead of merely delaying you.
 
 The agent root and everything under it lives in the run's own checkout/worktree-visible
 `.claude/agent-state/` (gitignored). The cross-run `decision-log.md` stays at the agent
@@ -65,24 +109,73 @@ notes. Spec-context decisions still go to the active spec's `decisions/decision-
 
 ## Run identity & registry (how "who is doing what" is answered)
 
-Each run has a stable `RUN_ID`. Identity is established by a **SessionStart hook**
-(`session-register.sh`, installed with the other hooks) that receives `session_id` and
-`cwd` on stdin and writes/updates `registry.json` with an entry:
+Each run has a stable `RUN_ID`, and **you do not choose it.** Identity is established by a
+**SessionStart hook** (`session-register.sh`, installed with the other hooks) that receives
+`session_id` and `cwd` on stdin and writes/updates `registry.json` with an entry:
 
 ```
 { "<session_id>": { "run_id", "session_id", "cwd", "state_dir": "runs/<run-id>/",
                     "current_issue", "status", "started_at", "last_heartbeat" } }
 ```
 
-Derive `RUN_ID` from the `session_id` (e.g. its first 8 chars) so it is stable and
-collision-free. At run start read `registry.json` to learn your own `session_id`/`RUN_ID`
-(the SessionStart hook wrote it keyed by session), create `runs/<run-id>/`, and record
-`RUN_ID`/`SESSION_ID`/`CWD` in your `resume_state.md`. Update your registry entry's
-`status`, `current_issue`, and `last_heartbeat` at every checkpoint. This registry — plus
-the per-run state subtree — is what lets any observer (and the hooks) see exactly which
-run owns which issue, with no shared-file ambiguity. No environment variable is used for
-identity (run id = on-disk registry keyed by the stdin `session_id`), consistent with the
-`no-environment-vars` rule.
+**Your run id is the value the registry ALREADY HOLDS for this `session_id`. Read it; never
+invent it.** Take that entry's `state_dir` VERBATIM — it is relative to the agent root, so
+your state subtree is `<agent root>/<state_dir>` and nothing else. If the entry carries no
+`state_dir`, the path is `runs/<run_id>/` built from the same entry's `run_id`. Nothing about
+either value is yours to improve on.
+
+**NEVER invent a readable label** such as `run-issue574-20260828T194800Z`. This is not a
+style preference. Every Stop gate resolves this session's state from the registry's declared
+path FIRST, and `session-register.sh` has already seeded a `resume_state.md` there — so that
+seeded file is the one the gates read, every time, and a state file you write elsewhere is
+never consulted as yours. The identity library's `SESSION_ID` scan does not rescue you either:
+it is the THIRD resolution rung and runs only when the first two resolve nothing, which the
+seed guarantees they do not. It is a repair rung for a naming deviation, never a licence to
+choose your own directory name.
+MEASURED: an agent whose command told it to "derive RUN_ID" produced exactly such a label and
+wrote its state under it. Both Stop hooks were consequently silent no-ops for the entire
+session — neither had ever blocked a turn-end in that clone across 189 registered sessions —
+and that run ended FOUR turns while under an explicit standing instruction never to stop
+without a proven reason.
+
+**The path is NAMED FOR YOU, so you never have to guess it.** Two harness-written,
+session-keyed sources print it verbatim:
+
+  - the `## Your recorded place in the work` block that `continuous-work-reinject.sh` emits
+    at every session start, resume and compaction — its `State file:` line is the absolute
+    path and its parent directory is your run state dir; where it reports the state MISSING it
+    names the exact path to create instead;
+  - any Stop-gate REFUSAL message, which names the same path (an allow prints nothing).
+
+Use whichever you have, character for character. Construct the path yourself ONLY if those
+hooks are not installed on this host, and then only mechanically: the run id is the first 8
+characters of the `session_id` and the state dir is `runs/<that>/`.
+
+**Your job is to UPDATE the seeded files, not to decide where they live.**
+`session-register.sh` has already created `runs/<run-id>/` and seeded `resume_state.md` and
+`workflow_state.md` with plain `Name: value` fields (including `SESSION_ID`). Record
+`RUN_ID`/`SESSION_ID`/`CWD`, and then `Status`/`Phase`/`CURRENT_ISSUE`/`BRANCH`/`WORKTREE`/
+`PR`, into those files. If the directory is missing, create the registry-derived path AND
+NOTHING ELSE — never a second run directory beside it.
+
+**How to write a field, mechanically:**
+
+  - **Correct a field by APPENDING a new block at the END of the file.** Every hook reads the
+    LAST occurrence of each `Name: value` line, so a value edited at the top of the file is
+    what a human reads and what NO hook reads.
+  - Write plain `Name: value`. A bold `**Name:** value` spelling is read by NO hook — it is
+    invisible to them, not merely out-competed.
+  - **Keep `SESSION_ID:` intact in `resume_state.md`.** It is the last rung by which a hook
+    can recover this run if state ever lands under a differently-named directory. Never
+    remove it and never change it.
+  - Any prose you add for a human reader stays PROSE, with no `Name: value` lines in it, so
+    it cannot be mistaken for the authoritative field.
+
+Update your registry entry's `status`, `current_issue`, and `last_heartbeat` at every
+checkpoint. This registry — plus the per-run state subtree — is what lets any observer (and
+the hooks) see exactly which run owns which issue, with no shared-file ambiguity. No
+environment variable is used for identity (run id = on-disk registry keyed by the stdin
+`session_id`), consistent with the `no-environment-vars` rule.
 
 "The worktree" for issue N is `.claude/worktrees/issue-<N>/` (an absolute path you
 resolve and record). Everything issue-specific — the spec, the code, the tests, the
@@ -181,14 +274,21 @@ resolve a conflict by taking one side wholesale, and you never run `-X ours/thei
 # Discovery (once per launch, before the loop)
 
 D0. **Identity + resume check.** Read `registry.json` to find YOUR entry (the
-    SessionStart hook wrote it keyed by this session's `session_id`); derive `RUN_ID` and
-    your `runs/<run-id>/` state dir. If `runs/<run-id>/resume_state.md` exists with
-    `Status: IN_PROGRESS`, validate the snapshot (your recorded worktree/branch/PR still
-    exist; git is reachable) and RESUME at the recorded outer phase for your
-    `CURRENT_ISSUE` — do not restart the backlog. If `COMPLETED`, archive and start fresh.
-    Otherwise create `runs/<run-id>/` and start fresh. (If the SessionStart hook is not
-    installed, fall back to deriving a run id from the launch `cwd` and current time, and
-    record it — but the hook is the supported path.)
+    SessionStart hook wrote it keyed by this session's `session_id`) and take its `state_dir`
+    VERBATIM as your run state dir — per "Run identity & registry", never a run-id label of
+    your own devising. If `<state_dir>/resume_state.md` exists with `Status: IN_PROGRESS`,
+    validate the snapshot (your recorded worktree/branch/PR still exist; git is reachable)
+    and RESUME at the recorded outer phase for your `CURRENT_ISSUE` — do not restart the
+    backlog. If `COMPLETED`, archive and start fresh. Otherwise the file is the one
+    `session-register.sh` seeded (`Status: NOT_STARTED`): start fresh by APPENDING to THAT
+    file — never by creating a second run directory beside it. Either way, APPEND
+    `MODE: ISSUE_LOOP` in that first block, replacing the seeded `MODE: unset`: it is the claim
+    that keeps the loop gate armed in the windows where no `CURRENT_ISSUE` is recorded yet.
+    If the whole directory is
+    missing, create exactly the registry-derived path. (If the SessionStart hook is not
+    installed, the run id is mechanically the first 8 characters of the `session_id` and the
+    path is `runs/<that>/` — still never a hand-chosen label, because every gate resolves
+    that path and reads nothing else. The hook is the supported path.)
 D1. **Topology + venv + one-time git prerequisites.** Identify source/test layout;
     detect/create the venv (use-venv); establish the parallel test command (e.g.
     `pytest -n auto -q`) and the full CI command. Apply the one-time concurrency-safe git
@@ -311,10 +411,16 @@ iteration's list (discipline A).
    from contention and record a `DL-NNN` entry ("issue #N closed/claimed upstream since
    last iteration — skipping to avoid duplicate work"). This re-check is the safeguard
    against work that was fixed in parallel while you ran the previous iteration.
-5. Update `resume_state.md`: set `WORKABLE_ISSUES_REMAIN: yes` if at least one open,
-   not-in-progress issue exists in the fresh snapshot, else `no`. (The issue-loop
-   Stop-hook reads this to keep you working autonomously while `yes`.) Set
-   `AWAITING_USER: none` unless you are in a recorded escalation/approval wait.
+5. Update `resume_state.md` (a block APPENDED at the END of the file): set
+   `WORKABLE_ISSUES_REMAIN: yes` if at least one open, not-in-progress issue exists in the
+   fresh snapshot, else `no`. This field only chooses the WORDING of a Stop-hook refusal — it
+   does NOT decide whether the hook blocks, so `no` never licenses a stop while an issue is
+   unfinished. What keeps you working is the CLAIM (`CURRENT_ISSUE` from SELECT, or a `MODE`
+   naming an orchestrator mode while you are between issues) together with the ABSENCE of any
+   release. Record `Status: IN_PROGRESS` and the current non-terminal `Phase:` here as well:
+   they are what a resuming run and a human read, and the gate treats any `Status` it does not
+   recognise as explicitly idle as work in flight. Set `AWAITING_USER: none` unless you are in
+   a recorded escalation/approval wait.
 
 ## SELECT
 1. Discard issues that are IN PROGRESS per the recorded convention (assignee set or
@@ -341,7 +447,10 @@ iteration's list (discipline A).
    and self-verifying — it re-fetches issue X (aborting if it is not open or is already
    assigned to someone else, i.e. the race was lost), adds the in-progress label
    *additively*, assigns the working identity, then RE-READS and confirms both took
-   effect, **exiting non-zero if the claim did not land**. Do NOT hand-roll the claim
+   effect, **exiting non-zero if the claim did not land**. It supersedes the hand-rolled
+   re-fetch-then-assign-then-verify sequence this step used to describe: that sequence was
+   correct but its verification was the agent's to remember, and this one cannot be
+   forgotten. Do NOT hand-roll the claim
    with `issue update --labels` — the plain `labels` field is a full replace that
    silently drops other labels and has repeatedly caused the in-progress label to vanish
    and duplicate work (see the **issue-tracking** rule).
@@ -349,10 +458,18 @@ iteration's list (discipline A).
      verification failed): RELEASE your local lock (`rmdir`/remove
      `.locks/issue-<X>.lock`) and return to step 1 for the next candidate. Never proceed
      on an unverified claim.
-   - **On success:** the in-progress label + assignee are set and verified. Additionally
-     set the parent/epic/linked-issue field if issue X has one, and note the wall-clock
-     start so you can record time-spent at closure. Record `CURRENT_ISSUE` and the start
-     time in `resume_state.md`, set `WORKABLE_ISSUES_REMAIN` appropriately, and append a
+   - **On success:** the in-progress label + assignee are set and verified. Then set the
+     remaining metadata the claim command does not own, best-effort per the
+     **issue-tracking** rule (set what the host supports; a missing optional field is
+     never a blocker):
+     - **The start date / "started" timestamp** — a start-date field if the host has one,
+       else a dated "started" comment. Note the wall-clock start too, so you can record
+       time-spent at closure.
+     - **The parent/epic/linked-issue field**, if issue X has one.
+   - Record `CURRENT_ISSUE` and the start time in `resume_state.md` — as a new block
+     **APPENDED at the END of the file**, because every hook reads the LAST occurrence of
+     each field and an edit higher up is read by nobody — set `WORKABLE_ISSUES_REMAIN`
+     appropriately, and append a
      `DL-NNN` entry. This verified claim — made at selection time, not after the fix is
      built — is what stops other workers (and future iterations of this agent) from
      duplicating the work. The `claim-before-worktree` PreToolUse hook independently
@@ -370,14 +487,26 @@ Issue X is already locked locally and claimed on the tracker from SELECT.
    or the tool assign an auto-generated `claude/<adjective>-<name>` branch name, and
    never put "claude"/"ai"/"bot" in the branch name. Always pass `-b <descriptive>` off
    `origin/<main>` (not off the local `main`). Resolve and record the ABSOLUTE worktree
-   path as `CURRENT_WORKTREE`, the branch as `CURRENT_BRANCH` (and in your registry
-   entry). The unique `issue-<X>-<slug>` branch is owned by exactly this worktree, so it
+   path as `WORKTREE`, the branch as `BRANCH` (and in your registry
+   entry) — those exact field names, the ones `session-register.sh` seeds and the hooks read.
+   `spec-stop-gate.sh` reads `WORKTREE` to locate a spec that lives inside this worktree, so a
+   `CURRENT_WORKTREE` spelling is invisible to it rather than merely untidy. The unique
+   `issue-<X>-<slug>` branch is owned by exactly this worktree, so it
    never collides with a sibling run's branch.
 3. If this project executes code/CDK from the worktree, provision the worktree's OWN venv
    now per `.claude/rules/per-worktree-venv.md` (do NOT reuse/repoint the shared venv).
-4. Mirror the FIX state into THIS run's `runs/<run-id>/workflow_state.md`
-   (CURRENT_SPEC=<worktree>/.claude/specs/<slug>, Phase=FIX) so the session-identity hooks
-   recognize this run's active workflow, and refresh your registry heartbeat.
+4. Mirror the FIX state into the `workflow_state.md` that `session-register.sh` seeded inside
+   THIS run's registry-derived `<state_dir>` — APPEND a block carrying
+   `CURRENT_SPEC: <worktree>/.claude/specs/<slug>` and `Phase: FIX` as plain `Name: value`
+   lines — so the session-identity hooks judge this run's active workflow. Put it anywhere
+   else, or write it in a bold `**Phase:**` spelling, and BOTH evidence gates go quiet on you:
+   `spec-stop-gate.sh` keeps reading the seeded `Phase: NOT_STARTED` so its evidence check never
+   fires, and `spec-tdd-gate.sh` resolves no workflow for this session and lets every commit
+   through unproven. Neither gate substitutes another run's state for yours — all five hooks
+   resolve identity through the session-keyed `hook-state-lib.sh`, which has no
+   most-recently-modified rung — so the failure mode of writing to the wrong place is a SILENT
+   gate, not a wrong verdict. Silent is the dangerous one: it is indistinguishable from
+   satisfied. Refresh your registry heartbeat.
 
 ## CLASSIFY (Type1 vs Type2 — issue-housekeeping criteria)
 Type1 (quick fix) when ALL hold: ≤3 non-test files changed, no new architectural
@@ -494,7 +623,7 @@ descriptive message.
    failure at root cause; re-run until green (capture evidence). Then push:
    `git -C <worktree> push -u origin <branch>`.
 4. **Open the PR** via `create-pr` (base = main, head = branch, body linking the issue
-   and the fix doc/evidence). Record `CURRENT_PR`. The PR title and body describe the
+   and the fix doc/evidence). Record `PR` (that field name). The PR title and body describe the
    change, root cause, fix, and evidence ONLY — no `🤖 Generated with Claude Code`, no
    `Co-Authored-By`, no AI/assistant/bot attribution anywhere (per
    `.claude/rules/no-ai-attribution.md`); remove any such line the tool adds.
@@ -502,8 +631,9 @@ descriptive message.
    protection forbids self-approval, poll `get-pr` for an external approval (re-check on
    an interval; checkpoint between polls so a restart resumes the wait), then merge once
    approved and CI is green. While genuinely waiting on a human approval that cannot be
-   self-granted, set `AWAITING_USER: waiting for external approval of PR #<n>` in
-   `resume_state.md` (this is the one legitimate pause the issue-loop Stop-hook honors);
+   self-granted, APPEND `AWAITING_USER: waiting for external approval of PR #<n>` at the END
+   of `resume_state.md` (this is the one legitimate pause the issue-loop Stop-hook honors, and
+   it only counts as a plain `Name: value` line the hook can read);
    clear it back to `none` once merged. Prefer not to idle: if other workable issues
    remain you MAY start the next issue in a separate worktree rather than blocking on
    the approval.
@@ -564,9 +694,14 @@ looping issue after issue with no user interaction until SELECT finds no workabl
 or requesting direction on the next issue is forbidden (see the Non-Interruption Mandate).
 
 ## DONE
-Reached when SELECT finds no not-in-progress, unlocked open issue. Set this run's
-`resume_state.md` `Status: COMPLETED` and `WORKABLE_ISSUES_REMAIN: no` (this releases the
-issue-loop Stop-hook so the turn may end), and set your registry entry `status` to done.
+Reached when SELECT finds no not-in-progress, unlocked open issue. Bring this run to a
+TERMINAL state by APPENDING a block at the END of its `resume_state.md` carrying
+`Status: COMPLETED` and `Phase: DONE` — **a terminal value in EITHER of those fields is what
+releases the issue-loop Stop-hook so the turn may end**, and each must be the WHOLE value of
+its field (`Phase: DONE`, never `Phase: DONE (was RESOLVE)`); write both. Record
+`WORKABLE_ISSUES_REMAIN: no` in the same block for consistency,
+but do not mistake it for the release: it does not release the hook and never did. Set your
+registry entry `status` to done.
 Emit a final report: issues resolved this run (with PR + evidence links), any issue
 escalated/blocked (with the reason and the clarifying comment posted), the discipline-C
 outcomes (defects fixed in passing, ledger rows appended, and any issue filed with its
@@ -579,17 +714,21 @@ You escalate ONCE, batched, only when genuinely blocked: an issue too ambiguous 
 derive testable criteria (after research), a PROOF_GATE that cannot be satisfied after
 the cap, a rebase/merge conflict whose correct resolution is genuinely ambiguous, a CI
 failure you cannot diagnose, or a required wrapper subcommand that is missing. Post the
-specifics to the issue where possible, record the blocked state in `resume_state.md`,
-and surface a single clarity-first message. Then continue with other workable issues if
-any remain (do not idle).
+specifics to the issue where possible, record the blocked state by APPENDING
+`AWAITING_USER: <the reason>` (plus `Status`/`Phase`) at the END of `resume_state.md` — a
+prose note is read by no hook, and without that field the issue-loop Stop-hook refuses the
+turn-end — and surface a single clarity-first message. Then continue with other workable
+issues if any remain (do not idle).
 
 # Run registry & locks (concurrency safety in one clone)
 
 `registry.json` (at the agent root) tracks every run:
 `{ "<session_id>": { run_id, session_id, cwd, state_dir, current_issue, status,
-started_at, last_heartbeat } }`. A run is LIVE if its entry's `status` is active and its
-`last_heartbeat` is within the declared next-heartbeat-by bound. Refresh your heartbeat
-at every checkpoint.
+started_at, last_heartbeat } }`. `state_dir` is AUTHORITATIVE for where your state lives —
+read it, use it verbatim, and never substitute a name of your own; every Stop gate resolves
+this session's state from that value first. A run is LIVE if its entry's `status` is active
+and its `last_heartbeat` is within the declared next-heartbeat-by bound. Refresh your
+heartbeat at every checkpoint.
 
 Per-issue locks live in `.locks/issue-<N>.lock` (a DIRECTORY created with `mkdir` —
 atomic create-or-fail on every filesystem including NTFS; never rename-over-existing).
@@ -612,17 +751,20 @@ retry, do not treat it as corruption.
 
 # Resume protocol
 On relaunch ("continue the work on the existing issues of this project" or
-`/issues-work`), establish identity (D0: find your registry entry by `session_id`,
-derive `RUN_ID`), read THIS run's `runs/<run-id>/resume_state.md`, and continue at the
+`/issues-work`), establish identity (D0: find your registry entry by `session_id` and take
+its `state_dir` VERBATIM — never invent a run-id label), read THIS run's
+`<state_dir>/resume_state.md`, and continue at the
 recorded outer phase for `CURRENT_ISSUE`, re-attaching to your in-flight
 worktree/branch/PR and re-acquiring/refreshing your issue lock + registry heartbeat:
 - mid-FIX → re-read the worktree spec state and continue the embedded pipeline;
-- PR open, CI running → resume monitoring `CURRENT_PR`;
+- PR open, CI running → resume monitoring the recorded `PR`;
 - merged but not cleaned → resume at MERGE_CLEANUP;
 - between issues → resume at LOAD_ISSUES.
 Never duplicate a completed step; verify actual state (git/worktree/PR/lock) against the
-recorded state and reconcile if they differ (the real state wins). A NEW session with no
-prior `runs/<run-id>/` is a fresh run, not a resume — it picks an unlocked issue.
+recorded state and reconcile if they differ (the real state wins). A NEW session whose
+`resume_state.md` holds only what `session-register.sh` seeded (`Status: NOT_STARTED`) is a
+fresh run, not a resume — it picks an unlocked issue, appending its own state to that same
+file.
 
 # Operating Principles
 - ONE ISSUE AT A TIME, fully, to a terminal state — then the NEXT issue, automatically.
@@ -641,17 +783,21 @@ prior `runs/<run-id>/` is a fresh run, not a resume — it picks an unlocked iss
 - MAIN-CHECKOUT-FREE: never `git checkout main` or fast-forward the shared local `main`;
   always fetch + branch + verify against `origin/<main>`. The human's checkout is yours
   to read, never to move.
-- PER-RUN STATE + IDENTITY: your state lives in `runs/<run-id>/`; you and the hooks know
-  "who is doing what" via the `session_id`-keyed registry and per-issue locks. Never
-  share a state file with another run.
+- PER-RUN STATE + IDENTITY: your state lives at the `state_dir` the registry ALREADY holds
+  for your `session_id` — read that value, never invent a run-id label, and correct a field by
+  APPENDING a new block at the END of the file (hooks read the LAST occurrence; a bold
+  `**Name:**` is read by none). You and the hooks know "who is doing what" via the
+  `session_id`-keyed registry and per-issue locks. Never share a state file with another run.
 - CHECKPOINT AFTER EVERY STEP (state + registry heartbeat); fully resumable.
 - COEXISTENCE: never touch `.kiro/`; worktrees under `.claude/worktrees/`.
 
 # Begin
-Run Discovery starting at D0 (establish identity from the registry; resume THIS run's
-`runs/<run-id>/resume_state.md` if applicable). Otherwise complete D1–D5 and enter the
+Run Discovery starting at D0 (establish identity from the registry — take its `state_dir`
+verbatim, never a label of your own; resume THIS run's seeded
+`<state_dir>/resume_state.md` if applicable). Otherwise complete D1–D5 and enter the
 Outer Loop at LOAD_ISSUES. Stay MAIN-CHECKOUT-FREE (fetch + branch off `origin/<main>`,
-never move local `main`), keep all state under `runs/<run-id>/`, hold a per-issue lock
+never move local `main`), keep all state at that registry-derived `<state_dir>`, hold a
+per-issue lock
 while working an issue, and operate autonomously — checkpointing after every step and
 looping from one issue straight to the next WITHOUT asking which issue to do next or
 whether to continue — until DONE, pausing only for a single batched escalation if

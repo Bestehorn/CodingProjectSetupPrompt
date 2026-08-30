@@ -2,3 +2,11 @@
 # shell script fails to execute on Linux/macOS. Force LF regardless of
 # the developer's core.autocrlf setting.
 .githooks/** text eol=lf
+
+# The same reasoning applies to every shell script this repo SHIPS, not just the
+# tracked git hooks: the agent hooks under claude-agents/**/hooks/ are copied into
+# target projects and executed there, and a CRLF bash script fails on Linux/macOS
+# (and produces confusing `\r: command not found` errors even in Git Bash).
+*.sh text eol=lf
+# CONTRACT_VERSION is read line-wise by the hooks; keep it LF for the same reason.
+claude-agents/spec-workflow/hooks/CONTRACT_VERSION text eol=lf

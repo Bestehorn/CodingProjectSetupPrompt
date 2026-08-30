@@ -149,8 +149,11 @@ not just triggers:
   `tool_input` from the STDIN event JSON, exit 2 to veto.
 - **`stop`** — returning `{"decision":"block","reason":"…"}` on STDOUT **prevents the
   agent from stopping** and feeds `reason` back as a new user message, "continuing the
-  conversation." → your `issue-loop-gate.sh` / `spec-stop-gate.sh` (keep working while
-  the backlog has workable issues, or while tests are red) ports **directly**.
+  conversation." → your `issue-loop-gate.sh` / `spec-stop-gate.sh` (keep working while the run has
+  CLAIMED tracked work and has not affirmatively released, or while the implementation is not
+  proven) ports **directly**. Note the Claude-side condition is no longer "while the backlog has
+  workable issues": `WORKABLE_ISSUES_REMAIN` was the block condition and gates nothing now, because
+  `/work-issue` sets it to `no` and so switched the gate off for its own runs.
 - **`postToolUse`** — runs after a tool (format/lint/audit); cannot undo it (same as CC).
 - **`agentSpawn` / `userPromptSubmit`** — inject context (STDOUT added to context).
 

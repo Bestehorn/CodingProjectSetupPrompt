@@ -2225,9 +2225,27 @@ Run identity is established by an **agentSpawn hook** (`kiro-session-register.sh
 installed in PART 8A) that writes `registry.json` keyed by the `session_id` Kiro
 passes on stdin; `run_id` is derived from it. The agent and the gate hooks both
 resolve "which run owns this session" via that registry — no environment variable
-carries identity (consistent with `no-environment-vars`). The gate hooks
-(`kiro-tdd-gate.sh`, `kiro-stop-gate.sh`, `kiro-loop-gate.sh`) read THIS session's
-`runs/<run-id>/` state, not a globally-most-recent file.
+carries identity (consistent with `no-environment-vars`).
+
+**How far that resolution holds differs PER HOOK, so keep every run's state at the
+registry-derived path.** `kiro-loop-gate.sh` is session-keyed and nothing else: the
+registry's `state_dir`, else `runs/<first-8-of-session_id>/`, and it exits 0 — a silent
+no-op — when no `resume_state.md` is there. `kiro-stop-gate.sh` and `kiro-tdd-gate.sh`
+prefer that same lookup but FALL BACK to `ls -t` over every `workflow_state.md` under
+`.kiro/agent-state/`, taking the most recently modified one; `kiro-continuous-work-reinject.sh`
+falls back the same way to the most recently touched `runs/*/`. **RESIDUAL, stated because it
+is not fixed:** with two runs live in one clone those three can read a SIBLING's state — the
+spec gate then judges this run against a stranger's phase and evidence, and the re-inject
+announces a stranger's issue, branch, worktree and PR as "your recorded place in the work".
+That second harm was MEASURED (on the Claude Code hooks, which were then rewritten to have no
+mtime rung at all; this port does not carry that rewrite): a session working one issue was
+told its current issue was another run's, and had to be corrected twice. Note also that every
+registry lookup here, and the register hook's own write, sit inside `command -v jq` with no
+fallback — so on a host without `jq` no entry is written at all, and while the loop gate and
+the re-inject can still derive `runs/<first-8-of-session_id>/` from the session id itself, the
+two spec gates cannot: for them the mtime scan is then the ONLY resolution. Install `jq`
+before running two orchestrators in one clone, and read any gate verdict in a concurrent clone
+as unattributed until you have checked WHICH file it read.
 
 ## The decision log (mandatory for all agents)
 Whenever an agent makes a non-trivial decision (a design choice, a classification, a
@@ -2782,9 +2800,14 @@ wiring is needed beyond the copy):
   `kiro-session-register.sh` on the orchestrator, conductor, and implementer). Its STDOUT is
   added to the agent's context on spawn, so it prints the `continuous-work` contract plus
   THIS run's recorded place in the work — phase, current issue, branch, worktree, PR,
-  `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's `resume_state.md` via the
-  registry — and flags an uncommitted tree as work-in-progress rather than a stopping point.
-  Read-only and fail-quiet: with no state it prints the contract alone.
+  `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's `resume_state.md` located
+  through the registry (then `runs/<first-8-of-session_id>/`) — and flags an uncommitted tree
+  as work-in-progress rather than a stopping point.
+  Read-only and fail-quiet: with no state it prints the contract alone. **Its last rung is
+  NOT session-keyed:** when neither of those resolves it takes the most recently touched
+  `runs/*/`, so in a clone with a concurrent run it can present a SIBLING's issue, branch,
+  worktree and PR as this run's own — the residual named in steering 8.27, and the reason the
+  registry-derived path is not optional here.
   **Kiro limitation, stated plainly:** Kiro has no compaction hook, and automatic compaction
   continues the SAME session, so `agentSpawn` does NOT re-fire after it. This covers launch
   and relaunch only. Mid-session the `inclusion: always` steering file keeps the CONTRACT in

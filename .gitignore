@@ -20,3 +20,10 @@ venv/
 # Hypothesis property-testing local database/cache (example DB, cached
 # constants, unicode tables). Machine-specific and regenerated automatically.
 .hypothesis/
+
+# Claude Code per-run runtime state and machine-local settings. The AUTHORING trees
+# (claude-agents/, claude-commands/, cli-agents/) are version-controlled; these are not:
+# agent-state is per-run, worktrees are ephemeral, and settings.local.json is per-machine.
+.claude/agent-state/
+.claude/worktrees/
+.claude/settings.local.json

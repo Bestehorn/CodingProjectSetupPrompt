@@ -120,7 +120,25 @@ mkdir -p .claude/agents .claude/commands
 cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md  .claude/agents/
 cp claude-commands/issues-work.md                                    .claude/commands/
 cp claude-commands/work-issue.md                                     .claude/commands/
+cp claude-commands/auto-work.md                                      .claude/commands/
+cp claude-commands/continue-work.md                                  .claude/commands/
+cp claude-commands/close-session.md                                  .claude/commands/
 ```
+
+All five commands drive this same agent, and the last three are not optional extras — they are
+the entry points the continuous-work contract is written around:
+
+| Command | Why it is installed |
+|---|---|
+| `/issues-work` | start or resume the whole-backlog run |
+| `/work-issue <X>` | the SAME lifecycle for exactly one named issue, then stop |
+| `/auto-work` | the never-stop, unattended whole-backlog run — nobody is watching, so nothing it could ask is worth the wait |
+| `/continue-work` | the manual restart after a run stopped early. Needing it means the contract was not honored, so part of its job is to record WHY |
+| `/close-session` | the end-of-session close-out: assess the tree, remediate THIS run's own artifacts, record a terminal `Phase`, report whether the session is safe to close |
+
+All five carry `disable-model-invocation: true`, so an autonomous merge-and-close run can never
+begin because a prompt merely mentioned an issue. `/close-session` is also what puts a run into a
+state the Stop gates release: it records the terminal `Phase` the gate reads.
 
 Also ensure the git wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
 implements the PR/merge/CI subcommands the orchestrator needs (the setup prompt Part 6.2
@@ -144,14 +162,60 @@ in-progress on the tracker (fail-closed `issue start <X>`) before it fetches or 
 anything, works X in its own `.claude/worktrees/issue-<X>/` so it runs in parallel with
 sibling sessions, commits the reviewed spec artifacts as their own commit BEFORE
 implementation, and stops after X is merged and closed instead of continuing into the
-backlog (it records `WORKABLE_ISSUES_REMAIN: no`, which is what releases the
-`issue-loop-gate.sh` Stop hook). If X turns out to be closed or claimed elsewhere, it
-reports and stops rather than substituting a different issue.
+backlog. It also records `MODE: SINGLE_ISSUE`, which is what makes the run GATED — see below.
+If X turns out to be closed or claimed elsewhere, it reports and stops rather than substituting
+a different issue, recording a terminal `Phase` with the reason, since the gate judges the state
+file rather than the report.
+
+### What actually holds and releases the `issue-loop-gate.sh` Stop hook
+
+The gate BLOCKS a turn-end while **both** halves hold: this run has CLAIMED tracked work, **and**
+it has not AFFIRMATIVELY released. Getting either half wrong is how a run ends up ungated, so
+both are worth stating precisely.
+
+**Claimed work** is any one of: a non-placeholder `CURRENT_ISSUE`; a `CURRENT_SPEC`; or a `MODE`
+beginning `ISSUE_LOOP`, `SINGLE_ISSUE`, `SPEC`, `BACKLOG` or `AUTO` (hyphens normalised to
+underscores, so `single-issue` matches as well). "Non-placeholder" is strict: an empty value, any
+angle-bracketed token such as the literal `<N>`, and `none`/`unset`/`unknown`/`tbd`/`n/a` and
+their neighbours all claim NOTHING. This half exists because every session is now seeded and
+`OWNED`, so without it an ordinary chat session that happened to record a `Status` was refused and
+told to finish "issue none".
+
+**An affirmative release** is one of exactly four things:
+
+- an idle `Status` — and only from the explicit vocabulary
+  (`NOT_STARTED`/`NOT_YET_STARTED`/`UNSTARTED`/`NOT_IN_PROGRESS`/`NOT_WORKING`/`IDLE`/`PENDING`/
+  `NEW`/`NONE`/`UNSET`);
+- a terminal `Phase` **or** `Status` (`DONE`/`COMPLETE`/`COMPLETED`/`FINISHED`/`CLOSED`/
+  `ABANDONED`/`ESCALATED`/`CANCELLED`/`CANCELED`), matched WHOLE-VALUE and case-insensitively —
+  so `Phase: DONE` releases and `Status: COMPLETED (was IN_PROGRESS)` does not;
+- a SUBSTANTIVE `AWAITING_USER` reason. Presence is not enough: `<reason>`, `none`, `no`, `false`,
+  `0`, `waiting`, `blocked` and anything too short to be a reason are all rejected;
+- no claimed work, per the paragraph above.
+
+**`Status: IN_PROGRESS` is not what holds the turn, and the polarity is INVERTED.** An
+UNRECOGNISED `Status` means work IN FLIGHT; only an explicit idle or terminal value releases. So
+`WORKING`, `ACTIVE`, `RUNNING`, `IMPLEMENTING`, `in progress` and `in-progress` all hold — they
+used to each disable the brake, because it armed on the single literal `IN_PROGRESS` and nothing
+told the agent the vocabulary. The failure direction is deliberate: a novel status word now costs
+a visible, recoverable refusal that names its own escape, rather than the whole guarantee.
+
+**`WORKABLE_ISSUES_REMAIN` gates NOTHING.** It selects the refusal's WORDING — whole-backlog
+"select the next issue yourself" versus single-issue "finish issue X end to end" — and it feeds
+the progress fingerprint that resets the block counter. It used to BE the block condition, which
+is why `/work-issue`'s deliberate `no` meant this command's runs were never gated at all. Setting
+it is still correct for the record; it releases nothing.
+
+Loop safety is the gate's own consecutive-block counter (`HOOK_BLOCK_CAP`, default 8): at the cap
+it stands down, says the work is NOT done, and writes a durable marker so the cap is a one-way
+stand-down rather than a duty cycle. Recorded progress clears it. Reaching the cap is not a
+completion signal — `/continue-work` is.
 
 To resume after any interruption, just relaunch the same way (or say "continue the work
-on the existing issues of this project") — the agent reads
-`.claude/agent-state/issue-work-orchestrator/resume_state.md` and continues mid-lifecycle
-(including re-attaching to an open PR mid-CI or a half-built worktree).
+on the existing issues of this project") — the agent reads THIS run's
+`.claude/agent-state/issue-work-orchestrator/<state_dir>/resume_state.md`, where `<state_dir>`
+is the value `registry.json` already holds for the session (normally `runs/<run-id>/`), and
+continues mid-lifecycle (including re-attaching to an open PR mid-CI or a half-built worktree).
 
 ## Permission posture (autonomy)
 
@@ -170,10 +234,19 @@ This agent is designed for long autonomous runs and performs real remote operati
 
 ## State & resumability
 
-- Orchestrator coordination state (spans issues, survives worktree deletion):
-  `.claude/agent-state/issue-work-orchestrator/` — `resume_state.md` (master state
-  machine), `workflow_state.md` (mirrors the active FIX phase so the TDD hooks fire),
-  `issue_queue.md`, `iteration_log.md`, `environment.md`, `decision-log.md`.
+- Orchestrator coordination state (spans issues, survives worktree deletion), PER RUN under
+  `.claude/agent-state/issue-work-orchestrator/runs/<run-id>/` — `resume_state.md` (master
+  state machine), `workflow_state.md` (mirrors the active FIX phase so the TDD hooks fire),
+  `issue_queue.md`, `iteration_log.md`, `environment.md`, `decision-log.md`. `<run-id>` is
+  computed by the `session-register.sh` SessionStart hook and published as `state_dir` in
+  `registry.json`; the agent reads that value verbatim and never invents a label of its own.
+  An invented label is what caused the original incident: the gates looked for the registry's
+  path, the agent had written its state under a readable name of its own, the two namespaces
+  never met, and every gate was silently inert from turn one. The library does carry a
+  last-resort third rung that scans `runs/*/resume_state.md` for a matching `SESSION_ID:`, and it
+  exists to REPAIR exactly that divergence — never as licence to create it, since it only works
+  while the `SESSION_ID` line survives. Keep the registry's path. The agent root itself holds
+  only the cross-run artifacts: `registry.json`, `.locks/`, and the cross-run `decision-log.md`.
 - Per-issue work (committed and merged with the fix): `<worktree>/.claude/specs/<slug>/`
   with the spec, `decisions/decision-log.md` (DL-NNN), and `evidence/` (the proof chain).
 - Everything follows `.claude/rules/agent-state-convention.md`. `.claude/agent-state/`
