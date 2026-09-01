@@ -42,15 +42,31 @@ echo "Set local core.hooksPath -> .githooks (overrides any system/global value f
 # but set it here too in case the working tree was created with filemode off.
 chmod +x "$HOOKS_DIR"/* 2>/dev/null || true
 
-# Report what is enabled.
+# Report what is enabled, and what each hook costs — the split is the point.
 echo "Enabled tracked git hooks from .githooks/:"
 for h in "$HOOKS_DIR"/*; do
     [ -f "$h" ] || continue
     case "$(basename "$h")" in
         *.sample|*.md|README*) continue ;;
     esac
-    echo "  - $(basename "$h")"
+    case "$(basename "$h")" in
+        pre-commit) echo "  - pre-commit  (lint + security on staged files; no tests)" ;;
+        pre-push)   echo "  - pre-push    (type check; the suite ONLY during a declared CI outage)" ;;
+        *)          echo "  - $(basename "$h")" ;;
+    esac
 done
+echo "Tests run in CI. See the CI-owns-the-test-suite rule for the full contract."
+
+# The secret-scan hook cannot pass without a baseline, and the failure it produces
+# otherwise ("No such file or directory: .secrets.baseline") reads like a broken hook
+# rather than a missing one-time step.
+if [ ! -f "$PROJECT_ROOT/.secrets.baseline" ] \
+   && grep -q "detect-secrets" "$PROJECT_ROOT/.pre-commit-config.yaml" 2>/dev/null; then
+    echo ""
+    echo "NOTE: .secrets.baseline is missing and the detect-secrets hook needs it."
+    echo "      Generate and COMMIT it once:"
+    echo "        detect-secrets scan > .secrets.baseline"
+fi
 
 PREV_HOOKS="$(git -C "$PROJECT_ROOT" config --system --get core.hooksPath 2>/dev/null || true)"
 if [ -n "$PREV_HOOKS" ]; then

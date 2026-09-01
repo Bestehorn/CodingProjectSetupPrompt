@@ -7,8 +7,19 @@
 # `core.hooksPath=.githooks` in local config (done once per clone by
 # `scripts/setup-hooks.sh`; see the project's Part 2.3 / README).
 #
-# Runs only the FAST checks (ruff lint + format). Slow checks (mypy, pytest,
-# bandit) are left for CI and manual `pre-commit run <id>`.
+# Runs only the FAST checks: lint (ruff + ruff-format) and security (bandit
+# over the staged files, plus a secret scan). Under two seconds, so commit as
+# often as you like — that is the point.
+#
+# Deliberately NOT here:
+#   * the TEST SUITE — CI owns it. A project whose suite takes an hour cannot
+#     pay for it per commit, and gating commits on it is what drives agents to
+#     one giant commit instead of a readable series. See the
+#     CI-owns-the-test-suite rule.
+#   * mypy — a whole-project analysis, so it belongs at the push boundary
+#     (`.githooks/pre-push`) rather than at every commit.
+# The secret scan IS here, because a leaked credential is the one defect class
+# that cannot be undone once it is pushed.
 #
 # Portable by design: it does NOT hardcode an absolute venv path. It locates
 # the project's venv at runtime from the main checkout, so the same committed
@@ -19,10 +30,15 @@ set -euo pipefail
 # Resolve the MAIN working tree (the parent of the common git dir). From a
 # normal checkout this is the repo root; from a worktree it is the main repo
 # root — which is where the venv lives.
+#
+# A RELATIVE --git-common-dir is relative to the CURRENT directory, not to the
+# top level of the working tree. Git invokes hooks from the working-tree root so
+# the two coincide here, but joining against $PWD is correct in both cases and
+# keeps the hook working when it is run by hand from a subdirectory.
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
 case "$GIT_COMMON_DIR" in
     /*|[A-Za-z]:*) ;;                                  # already absolute
-    *) GIT_COMMON_DIR="$(git rev-parse --show-toplevel)/$GIT_COMMON_DIR" ;;
+    *) GIT_COMMON_DIR="$PWD/$GIT_COMMON_DIR" ;;
 esac
 MAIN_CHECKOUT="$(cd "$(dirname "$GIT_COMMON_DIR")" && pwd)"
 
@@ -37,7 +53,9 @@ else
     exit 1
 fi
 
-# Run the fast hooks defined in .pre-commit-config.yaml, against the staged
-# files for this commit. ruff first (lint/--fix), then ruff-format.
-"$PRECOMMIT" run ruff --config "$MAIN_CHECKOUT/.pre-commit-config.yaml" || exit $?
-exec "$PRECOMMIT" run ruff-format --config "$MAIN_CHECKOUT/.pre-commit-config.yaml"
+# Run every hook declared with `stages: [pre-commit]` in .pre-commit-config.yaml,
+# against the staged files for this commit. Running the STAGE rather than naming
+# hook ids keeps that config file the single source of truth for what runs when —
+# adding a fast check there requires no edit to this hook.
+exec "$PRECOMMIT" run --hook-stage pre-commit \
+    --config "$MAIN_CHECKOUT/.pre-commit-config.yaml"

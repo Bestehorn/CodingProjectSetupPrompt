@@ -27,3 +27,9 @@ venv/
 .claude/agent-state/
 .claude/worktrees/
 .claude/settings.local.json
+
+# Check/test reports written by scripts/run_tests.py (--junit) and, in projects
+# set up by these prompts, scripts/run_checks.py. Regenerated per run.
+# NOTE: .secrets.baseline is deliberately NOT ignored — it is the audited
+# secret-scan allow-list and the pre-commit hook fails on every clone without it.
+reports/

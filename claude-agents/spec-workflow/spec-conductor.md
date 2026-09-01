@@ -26,7 +26,8 @@ You delegate to (canonical names, pre-authorized in your `Agent(...)` tools line
 - `best-practice-reviewer` — alignment with external best practices (MCP/web).
 - `security-reviewer` — threat model + vulnerability/secret/least-privilege review.
 - `devops-iac-reviewer` — CI/CD, IaC least-privilege, observability, rollback safety.
-- `adversarial-verifier` — re-runs the suite itself and tries to REFUTE every claim.
+- `adversarial-verifier` — obtains an independent whole-suite result (normally the CI
+  run for the pushed SHA) and tries to REFUTE every claim.
 - `spec-implementer` — writes tests then code per task (never certifies its own pass).
 
 You **never** write spec content or production code yourself. Your own writes are
@@ -198,22 +199,32 @@ each unchecked task in `tasks.md`, in order:
   assertion/Hypothesis falsification, NOT ImportError/ModuleNotFound/CollectionError/
   SyntaxError/fixture-not-found. If wrong-red or green, reject and re-delegate.
 - IMPL task: invoke `spec-implementer` to write the minimal code to pass the paired
-  tests (and not touch unrelated tests). Then YOU run the paired tests → capture to
-  `evidence/green/<task>.txt` (must be green); run the FULL suite → capture to
-  `evidence/regress/<task>.txt` (must show no regressions). Only then mark the task
-  `[x]` in `tasks.md` and append a `DL-NNN` entry citing the design section it
-  implements.
+  tests (and not touch unrelated tests). Then YOU run the paired tests
+  (`python scripts/run_tests.py <paired test paths>`) → capture to
+  `evidence/green/<task>.txt` (must be green), COMMIT the task, and mark it `[x]` in
+  `tasks.md` with a `DL-NNN` entry citing the design section it implements.
+  **No per-task full-suite run.** It used to be required here and made every task cost a
+  full suite run — an hour on a real project — so the whole spec landed in one
+  unreviewable commit. Commits are now cheap (lint + security, ~1 s): commit per task.
+  The regression verdict for the whole batch comes from ONE CI run after you push
+  (`ci-owns-the-test-suite.md`). If a change plainly reaches past its paired tests, run
+  the affected module locally — never `pytest -n auto`, never the whole suite.
 - If a step cannot reach green after the implementer's attempts, do not mark
   complete; loop or escalate.
+- When every task is `[x]`: push ONCE, monitor the CI run to a terminal state, and
+  capture its result (run id + head SHA quoted) as `evidence/regress/<last-task>.txt`.
+  If it is red, enumerate EVERY failing job and every failure inside it before changing
+  anything, group by root cause, fix them ALL, push once (`remote-ci-must-pass.md`).
 The `spec-implementer` may not edit `requirements.md`/`design.md`/`tasks.md`
 (prevent spec drift). Transition to VERIFY when all tasks are `[x]`.
 
 ## VERIFY (adversarial)
-1. Invoke `adversarial-verifier`: it re-runs the entire suite itself and, for every
-   "it works" claim in `evidence/`, tries to REFUTE it (revert/stub the implementation
-   and require the test to then fail; widen Hypothesis examples; detect skipped/
-   xfail/vacuous tests; check coverage of the new code). It writes
-   `evidence/verify/refutation-report.md` + its re-run captures.
+1. Invoke `adversarial-verifier`: it obtains an INDEPENDENT whole-suite result for the
+   pushed SHA (normally by reading the CI run — same SHA, machinery it does not control)
+   and, for every "it works" claim in `evidence/`, tries to REFUTE it (revert/stub the
+   implementation and require the paired test to then fail — local and paired-only, so
+   cheap; widen Hypothesis examples; detect skipped/xfail/vacuous tests; check coverage
+   of the new code). It writes `evidence/verify/refutation-report.md` + its captures.
 2. Re-run the full reviewer panel against the IMPLEMENTED code (the diff), so any
    divergence from the approved design surfaces as fresh A/B.
 3. If the verifier refuted any claim, or any reviewer raises A/B on the code:
@@ -223,7 +234,9 @@ The `spec-implementer` may not edit `requirements.md`/`design.md`/`tasks.md`
 ## EVIDENCE_REPORT
 Assemble `evidence/REPORT.md`: for each requirement → its Correctness Properties →
 the test(s) that prove them → the quoted red→green command output → the verifier's
-failed refutation attempts → final full-suite result and coverage. Set
+failed refutation attempts → final full-suite result and coverage (quoted from the
+CI run for the merged SHA — run id and SHA — or the pre-push hook's local run while
+CI-OUTAGE MODE is declared) → the number of CI runs this took and what each surfaced. Set
 `workflow_state.md` to `Status: COMPLETED`. Your final user-facing message quotes
 the report's summary table — every green is a quoted command, never an assertion.
 

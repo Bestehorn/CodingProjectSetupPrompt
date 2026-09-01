@@ -1,0 +1,407 @@
+#!/usr/bin/env python
+"""Run every project check and report EVERY failure. Used by CI and, locally, by /run-ci.
+
+WHY THIS EXISTS
+    A CI job's step list is inherently fail-fast. In GitLab a `script:` block stops at the
+    first non-zero command; in GitHub Actions a `steps:` list stops at the first failing
+    step; and a stage/`needs:` chain skips everything downstream of a failed job. The
+    practical result is that one pipeline run reports ONE problem. A worker fixes it,
+    pushes, and burns another run to discover the next — the trial-and-error loop this
+    project forbids.
+
+    There is exactly one reliable fix: hand a whole group of checks to a SINGLE process
+    that runs all of them regardless of individual outcomes and aggregates the results.
+    That process is this script. Each CI job therefore has one command:
+
+        python scripts/run_checks.py --group lint       (and types / security / tests)
+
+    A final CI job merges the per-group JSON with --summary-from and is the job that fails
+    the pipeline, so the pipeline's verdict still comes from every check having run.
+
+    Running the same script locally is what makes the local mirror of the pipeline
+    structurally unable to drift from it — which matters most during a CI-capacity outage,
+    when the local run IS the pipeline (see the remote-ci-must-pass capacity ladder).
+
+WHAT IS A "CHECK" HERE
+    A named command plus the group it belongs to. Groups exist so CI can fan them out
+    across parallel jobs; within a group every command runs even after one fails.
+
+USAGE
+    python scripts/run_checks.py                          # every group, aggregated
+    python scripts/run_checks.py --group lint             # one group (one CI job)
+    python scripts/run_checks.py --group lint --group types
+    python scripts/run_checks.py --list                   # show groups and commands
+    python scripts/run_checks.py --reports-dir reports    # where the JSON lands
+    python scripts/run_checks.py --summary-from reports/   # merge + final verdict (CI)
+
+EXIT CODES
+    0 = every check that ran passed.   1 = at least one failed (see the summary block).
+
+MIGRATION NOTE: CHECKS below is the project's check inventory. Add project-specific checks
+(a schema validator, a CDK synth, a docs build) as new entries — never as an extra command
+appended to a CI step, or the fail-fast problem comes straight back.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+PY = sys.executable
+
+Argv = tuple[str, ...]
+
+
+def tracked_files() -> list[str]:
+    """Every git-tracked file, for checks that need an explicit file list."""
+    out = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, check=False
+    )
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def detect_secrets_argv() -> Argv:
+    """The secret scan, as a GATE rather than a baseline refresh.
+
+    `detect-secrets scan --baseline X` UPDATES X in place and exits 0, so using it in CI
+    would report success while writing the new secret into the baseline. The pre-commit
+    hook entry point (`detect_secrets.pre_commit_hook`) is the one that exits non-zero on a
+    finding absent from the baseline, and it wants an explicit file list.
+    """
+    return (
+        PY,
+        "-m",
+        "detect_secrets.pre_commit_hook",
+        "--baseline",
+        ".secrets.baseline",
+        *tracked_files(),
+    )
+
+
+def tests_argv() -> Argv:
+    """One worker per vCPU on a CI runner; bounded local workers everywhere else.
+
+    GitHub Actions and GitLab CI both export CI=true. Any local run — /run-ci or a
+    declared CI outage — gets run_tests.py's bounded default, never `pytest -n auto`:
+    the unbounded count is what made the host unusable when several worktrees ran
+    suites concurrently (ci-owns-the-test-suite).
+    """
+    return (
+        PY,
+        "scripts/run_tests.py",
+        "--workers",
+        "auto" if os.environ.get("CI") else "local",
+        "--coverage",
+        "--junit",
+        "reports/junit.xml",
+    )
+
+
+# The check inventory. Each entry: (group, name, argv-or-argv-factory).
+# `tests` delegates to run_tests.py so the test invocation has ONE definition (bounded
+# local workers, no fail-fast) shared with the pre-push hook and the agent fleet.
+CHECKS: tuple[tuple[str, str, Argv | Callable[[], Argv]], ...] = (
+    (
+        "lint",
+        "ruff-check",
+        (PY, "-m", "ruff", "check", "src", "test", "scripts", "cdk"),
+    ),
+    (
+        "lint",
+        "ruff-format",
+        (PY, "-m", "ruff", "format", "--check", "src", "test", "scripts", "cdk"),
+    ),
+    ("types", "mypy", (PY, "-m", "mypy", "src", "--ignore-missing-imports")),
+    (
+        "security",
+        "bandit",
+        (PY, "-m", "bandit", "-r", "src", "scripts", "-x", "src/_version.py"),
+    ),
+    ("security", "detect-secrets", detect_secrets_argv),
+    (
+        "tests",
+        "pytest",
+        (
+            PY,
+            "scripts/run_tests.py",
+            "--workers",
+            "auto",
+            "--coverage",
+            "--junit",
+            "reports/junit.xml",
+        ),
+    ),
+)
+
+GROUP_ORDER: tuple[str, ...] = ("lint", "types", "security", "tests")
+
+
+@dataclass
+class Result:
+    group: str
+    name: str
+    command: str
+    returncode: int
+    seconds: float
+    skipped_reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0 or bool(self.skipped_reason)
+
+
+def resolve(spec: Argv | Callable[[], Argv]) -> Argv:
+    """An inventory entry is either a fixed argv or a factory that computes one."""
+    return spec() if callable(spec) else spec
+
+
+# Console-script fallback per `python -m <module>` form. Some tools are installed such that
+# the module is not importable but the entry-point script is on PATH; treating that as
+# "missing" would SKIP the check, and a green pipeline that never ran bandit is worse than a
+# red one. Extend this map alongside CHECKS.
+CONSOLE_SCRIPTS: dict[str, str] = {
+    "ruff": "ruff",
+    "mypy": "mypy",
+    "bandit": "bandit",
+    "detect_secrets.pre_commit_hook": "detect-secrets-hook",
+    "pytest": "pytest",
+}
+
+
+def importable(module: str) -> bool:
+    probe = subprocess.run(
+        [
+            PY,
+            "-c",
+            (
+                "import importlib.util,sys;"
+                f"sys.exit(0 if importlib.util.find_spec({module.split('.')[0]!r}) else 1)"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def runnable(argv: Argv) -> tuple[Argv, str]:
+    """Return (argv-to-run, skip-reason). Empty reason means the check will run.
+
+    Prefers `python -m <module>` — that pins the check to THIS interpreter's environment,
+    which matters inside a venv. Falls back to the console script before giving up.
+    """
+    if len(argv) >= 3 and argv[1] == "-m":
+        module = argv[2]
+        if importable(module):
+            return argv, ""
+        script = shutil.which(CONSOLE_SCRIPTS.get(module, module))
+        if script:
+            return (script, *argv[3:]), ""
+        return argv, (
+            f"neither `python -m {module}` nor a "
+            f"`{CONSOLE_SCRIPTS.get(module, module)}` executable is available"
+        )
+    if len(argv) >= 2 and argv[1].endswith(".py") and not Path(argv[1]).exists():
+        return argv, f"{argv[1]} not found"
+    return argv, ""
+
+
+MAX_COMMAND_CHARS = 300
+
+
+def readable(argv: Argv) -> str:
+    """The command as one line, truncated — a file-list check would otherwise be unreadable
+    in the log and would bloat the JSON report CI has to download."""
+    line = shlex.join(argv)
+    return (
+        line
+        if len(line) <= MAX_COMMAND_CHARS
+        else line[:MAX_COMMAND_CHARS] + " ...(truncated)"
+    )
+
+
+def run_check(group: str, name: str, spec: Argv | Callable[[], Argv]) -> Result:
+    """Run one check to completion. Never raises — a crashed tool is a failed check."""
+    argv, reason = runnable(resolve(spec))
+    shown = readable(argv)
+    if reason:
+        print(f"--- SKIP {group}/{name}: {reason}", flush=True)
+        return Result(
+            group=group,
+            name=name,
+            command=shown,
+            returncode=0,
+            seconds=0.0,
+            skipped_reason=reason,
+        )
+
+    print(f"--- RUN  {group}/{name}: {shown}", flush=True)
+    started = time.monotonic()
+    try:
+        code = subprocess.call(list(argv))
+    except OSError as exc:  # tool vanished mid-run, exec failed, ...
+        print(f"--- ERROR {group}/{name}: {exc}", flush=True)
+        code = 127
+    elapsed = time.monotonic() - started
+    print(
+        f"--- {'PASS' if code == 0 else 'FAIL'} {group}/{name} ({elapsed:.1f}s, exit {code})",
+        flush=True,
+    )
+    return Result(
+        group=group, name=name, command=shown, returncode=code, seconds=elapsed
+    )
+
+
+def run_groups(groups: list[str]) -> list[Result]:
+    """Run every check in every requested group. NO early exit — that is the whole point."""
+    results: list[Result] = []
+    for group in groups:
+        for g, name, spec in CHECKS:
+            if g == group:
+                results.append(run_check(g, name, spec))
+    return results
+
+
+def emit_summary(results: list[Result]) -> int:
+    """Print the consolidated verdict. Returns the process exit code."""
+    failed = [r for r in results if not r.ok]
+    skipped = [r for r in results if r.skipped_reason]
+    passed = [r for r in results if r.ok and not r.skipped_reason]
+
+    print()
+    print("=" * 72)
+    print(
+        f"CHECK SUMMARY - {len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped"
+    )
+    print("=" * 72)
+    for r in results:
+        mark = "SKIP" if r.skipped_reason else ("PASS" if r.ok else "FAIL")
+        detail = (
+            f"  ({r.skipped_reason})" if r.skipped_reason else f"  exit {r.returncode}"
+        )
+        print(f"  [{mark}] {r.group}/{r.name}{detail}")
+
+    if failed:
+        print()
+        print(f"=== FAILED CHECKS ({len(failed)}) ===")
+        for r in failed:
+            print(f"  {r.group}/{r.name}: exit {r.returncode}")
+            print(f"    {r.command}")
+        print()
+        print(
+            "Fix ALL of the above in ONE pass before pushing again. Each additional CI "
+            "run to discover the next failure is a run that did not need to happen."
+        )
+    if skipped:
+        print()
+        print(
+            "Skipped checks did NOT pass - their tool is missing from this environment. "
+            "Install it (and record it in the project's dependency manifest) so the "
+            "check is actually enforced."
+        )
+
+    return 1 if failed else 0
+
+
+def write_reports(results: list[Result], reports_dir: Path) -> None:
+    """One JSON per group, so a CI report job can merge results from parallel jobs."""
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    by_group: dict[str, list[Result]] = {}
+    for r in results:
+        by_group.setdefault(r.group, []).append(r)
+    for group, group_results in by_group.items():
+        path = reports_dir / f"checks-{group}.json"
+        path.write_text(
+            json.dumps([asdict(r) for r in group_results], indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"run_checks: wrote {path}", flush=True)
+
+
+def summarize_from(reports_dir: Path) -> int:
+    """Merge every checks-*.json under reports_dir into one verdict.
+
+    This is the final CI job. It runs with `when: always` / `if: always()` so it sees the
+    results of every parallel check job, including the ones that failed, and it is the job
+    whose exit code fails the pipeline.
+    """
+    files = sorted(reports_dir.glob("checks-*.json"))
+    if not files:
+        print(
+            f"run_checks: no checks-*.json under {reports_dir} - no check job produced a "
+            f"report, which is itself a failure (did the jobs run?)"
+        )
+        return 1
+    results: list[Result] = []
+    for path in files:
+        for raw in json.loads(path.read_text(encoding="utf-8")):
+            results.append(Result(**raw))
+    print(
+        f"run_checks: merged {len(results)} check results from {len(files)} report file(s)"
+    )
+    return emit_summary(results)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run every project check, report every failure, fail once at the end.",
+    )
+    parser.add_argument(
+        "--group",
+        action="append",
+        default=[],
+        choices=GROUP_ORDER,
+        help="run only this group (repeatable). Default: every group.",
+    )
+    parser.add_argument(
+        "--reports-dir",
+        type=Path,
+        default=Path("reports"),
+        help="where per-group JSON reports are written (default: reports/)",
+    )
+    parser.add_argument(
+        "--summary-from",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="merge existing per-group reports in DIR and emit the final "
+        "verdict; runs no checks (this is CI's report job)",
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="list groups and commands, then exit"
+    )
+    args = parser.parse_args(argv)
+
+    if args.list:
+        for group in GROUP_ORDER:
+            print(group)
+            for g, name, spec in CHECKS:
+                if g == group:
+                    if callable(spec):
+                        print(
+                            f"  {name}: {shlex.join(spec()[:5])} ... <git-tracked files>"
+                        )
+                    else:
+                        print(f"  {name}: {shlex.join(spec)}")
+        return 0
+
+    if args.summary_from is not None:
+        return summarize_from(args.summary_from)
+
+    groups = args.group or list(GROUP_ORDER)
+    results = run_groups(groups)
+    write_reports(results, args.reports_dir)
+    return emit_summary(results)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

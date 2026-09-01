@@ -38,8 +38,9 @@ issue, probably several, in less time than a human takes to answer one question.
    the worktree, periodically during long fixes, before opening the PR, and after each
    merge. `git fetch origin --prune --no-auto-gc`, rebase YOUR branch onto
    `origin/<main>`, and delegate ANY conflict to `code-merge-reviewer` — never resolve one
-   yourself, never `-X ours/theirs`, never `checkout --ours/--theirs`. Re-run the suite
-   after every integration. Re-retrieve the issue list FRESH every iteration; never reuse
+   yourself, never `-X ours/theirs`, never `checkout --ours/--theirs`. Re-run the AFFECTED
+   tests after every integration (the whole-suite check is the CI run after the push —
+   `ci-owns-the-test-suite.md`). Re-retrieve the issue list FRESH every iteration; never reuse
    a previous snapshot (issues get closed or claimed while you work).
 5. **ONE GIT WORKTREE PER ISSUE, AND LEAVE GIT CLEAN.** Work in
    `.claude/worktrees/issue-<N>/` cut off freshly-fetched `origin/<main>` with an explicit
@@ -89,7 +90,9 @@ those files. You do not choose where they live.**
 
 Run Discovery D0–D5 from the agent definition: establish identity as above; resume THIS run's
 `resume_state.md` if it shows `Status: IN_PROGRESS`; detect the venv, the
-parallel test command and full CI command; apply the one-time concurrency-safe git config
+test command (`python scripts/run_tests.py` — bounded workers, no fail-fast; never
+`pytest -n auto`) and the local full-check command (`python scripts/run_checks.py`, the same
+one CI runs); apply the one-time concurrency-safe git config
 (`gc.auto 0`, `maintenance.auto false`, `gc.autoDetach false`); detect `ISSUE_MECHANISM`
 (the wrapper script — its absence is fatal, report and stop); record the in-progress
 convention and merge authority; then `git fetch origin --prune --no-auto-gc`.
@@ -148,8 +151,13 @@ then continue with the rest of the backlog.
   YOU run them and capture output under the worktree's `evidence/`;
   `adversarial-verifier` independently re-runs and tries to refute. Accept a fix only when
   a test reproducing the issue's reported symptom passes, the full suite is green with no
-  skip/xfail dodges, and the verifier could not refute it. Never weaken a test or a CI
-  check to go green.
+  skip/xfail dodges — cited from the CI run for the head SHA, not a local full-suite run
+  — and the verifier could not refute it. Never weaken a test or a CI check to go green.
+- **Commit often, push once, and fix a red CI run completely.** The pre-commit hook is
+  lint + security (~1 s), so commit at every task boundary; push when the batch is done,
+  never to find out whether it works. When CI comes back red, enumerate EVERY failing job
+  and every failure inside it before changing anything, group them by root cause, fix them
+  ALL, then push once. One run in, all fixes out (`ci-owns-the-test-suite.md`).
 
 # Surviving a full context window (no action needed from you)
 

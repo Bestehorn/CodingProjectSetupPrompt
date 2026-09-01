@@ -15,13 +15,17 @@ met, do not implement — run `/spec-review` (or the conductor's review loop) an
 the open A/B findings instead.
 
 Then follow `.claude/specs/_workflow/phases/spec-phase-implement.md` exactly:
-- Ensure the venv exists/active; establish the test command.
+- Ensure the venv exists/active. The test command is `python scripts/run_tests.py`
+  (bounded local workers, no fail-fast); never `pytest -n auto`.
 - For each task in `tasks.md` order: TEST tasks via `spec-implementer` (you run them,
   capture `evidence/red/<task>.txt`, assert red-for-the-right-reason); IMPL tasks via
-  `spec-implementer` (you run paired tests → `evidence/green`, full suite →
-  `evidence/regress`, then mark `[x]`). YOU run the tests and capture evidence — the
-  implementer never certifies its own work.
-- VERIFY: invoke `adversarial-verifier` (it re-runs and tries to refute every claim)
+  `spec-implementer` (you run the PAIRED tests → `evidence/green`, commit, then mark
+  `[x]`). No per-task full-suite run: commits are cheap and the regression verdict for the
+  whole batch is the ONE CI run after you push (`ci-owns-the-test-suite.md`), captured to
+  `evidence/regress/`. YOU run the tests and capture evidence — the implementer never
+  certifies its own work.
+- VERIFY: invoke `adversarial-verifier` (it takes an independent whole-suite result —
+  normally the CI run for the pushed SHA — and tries to refute every claim)
   and re-run the reviewer panel on the implemented diff; reopen tasks on any
   refutation or new A/B.
 - Write `evidence/REPORT.md` and finish by quoting the proof summary (every "passes"

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — VERSION-CONTROLLED, shared pre-push hook.
+#
+# Companion to .githooks/pre-commit. Both live in the repo's tracked `.githooks/`
+# directory, so the standard they enforce travels with the project to every clone.
+# Git runs them because the repo sets `core.hooksPath=.githooks` in local config
+# (done once per clone by `scripts/setup-hooks.sh`).
+#
+# THE SPLIT THIS HOOK IMPLEMENTS
+#   commit  -> lint + security. Fast (<2 s), so commit as often as you like.
+#   push    -> type-check. The push is the batching boundary: finish the work,
+#              commit it in as many steps as make sense, then push ONCE.
+#   CI      -> the full test suite and every other check. Authoritative.
+#
+#   Tests are deliberately NOT run here. A project whose suite takes an hour cannot
+#   afford it per push, and running it locally buys nothing that the CI run on the
+#   pushed SHA does not already prove.
+#
+# THE ONE EXCEPTION
+#   When CI cannot produce a run at all (a proven capacity refusal — see the capacity
+#   ladder in the remote-ci-must-pass rule), the pipeline still has to execute before
+#   a merge. Then it executes HERE, at push time, never at commit time. The state is
+#   recorded by `scripts/ci_outage_mode.py declare`, which writes a marker into the
+#   SHARED git dir so one declaration covers every worktree of the clone.
+#
+# Portable by design: it does NOT hardcode an absolute venv path. It locates the
+# project's venv at runtime from the main checkout, so the same committed file works on
+# every machine, OS, and inside git worktrees (where the venv lives in the MAIN
+# checkout, not the worktree).
+set -uo pipefail
+
+# Git feeds a pre-push hook one line per ref on stdin. We do not need the refs, but we
+# MUST drain stdin: leaving it unread can hand git a broken pipe on some platforms.
+push_refs="$(cat || true)"
+: "${push_refs}"
+
+# Resolve the MAIN working tree (the parent of the common git dir). From a normal
+# checkout this is the repo root; from a worktree it is the main repo root — which is
+# where the venv lives. The SAME expression gives us the shared git dir, which is where
+# the CI-outage marker lives — and being shared is the point: one declaration covers
+# every concurrent per-issue worktree in the clone.
+#
+# A RELATIVE --git-common-dir is relative to the CURRENT directory, not to the top level
+# of the working tree. Git invokes hooks from the working-tree root so the two coincide,
+# but joining against $PWD is correct either way.
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
+case "$GIT_COMMON_DIR" in
+    /*|[A-Za-z]:*) ;;                                  # already absolute
+    *) GIT_COMMON_DIR="$PWD/$GIT_COMMON_DIR" ;;
+esac
+MAIN_CHECKOUT="$(cd "$(dirname "$GIT_COMMON_DIR")" && pwd)"
+OUTAGE_MARKER="$GIT_COMMON_DIR/ci-outage-mode"
+
+# Locate the venv interpreter and pre-commit executable (Windows vs *nix layout).
+if [ -x "$MAIN_CHECKOUT/venv/Scripts/python.exe" ]; then
+    PYTHON="$MAIN_CHECKOUT/venv/Scripts/python.exe"
+    PRECOMMIT="$MAIN_CHECKOUT/venv/Scripts/pre-commit.exe"
+elif [ -x "$MAIN_CHECKOUT/venv/bin/python" ]; then
+    PYTHON="$MAIN_CHECKOUT/venv/bin/python"
+    PRECOMMIT="$MAIN_CHECKOUT/venv/bin/pre-commit"
+else
+    echo "ERROR: no venv interpreter found under $MAIN_CHECKOUT/venv" >&2
+    echo "Create/refresh the venv:  python -m venv venv && pip install -e '.[dev]'" >&2
+    exit 1
+fi
+
+# --- Type check (the push-boundary check) ----------------------------------------------
+# mypy is a whole-project analysis, so the push boundary suits it far better than the
+# commit boundary, where it would be re-warmed on every commit for a partial answer.
+# It is declared with `stages: [pre-push]` in .pre-commit-config.yaml; running the STAGE
+# rather than a hook id keeps that file the single source of truth for what runs when.
+if [ -x "$PRECOMMIT" ]; then
+    echo "pre-push: type-checking (pre-push stage hooks)..."
+    "$PRECOMMIT" run --hook-stage pre-push --all-files \
+        --config "$MAIN_CHECKOUT/.pre-commit-config.yaml" || exit $?
+else
+    echo "pre-push: WARNING — pre-commit not found in the venv; skipping the type check." >&2
+    echo "          Run: pip install -e '.[dev]' && bash scripts/setup-hooks.sh" >&2
+fi
+
+# --- Tests: CI's job, unless CI cannot run ---------------------------------------------
+if [ ! -f "$OUTAGE_MARKER" ]; then
+    echo "pre-push: CI owns the test suite — no outage declared, skipping local tests."
+    exit 0
+fi
+
+echo "pre-push: CI-OUTAGE MODE is ACTIVE — the pipeline runs locally for this push."
+sed 's/^/          /' "$OUTAGE_MARKER"
+echo "pre-push: running the full suite with bounded workers (scripts/run_tests.py)..."
+
+if [ ! -f "$MAIN_CHECKOUT/scripts/run_tests.py" ]; then
+    echo "ERROR: CI-outage mode is declared but scripts/run_tests.py is missing." >&2
+    echo "       Restore it (templates/run_tests.py.template) or clear the marker:" >&2
+    echo "       python scripts/ci_outage_mode.py clear" >&2
+    exit 1
+fi
+
+if ! "$PYTHON" "$MAIN_CHECKOUT/scripts/run_tests.py"; then
+    echo "" >&2
+    echo "pre-push: BLOCKED — the suite did not pass, and CI cannot verify this push." >&2
+    echo "          Read the output above: it is either failing tests (fix EVERY one of" >&2
+    echo "          them, then push once) or an environment problem the runner names" >&2
+    echo "          explicitly. Do not bypass with --no-verify: while CI is down this" >&2
+    echo "          hook is the only gate there is." >&2
+    exit 1
+fi
+
+echo "pre-push: suite green under CI-outage mode. Remember to run"
+echo "          'python scripts/ci_outage_mode.py clear' once CI produces a real run."
+exit 0

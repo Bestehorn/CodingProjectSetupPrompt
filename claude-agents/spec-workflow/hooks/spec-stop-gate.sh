@@ -2,10 +2,15 @@
 # spec-stop-gate.sh — Stop hook for the spec/TDD workflow. Blocks turn-end on work that is not PROVEN.
 #
 # It blocks (exit 2) while the workflow is mid-implementation and any of these holds:
-#   - a task is marked complete ([x]) in tasks.md but has no evidence capture;
-#   - the latest capture shows a failing / errored suite;
-#   - a capture contains skipped/xfail tests (the vacuous-green dodge);
+#   - a task is marked complete ([x]) in tasks.md but has no test-evidence capture;
+#   - the latest paired-test capture shows failures / errors;
+#   - a green capture contains skipped/xfail tests (the vacuous-green dodge);
 #   - the phase is IMPLEMENT/VERIFY but tasks.md DOES NOT EXIST (see fix 3 below).
+#
+# It judges PAIRED-TEST captures, not the full suite: under the CI-owns-the-test-suite
+# contract the suite runs in CI on the pushed SHA, and the push itself is gated separately
+# by spec-tdd-gate.sh. What this hook prevents is stopping with a task ticked off that no
+# test ever exercised.
 #
 # Wire it as a `Stop` hook in `.claude/settings.json`; it reads the hook JSON on stdin. Exit 0 allows the turn
 # to end, exit 2 blocks it and delivers the reason on stderr. Outside an implementation phase it is a no-op.
@@ -358,8 +363,16 @@ while IFS= read -r id; do
     fi
 done <<<"$checked_ids"
 
-# 2. The most recent green/regress capture must not show failures or vacuous greens.
-latest_green="$( { ls -t "$spec_dir"/evidence/green/*.txt "$spec_dir"/evidence/regress/*.txt 2>/dev/null; } | head -1)"
+# 2. The most recent PAIRED-TEST capture must not show failures or vacuous greens.
+#    Deliberately scoped to evidence/green/ and NOT evidence/regress/. Under the
+#    CI-owns-the-test-suite contract, a regress capture is the CI run's output for the
+#    pushed SHA (or a CI-outage full-suite run) rather than this workflow's own paired-test
+#    format — and a CI log legitimately contains failure/skip counters about OTHER jobs (a
+#    gate-skipped deploy, a failed sibling matrix leg), which would block every stop for no
+#    reason. The CI verdict is governed by remote-ci-must-pass.md and the orchestrator,
+#    which read structured wrapper output; this hook only judges the local captures whose
+#    format the workflow itself produces.
+latest_green="$(ls -t "$spec_dir"/evidence/green/*.txt 2>/dev/null | head -1)"
 if [[ -n "$latest_green" ]]; then
     # Both predicates are anchored on a runner SUMMARY COUNTER, never on a bare word. Measured with the loose
     # forms: a capture containing the test NAME `test_reports_skipped_reason PASSED` alongside
@@ -373,10 +386,10 @@ if [[ -n "$latest_green" ]]; then
     # deliberately the narrowest possible carve-out: every real runner line is still read.
     capture="$(grep -vE '^[[:space:]]*#' "$latest_green" 2>/dev/null)"
     if grep -qiE '[1-9][0-9]* (failed|failure|failures|error|errors)\b' <<<"$capture"; then
-        problems+="  - latest test capture ($latest_green) shows failures/errors — the suite is not green."$'\n'
+        problems+="  - latest paired-test capture ($latest_green) shows failures/errors — the tests are not green."$'\n'
     fi
     if grep -qiE '[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b' <<<"$capture"; then
-        problems+="  - latest test capture ($latest_green) contains skipped/xfail tests — resolve them rather than stopping."$'\n'
+        problems+="  - latest paired-test capture ($latest_green) contains skipped/xfail tests — resolve them rather than stopping."$'\n'
     fi
 fi
 

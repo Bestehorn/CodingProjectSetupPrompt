@@ -64,7 +64,8 @@ evidence-proven code in one session.
 | `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
 | `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
 | `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; questions must carry a recommendation; context pressure is not a stop reason (all agents + main session) |
-| `hooks/*.sh` | TDD/evidence gates (commit gate, stop gate, red-for-right-reason) + the issue-filing gate |
+| `rules/ci-owns-the-test-suite.md` | WHERE tests run: affected tests locally, full suite in CI, never as a commit precondition; commit often and push once; bounded local workers (never `-n auto`); fix EVERY failure a CI run reports in one pass (all agents + main session) |
+| `hooks/*.sh` | TDD/evidence gates (PUSH gate, stop gate, red-for-right-reason) + the issue-filing gate |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
 `spec-prompt-author-agent`). The four `/spec-*` slash commands live in
@@ -116,8 +117,9 @@ issues, and the subject mix drifted from the product to the workflow machinery.
 Whenever local code must be integrated with the remote and a conflict arises, the work
 is delegated to `code-merge-reviewer` — a dedicated subagent that reviews the merge
 holistically, resolves every conflict **line by line** preserving both sides' intent,
-forbids blind "take theirs/ours", and re-runs the test suite to prove no regression
-before declaring the merge done. The `issue-work-orchestrator` delegates all conflict
+forbids blind "take theirs/ours", and re-runs the affected tests to prove no regression
+before declaring the merge done (the whole-suite check is the CI run after the push —
+`rules/ci-owns-the-test-suite.md`). The `issue-work-orchestrator` delegates all conflict
 resolution to it (in Remote Sync and the PR rebase); any agent doing merges should too.
 Full docs: [`code-merge-reviewer/README.md`](code-merge-reviewer/README.md).
 

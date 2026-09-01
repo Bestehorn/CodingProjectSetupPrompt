@@ -6,8 +6,13 @@
 # turn-end when the spec workflow is mid-implementation and the work is not honestly
 # proven, i.e. any of:
 #   - a task is marked complete ([x]) in tasks.md but has no evidence capture;
-#   - the latest evidence capture shows a failing / errored suite;
+#   - the latest paired-test capture shows failures / errors;
 #   - a green capture contains skipped/xfail tests (vacuous-green dodge).
+#
+# It judges PAIRED-TEST captures, not the full suite: under the ci-owns-the-test-suite
+# contract the suite runs in CI on the pushed SHA, and the push itself is gated separately
+# by kiro-tdd-gate.sh. What this hook prevents is stopping with a task ticked off that no
+# test ever exercised.
 #
 # HOW BLOCKING WORKS IN KIRO (differs from Claude Code's exit-2 Stop hook):
 #   A stop hook blocks by writing `{"decision":"block","reason":"..."}` to STDOUT and
@@ -96,14 +101,27 @@ while IFS= read -r line; do
   fi
 done < <(grep -E '^[[:space:]]*-[[:space:]]*\[[xX]\]' "$tasks")
 
-# 2. The most recent green/regress capture must not show failures.
-latest_green="$(ls -t "$spec_dir"/evidence/green/*.txt "$spec_dir"/evidence/regress/*.txt 2>/dev/null | head -1)"
+# 2. The most recent PAIRED-TEST capture must not show failures.
+#    Deliberately scoped to evidence/green/ and NOT evidence/regress/. Under the
+#    ci-owns-the-test-suite contract, a regress capture is the CI run's output for the
+#    pushed SHA rather than a local full-suite run — and a CI log legitimately contains the
+#    words "failed" and "skipped" about OTHER jobs (a gate-skipped deploy, a failed sibling
+#    matrix leg), which would block every stop for no reason. The CI verdict is governed by
+#    remote-ci-must-pass.md and the orchestrator, which read structured wrapper output; this
+#    hook only judges the local captures whose format the workflow itself produces.
+latest_green="$(ls -t "$spec_dir"/evidence/green/*.txt 2>/dev/null | head -1)"
 if [[ -n "$latest_green" ]]; then
-  if grep -qiE '[1-9][0-9]* failed|[1-9][0-9]* error' "$latest_green"; then
-    problems+="  - latest test capture ($latest_green) shows failures/errors — the suite is not green."$'\n'
+  # Predicates are anchored on a runner SUMMARY COUNTER, never a bare word, and comment
+  # lines are stripped first — a test NAME containing "skipped" or an agent's own
+  # '# earlier this run: 3 failed' annotation must not be read as a failing/vacuous run
+  # (mirrors spec-stop-gate.sh: an evidence gate whose cheapest escape is editing the
+  # evidence is worse than none).
+  capture="$(grep -vE '^[[:space:]]*#' "$latest_green" 2>/dev/null)"
+  if grep -qiE '[1-9][0-9]* (failed|failure|failures|error|errors)\b' <<<"$capture"; then
+    problems+="  - latest paired-test capture ($latest_green) shows failures/errors — the tests are not green."$'\n'
   fi
-  if grep -qiE 'skipped|xfail|xpassed' "$latest_green"; then
-    problems+="  - latest test capture ($latest_green) contains skipped/xfail tests — resolve them rather than stopping."$'\n'
+  if grep -qiE '[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b' <<<"$capture"; then
+    problems+="  - latest paired-test capture ($latest_green) contains skipped/xfail tests — resolve them rather than stopping."$'\n'
   fi
 fi
 

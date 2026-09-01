@@ -21,7 +21,8 @@ operations through the wrapper script (`use-git-wrapper-scripts.md`), venv disci
 (`keep-git-clean.md`), keep the issue as the live record (`issue-tracking.md`), never put
 Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-By` or
 `🤖 Generated with Claude Code` trailer (`no-ai-attribution.md`), CI must be green
-(`remote-ci-must-pass.md`), and log every material decision as `DL-NNN`
+(`remote-ci-must-pass.md`), tests run in CI and not on every commit
+(`ci-owns-the-test-suite.md`), and log every material decision as `DL-NNN`
 (`agent-state-convention.md`). Never touch `.kiro/`.
 
 **Step 0: Single-issue mode (state + autonomy)**
@@ -88,7 +89,9 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      substantive `AWAITING_USER` — with the human-readable reason in prose beside it. Writing
      the reason only in chat is what makes a legitimate stop look like an abandoned one.
    - Complete Discovery D1–D2 if `environment.md` is not already recorded: source/test
-     layout, venv, the parallel test command and full CI command, the one-time
+     layout, venv, the test command (`python scripts/run_tests.py` — bounded workers, no
+     fail-fast; never `pytest -n auto`) and the local full-check command
+     (`python scripts/run_checks.py`, the same one CI runs), the one-time
      concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
      `gc.autoDetach false`), and `ISSUE_MECHANISM` (the wrapper script — its absence is
      fatal, report and stop). Record the in-progress convention and the merge authority.
@@ -180,9 +183,13 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `git -C <worktree> commit` with a descriptive message referencing issue X (no AI
      attribution). This is a distinct commit, not folded into the implementation commit,
      so the reviewed spec is in the repo's history independent of the code.
-   - Push it so the spec is visible on the remote and the branch exists before
-     implementation: `git -C <worktree> push -u origin <branch>`. Never `--no-verify`; if
-     a pre-commit or pre-push hook fails, fix the cause.
+   - **Do NOT push it on its own.** The commit is the gate; a separate push is not. A push
+     triggers a CI run over a branch with no code change in it, which is a pipeline run
+     spent on nothing (`ci-owns-the-test-suite.md`: push once, when the batch is
+     complete). The branch gets pushed in Step 7, and the spec commit rides along with its
+     own history intact. If this project specifically requires the spec to be visible on
+     the remote before implementation, push here and note in `DL-NNN` that the extra run
+     was a deliberate cost.
    - Confirm the gate with quoted evidence: `git -C <worktree> log --stat -1` showing the
      spec files, and `git -C <worktree> status --porcelain` clean of spec artifacts. Post a
      short progress comment on issue X with the branch and spec location, and append a
@@ -192,10 +199,16 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Type2: `spec-phase-implement.md` IMPLEMENT_LOOP per task — RED (a failing test that
      reproduces the reported symptom; confirm RED-FOR-THE-RIGHT-REASON via
      `.claude/hooks/red-for-right-reason.sh` — assertion failure, not an import/collection
-     error) → GREEN (minimal fix) → full-suite regression check, YOU capturing every run
-     into `<worktree>/.claude/specs/<slug>/evidence/`. Type1: the same RED → GREEN →
-     regress cycle without the design panel. Then run `adversarial-verifier` and produce
+     error) → GREEN (minimal fix, paired tests only via
+     `python scripts/run_tests.py <paths>`) → COMMIT, YOU capturing every run into
+     `<worktree>/.claude/specs/<slug>/evidence/`. Type1: the same RED → GREEN → commit
+     cycle without the design panel. Then run `adversarial-verifier` and produce
      `evidence/REPORT.md`.
+   - **No per-task full-suite run.** Commit per task instead — the pre-commit hook is lint
+     + security, about a second. The regression verdict for the whole batch is the CI run
+     after Step 7's single push (`ci-owns-the-test-suite.md`). Run the affected module
+     locally when a change plainly reaches past its paired tests; never `pytest -n auto`,
+     and never two worktrees running suites at the same time.
    - Evidence, not assertion: `spec-implementer` writes code and tests but never certifies
      them; YOU run the tests and capture the output; `adversarial-verifier` independently
      re-runs and tries to refute.
@@ -205,13 +218,15 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      (`git -C <worktree> fetch origin --prune --no-auto-gc` then
      `git -C <worktree> rebase origin/<main>`), delegating ANY conflict to
      `code-merge-reviewer` — never resolve one yourself, never `-X ours/theirs`, never
-     `checkout --ours/--theirs`. Re-run the suite after an integration.
+     `checkout --ours/--theirs`. Re-run the AFFECTED tests after an integration; the
+     whole-suite check is the CI run in Step 7.
    - PROOF_GATE: accept only when a test reproducing the issue's REPORTED SYMPTOM now
-     passes (cite it), the full suite is green with no skip/xfail dodges (cite the
-     capture), `adversarial-verifier` returned VERIFIED, coverage of changed code meets
-     the project threshold, and — for a bugfix — regressions cover the Unchanged Behavior
-     clauses. On insufficient proof, record why as `DL-NNN` and reject back to implement
-     (cap ~5 cycles, then escalate once).
+     passes (cite it), the full suite is green with no skip/xfail dodges — cite the CI run
+     for the head SHA (run id + SHA), or the `pre-push` hook's local run while CI-OUTAGE
+     MODE is declared — `adversarial-verifier` returned VERIFIED, coverage of changed code
+     meets the project threshold, and — for a bugfix — regressions cover the Unchanged
+     Behavior clauses. On insufficient proof, record why as `DL-NNN` and reject back to
+     implement (cap ~5 cycles, then escalate once).
    - DEFECTS YOU DISCOVER ALONG THE WAY (`issue-filing-discipline.md`): blocking → absorb
      into this change; small and clear (a few lines, no design choice) → **fix it now** in
      this worktree and mention it in the commit/PR, do NOT file it; needs extensive
@@ -224,11 +239,16 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `evidence/REPORT.md`), then commit the code, tests, and evidence with an
      evidence-based message referencing issue X.
 
-**Step 7: PR → CI green → merge**
+**Step 7: PR → CI green → merge (ONE push, ONE run per fix batch)**
    - Remote Sync the worktree once more, rebase on the latest `origin/<main>`, delegate any
-     conflict to `code-merge-reviewer`, and re-run the full suite after integrating.
-   - Ensure everything that belongs is committed (`git -C <worktree> status`), run the full
-     CI command locally in the worktree until green (capture evidence), then push.
+     conflict to `code-merge-reviewer`, and re-run the AFFECTED tests after integrating.
+   - Ensure everything that belongs is committed (`git -C <worktree> status`). Optionally
+     run `python scripts/run_checks.py --group lint --group types` for the fast groups —
+     they cost seconds and catch the embarrassing failures before the run. Do NOT run the
+     full CI command locally to pre-check the pipeline: that is the hour-long duplicate of
+     what CI is about to do anyway (`ci-owns-the-test-suite.md`).
+   - **Push ONCE.** The push triggers the pre-push hook (mypy, plus the full suite if
+     CI-OUTAGE MODE is declared) and then the CI run that is the authoritative verdict.
    - Open the PR via `create-pr` (base `main`, head `<branch>`, body linking issue X and
      the evidence). Title and body describe the change only — strip any AI-attribution
      line the tool adds. Record `PR` (that field name).
@@ -236,9 +256,13 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      protection forbids self-approval, set `AWAITING_USER: waiting for external approval
      of PR #<n>`, poll `get-pr` on an interval, checkpoint between polls, and merge once
      approved and CI is green; clear `AWAITING_USER` back to `none` after merging.
-   - Monitor CI to a terminal state via `get-pr-checks` / `list-runs` + `get-logs`. On
-     failure retrieve the COMPLETE logs, diagnose with evidence, fix at root cause in the
-     worktree, re-push, re-monitor — loop until green. Never abandon a red pipeline.
+   - Monitor CI to a terminal state via `get-pr-checks` / `list-runs` + `get-logs`.
+     **On failure, fix the whole run in one pass:** retrieve the COMPLETE logs of EVERY
+     non-successful job (the pipeline does not fail fast, so a red run is the complete
+     list), enumerate every failing test and check, group them by root cause and record
+     `N failures across M jobs → K root causes` as `DL-NNN`, fix them ALL at root cause in
+     the worktree committing as you go, then push ONCE and re-monitor. Fixing one failure
+     and re-pushing to discover the next is forbidden. Never abandon a red pipeline.
 
 **Step 8: Clean up, close, and STOP**
    - Confirm the merge landed on the trunk WITHOUT touching local `main`:
@@ -264,11 +288,12 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `Phase: DONE (was IMPLEMENT)`), and an unrecorded belief that you are finished releases
      nothing.
    - **Then STOP.** Report: issue X, the PR link, the spec-artifact commit, the proof
-     summary, and confirmation that no worktree, branch, or lock of this run survives and
-     the shared local `main` was never moved. Do NOT select another issue — that is what
-     `/issues-work` (or `/auto-work`, for an unattended whole-backlog run) is for. Use those
-     when you want the next workable issue picked for you. If other workable issues remain,
-     say so and let the user decide.
+     summary, how many CI runs the fix took and what each surfaced, and confirmation that
+     no worktree, branch, or lock of this run survives and the shared local `main` was
+     never moved. Do NOT select another issue — that is what `/issues-work` (or
+     `/auto-work`, for an unattended whole-backlog run) is for. Use those when you want
+     the next workable issue picked for you. If other workable issues remain, say so and
+     let the user decide.
 
 **Escalation and the ambiguous-issue path**
    - If X is too ambiguous to derive testable acceptance criteria even after research, post

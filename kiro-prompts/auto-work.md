@@ -45,8 +45,9 @@ six-reviewer design panel in waves of at most four.
    the worktree, periodically during long fixes, before opening the PR, and after each
    merge. `git fetch origin --prune --no-auto-gc`, rebase YOUR branch onto
    `origin/<main>`, and delegate ANY conflict to `code-merge-reviewer` — never resolve one
-   yourself, never `-X ours/theirs`, never `checkout --ours/--theirs`. Re-run the suite
-   after every integration. Re-retrieve the issue list FRESH every iteration; never reuse
+   yourself, never `-X ours/theirs`, never `checkout --ours/--theirs`. Re-run the AFFECTED
+   tests after every integration (the whole-suite check is the CI run after the push —
+   steering `ci-owns-the-test-suite.md`). Re-retrieve the issue list FRESH every iteration; never reuse
    a previous snapshot (issues get closed or claimed while you work).
 5. **ONE GIT WORKTREE PER ISSUE, AND LEAVE GIT CLEAN.** Work in
    `.kiro/worktrees/issue-<N>/` cut off freshly-fetched `origin/<main>` with an explicit
@@ -61,7 +62,9 @@ six-reviewer design panel in waves of at most four.
 Run Discovery D0–D5 from the agent definition: establish identity from
 `.kiro/agent-state/issue-work-orchestrator/registry.json` (the `kiro-session-register.sh`
 hook keys it by session); resume THIS run's `runs/<run-id>/resume_state.md` if it shows
-`Status: IN_PROGRESS`; detect the venv, the parallel test command and full CI command;
+`Status: IN_PROGRESS`; detect the venv, the test command
+(`python scripts/run_tests.py` — bounded workers, no fail-fast; never `pytest -n auto`)
+and the local full-check command (`python scripts/run_checks.py`, the same one CI runs);
 apply the one-time concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
 `gc.autoDetach false`); detect `ISSUE_MECHANISM` (the wrapper script — its absence is
 fatal, report and stop); record the in-progress convention and merge authority; then
@@ -109,7 +112,8 @@ refresh → LOAD_ISSUES.
 - Proof, not assertion: `spec-implementer` writes code and tests but never certifies them;
   YOU run them and capture output under the worktree's `evidence/`;
   `adversarial-verifier` independently re-runs and tries to refute. Accept a fix only when
-  a test reproducing the issue's reported symptom passes, the full suite is green with no
+  a test reproducing the issue's reported symptom passes, the full suite is green — cited
+  from the CI run for the head SHA rather than a local full-suite run — with no
   skip/xfail dodges, and the verifier could not refute it. Never weaken a test or a CI
   check to go green.
 

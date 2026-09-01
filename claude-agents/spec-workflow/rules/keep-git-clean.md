@@ -18,15 +18,21 @@ When deciding whether a changed/untracked file belongs in the repository:
 
 - **COMMIT** (these belong in version control): source code, tests, configuration
   (`pyproject.toml`, `.pre-commit-config.yaml`, CI config), documentation, IaC/CDK
-  code, scripts, the tracked git hooks (`.githooks/`), spec artifacts the project keeps
-  under version control, and `.gitignore`/`.gitattributes` updates.
+  code, scripts, the tracked git hooks (`.githooks/`), the secret-scan baseline
+  (`.secrets.baseline` — it is the audited allow-list, so it must travel with the repo or
+  the pre-commit hook fails on every clone), spec artifacts the project keeps under version
+  control, and `.gitignore`/`.gitattributes` updates.
 - **NEVER COMMIT** (auto-generated, transient, or machine-local): build artifacts and
   compiled output (`build/`, `dist/`, `*.egg-info/`, `*.pyc`, `__pycache__/`,
   `*.so`), caches (`.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.hypothesis/`),
-  coverage output (`.coverage`, `htmlcov/`), virtual environments (`venv/`, `.venv/`),
-  editor/OS cruft, secrets and credentials, anything under `tmp/`, generated version
-  files (`src/_version.py`), and per-run agent state (`.claude/agent-state/`,
-  `.claude/worktrees/`).
+  coverage output (`.coverage`, `htmlcov/`), check/test reports written by
+  `scripts/run_checks.py` and `scripts/run_tests.py` (`reports/`), virtual environments
+  (`venv/`, `.venv/`), editor/OS cruft, secrets and credentials, anything under `tmp/`,
+  generated version files (`src/_version.py`), and per-run agent state
+  (`.claude/agent-state/`, `.claude/worktrees/`).
+
+Committing often is encouraged (`ci-owns-the-test-suite.md`) and is NOT a licence to skip
+this classification: `git add -A` on every small commit is how generated files get in.
 
 The general principle: **auto-generated and temporary files are never committed;
 everything else that is part of the project IS committed.** If a file that should

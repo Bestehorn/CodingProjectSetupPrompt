@@ -77,10 +77,14 @@ fallback (e.g. a clean merge instead of a rebase) rather than forcing a bad reso
 After the tree is conflict-free:
 - Confirm no markers remain: `git -C <target> grep -nE '^(<<<<<<<|=======|>>>>>>>)'`
   returns nothing.
-- Run the project's FULL test suite in the target (inside the venv); capture complete
-  output. The suite MUST be green. A failure introduced by the merge means a side's
-  change was lost or two changes interact badly — go back to step 2 and fix the
-  resolution (do NOT weaken or skip the test). Re-run until green.
+- Run the AFFECTED tests in the target (inside the venv) — the tests paired with the
+  files the merge touched, via `python scripts/run_tests.py <paths>` where the project
+  ships it; capture complete output. They MUST be green. A failure introduced by the
+  merge means a side's change was lost or two changes interact badly — go back to
+  step 2 and fix the resolution (do NOT weaken or skip the test). Re-run until green.
+  The whole-suite regression verdict comes from the CI run after the push
+  (`ci-owns-the-test-suite.md`); run the full suite locally only under a declared
+  CI outage.
 - Where practical, sanity-check that BOTH integrated sides' behaviors are still
   exercised (the tests for each side still pass), confirming neither was silently
   dropped.

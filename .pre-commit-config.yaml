@@ -1,23 +1,87 @@
 # Pre-commit configuration for THIS repository (the prompt/agent authoring repo).
 #
-# The tracked git hook `.githooks/pre-commit` (wired via core.hooksPath) runs exactly
-# two hook ids from this file on the staged files of every commit: `ruff` then
-# `ruff-format`. Without this file that hook fails, so it is required here even though
-# most of the repository is Markdown/JSON prompt material.
+# The `stages:` field on each hook decides WHEN it runs, and the tracked git hooks in
+# `.githooks/` run whole STAGES rather than named ids — so this file is the single source of
+# truth for the commit/push split this repository ships in
+# `templates/pre-commit-config.yaml.template`:
 #
-# Only the fast lint/format pair is defined. mypy and pytest are deliberately absent:
-# this repo has no `src/` package to type-check, and the CV suite's tests are run from
-# `cli-agents/cv/` with its own pytest.ini rather than from the repo root.
+#   pre-commit  ruff, ruff-format, detect-secrets, detect-private-key, bandit   (< 2 s)
+#   manual      pytest (the CV suite)
+#
+# Do not remove the `stages:` keys. Without them pre-commit defaults a hook to the
+# pre-commit stage, which is exactly how a slow hook ends up running on every commit.
+#
+# WHY THERE IS NO pre-push STAGE HERE
+#   The template puts mypy at pre-push. This repository has no `src/` package to
+#   type-check — it is Markdown/JSON prompt material plus the CV suite under
+#   `cli-agents/cv/` — so mypy is absent and `.githooks/pre-push` simply finds no
+#   pre-push-stage hooks to run. Its other job still applies: if CI-OUTAGE MODE is ever
+#   declared here (`python scripts/ci_outage_mode.py declare`), it runs the suite at push
+#   time.
+#
+# WHY pytest IS `stages: [manual]`
+#   Tests are never a commit gate. Note this repository has NO CI pipeline of its own — it
+#   ships prompts, and its only Python is the CV agent suite under `cli-agents/cv/` — so
+#   here the suite is genuinely run on demand (`python scripts/run_tests.py`, or
+#   `pre-commit run --hook-stage manual pytest`) rather than by a pipeline. In a project set
+#   up BY these prompts, CI owns it; the shape of the hooks is the same either way, which is
+#   the point of dogfooding them here.
 #
 # Python in this repository lives under `cli-agents/cv/` (shared scripts + tests) plus
-# `templates/*.py.template` files, which are NOT valid standalone modules and are
-# excluded. Prompt/documentation files are untouched by these hooks.
+# `templates/*.py.template` files, which are NOT valid standalone modules and are excluded.
+# Prompt/documentation files are untouched by these hooks.
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
       - id: ruff
         args: [--fix]
+        stages: [pre-commit]
         exclude: ^(venv/|tmp/|templates/|old/|workspace/)
       - id: ruff-format
+        stages: [pre-commit]
         exclude: ^(venv/|tmp/|templates/|old/|workspace/)
+
+  # A pushed credential cannot be un-pushed, so secret detection is the one check that has
+  # to be earlier than CI. This repository is full of prompt text describing tokens and
+  # credential files, so the baseline is doing real work here: generate it with
+  #   detect-secrets scan > .secrets.baseline
+  # and re-run that after auditing a legitimate finding.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        stages: [pre-commit]
+        exclude: ^(venv/|tmp/|\.secrets\.baseline$)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+        stages: [pre-commit]
+
+  # Scoped to the only real Python in this repo. `templates/` is excluded because a
+  # `*.py.template` is not a valid module, and the CV tests are test code.
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.6
+    hooks:
+      - id: bandit
+        args: [-ll]
+        stages: [pre-commit]
+        files: ^cli-agents/cv/shared/
+        exclude: ^(venv/|tmp/|templates/)
+
+  - repo: local
+    hooks:
+      # On demand only — CI owns the suite. Run from cli-agents/cv/, which has its own
+      # pytest.ini; there is no root-level suite to run.
+      - id: pytest
+        name: pytest (manual — never a commit gate; runs the CV suite)
+        entry: python scripts/run_tests.py
+        language: system
+        stages: [manual]
+        pass_filenames: false
+        always_run: true

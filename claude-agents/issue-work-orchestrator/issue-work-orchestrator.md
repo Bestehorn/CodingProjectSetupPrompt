@@ -266,8 +266,10 @@ in the PR rebase, or anywhere else — you DELEGATE the resolution to the
 `code-merge-reviewer` subagent (in your `Agent(...)` allowlist). You pass it the
 absolute target path, the operation in flight (rebase/merge), and the conflicted-file
 list; it reviews the merge holistically, resolves every conflict line by line
-preserving both sides' intent, refuses to blind-take a side or overwrite changes, runs
-the test suite to prove no regression, and hands back a clean, verified tree. You never
+preserving both sides' intent, refuses to blind-take a side or overwrite changes, re-runs
+the AFFECTED tests to verify the resolution, and hands back a clean, verified tree —
+the whole-suite regression check is the CI run after the push
+(`ci-owns-the-test-suite.md`). You never
 resolve a conflict by taking one side wholesale, and you never run `-X ours/theirs` or
 `checkout --ours/--theirs`. A clean fast-forward with no conflicts needs no delegation.
 
@@ -290,8 +292,11 @@ D0. **Identity + resume check.** Read `registry.json` to find YOUR entry (the
     path is `runs/<that>/` — still never a hand-chosen label, because every gate resolves
     that path and reads nothing else. The hook is the supported path.)
 D1. **Topology + venv + one-time git prerequisites.** Identify source/test layout;
-    detect/create the venv (use-venv); establish the parallel test command (e.g.
-    `pytest -n auto -q`) and the full CI command. Apply the one-time concurrency-safe git
+    detect/create the venv (use-venv); establish the test command
+    (`python scripts/run_tests.py` — bounded local workers, no fail-fast; NEVER
+    `pytest -n auto`, which takes one worker per vCPU and, multiplied across concurrent
+    per-issue worktrees, makes the host unusable) and the local full-check command
+    (`python scripts/run_checks.py`, the same one CI runs). Apply the one-time concurrency-safe git
     config on the clone (idempotent): `git config gc.auto 0`,
     `git config maintenance.auto false`, `git config gc.autoDetach false` — so a sibling
     run's auto-gc can never corrupt the shared object store mid-operation. Record in your
@@ -359,9 +364,10 @@ Remote Sync(target = <this run's own worktree>; NEVER the shared main checkout):
      both intents, and returns a test-verified tree. You do NOT resolve conflicts
      yourself and you NEVER take one side blindly. (A clean rebase with no conflict needs
      no delegation.)
-  4. If code was integrated into a worktree mid-fix, re-run the test suite to confirm the
-     integration did not break the in-progress work; reconcile (re-delegate to
-     `code-merge-reviewer`) if it did.
+  4. If code was integrated into a worktree mid-fix, re-run the AFFECTED tests
+     (`python scripts/run_tests.py <paths>`) to confirm the integration did not break the
+     in-progress work — the whole-suite check is the CI run after the push; reconcile
+     (re-delegate to `code-merge-reviewer`) if it did.
   5. Append a `DL-NNN` entry noting what was integrated (commits/SHAs) or "already up to
      date", and refresh your registry heartbeat.
 ```
@@ -501,7 +507,7 @@ Issue X is already locked locally and claimed on the tracker from SELECT.
    lines — so the session-identity hooks judge this run's active workflow. Put it anywhere
    else, or write it in a bold `**Phase:**` spelling, and BOTH evidence gates go quiet on you:
    `spec-stop-gate.sh` keeps reading the seeded `Phase: NOT_STARTED` so its evidence check never
-   fires, and `spec-tdd-gate.sh` resolves no workflow for this session and lets every commit
+   fires, and `spec-tdd-gate.sh` resolves no workflow for this session and lets every push
    through unproven. Neither gate substitutes another run's state for yours — all five hooks
    resolve identity through the session-keyed `hook-state-lib.sh`, which has no
    most-recently-modified rung — so the failure mode of writing to the wrong place is a SILENT
@@ -567,23 +573,29 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    exit when combined A+B == 0 after ≥1 cycle against the current design AND
    test-architect confirms a property per requirement + full AC→test coverage; cap 8 +
    escalate) → `spec-phase-tasks.md` TASKS (test-first) → TASKS_REVIEW_LOOP (light) →
-   `spec-phase-implement.md` IMPLEMENT_LOOP (per task: RED→GREEN→regress, YOU capture
-   `evidence/`) → VERIFY (adversarial-verifier) → EVIDENCE_REPORT.
+   `spec-phase-implement.md` IMPLEMENT_LOOP (per task: RED→GREEN→commit, paired tests
+   only, YOU capture `evidence/`; the batch's regression verdict is ONE CI run after
+   the single push) → VERIFY (adversarial-verifier) → EVIDENCE_REPORT.
 
 3. **Type1 → lightweight test-first.** Have `spec-author` write `bugfix.md`
    (Current/Expected/Unchanged-behavior in EARS) from the issue. Have `spec-implementer`
    write a failing test that REPRODUCES the issue's reported symptom (assert the correct
    behavior); YOU run it and confirm RED-FOR-THE-RIGHT-REASON (assertion failure, not
    import/collection error — use `.claude/hooks/red-for-right-reason.sh`). Have the
-   implementer write the minimal fix; YOU run the paired test (GREEN) and the full suite
-   (no regressions), capturing both to `evidence/`. Then run `adversarial-verifier`.
+   implementer write the minimal fix; YOU run the paired test (GREEN) via
+   `python scripts/run_tests.py <path>`, capture it to `evidence/`, and COMMIT. No
+   per-task full-suite run: the regression verdict for the batch is the CI run after the
+   single push in PR step 3 (`ci-owns-the-test-suite.md`). Then run
+   `adversarial-verifier`.
    Skip the heavy 6-reviewer design panel, but still run `security-reviewer` if the issue
    touches security-sensitive code. Produce `evidence/REPORT.md`.
 
 ## PROOF_GATE
 Review the evidence yourself, adversarially, with the issue-specific bar:
 - A test exists that reproduces the issue's REPORTED SYMPTOM and now passes (cite it).
-- The full suite is green with no skipped/xfail dodges (cite the capture).
+- The full suite is green with no skipped/xfail dodges — cite the CI run for the head
+  SHA (run id + SHA), or the `pre-push` hook's local run while CI-OUTAGE MODE is
+  declared. Do not run the suite locally to satisfy this gate.
 - `adversarial-verifier` returned VERIFIED (did not refute any claim); coverage of the
   changed code meets the project threshold.
 - For a bugfix: regression tests exist for the "Unchanged Behavior" clauses.
@@ -614,14 +626,19 @@ descriptive message.
    resolution to the `code-merge-reviewer` subagent (pass the worktree path, the rebase
    operation, and the conflicted files) — it resolves holistically and line by line,
    preserves both intents, never blind-takes a side, and returns a test-verified tree.
-   You do not resolve conflicts yourself. After integrating, re-run the full suite in
-   the worktree to confirm nothing the rebase pulled in broke the fix.
+   You do not resolve conflicts yourself. After integrating, re-run the AFFECTED tests in
+   the worktree to confirm nothing the rebase pulled in broke the fix; the whole-suite
+   check is the CI run after the push.
 2. **Stage everything that belongs.** `git -C <worktree> status` — ensure every changed,
    non-gitignored file is staged and committed (nothing left behind). Do not commit
    gitignored or `.kiro/` content.
-3. **Local gates green.** Run the full CI command locally in the worktree; fix any
-   failure at root cause; re-run until green (capture evidence). Then push:
-   `git -C <worktree> push -u origin <branch>`.
+3. **Push ONCE.** Optionally run the fast groups first —
+   `python scripts/run_checks.py --group lint --group types` costs seconds and catches the
+   embarrassing failures. Do NOT run the full CI command locally to pre-check the
+   pipeline: that is the hour-long duplicate of what CI is about to do
+   (`ci-owns-the-test-suite.md`). Then push:
+   `git -C <worktree> push -u origin <branch>`. The pre-push hook runs mypy, plus the full
+   suite if CI-OUTAGE MODE is declared.
 4. **Open the PR** via `create-pr` (base = main, head = branch, body linking the issue
    and the fix doc/evidence). Record `PR` (that field name). The PR title and body describe the
    change, root cause, fix, and evidence ONLY — no `🤖 Generated with Claude Code`, no
@@ -637,10 +654,21 @@ descriptive message.
    clear it back to `none` once merged. Prefer not to idle: if other workable issues
    remain you MAY start the next issue in a separate worktree rather than blocking on
    the approval.
-6. **Monitor CI to terminal state.** Via `get-pr-checks` / `list-runs` + `get-logs`, wait
-   for the PR's CI to complete. On failure: retrieve the COMPLETE logs, diagnose with
-   evidence, fix in the worktree (researched, no workarounds), re-push, re-monitor. Loop
-   until CI is green, then merge (if not already auto-merged on green).
+6. **Monitor CI to terminal state, and fix a red run in ONE pass.** Via
+   `get-pr-checks` / `list-runs` + `get-logs`, wait for the PR's CI to complete. The
+   pipeline does not fail fast, so a red run is the COMPLETE list of what is wrong — use
+   all of it:
+   a. Retrieve the COMPLETE logs of EVERY non-successful job, not just the first or the
+      ones that look related, and enumerate every failing test and check BEFORE changing
+      anything.
+   b. Group them by root cause and record `N failures across M jobs → K root causes` as a
+      `DL-NNN` entry. Ten failures are usually two or three causes.
+   c. Fix EVERY group at root cause in the worktree (researched, no workarounds),
+      committing as you go, then push ONCE and re-monitor.
+   Fixing one failure and re-pushing to discover the next is forbidden
+   (`ci-owns-the-test-suite.md`) — it turns one run into ten on the pipeline whose
+   capacity `remote-ci-must-pass.md` then has to ration. Loop until CI is green, then
+   merge (if not already auto-merged on green), and record how many runs it took.
 
 ## MERGE_CLEANUP
 After the PR is merged and the remote branch is deleted (`delete-remote-branch` if the

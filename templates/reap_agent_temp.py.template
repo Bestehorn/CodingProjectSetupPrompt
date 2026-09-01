@@ -1,0 +1,342 @@
+#!/usr/bin/env python
+"""Reclaim temp-directory residue left by agent tooling. Read-only unless --apply.
+
+WHY THIS EXISTS
+    Several tools in this stack write into the OS temp directory and never clean up.
+    Measured, reported, and unbounded:
+
+      * every `cdk` invocation creates a `jsii-kernel-XXXXXX` directory that is never
+        removed (aws/jsii#700);
+      * the CDK CLI writes randomized `cdk.out<hash>` cloud assemblies into $TMPDIR, so
+        nothing is ever reused or overwritten — one report accumulated 170 GB in two days
+        (aws/aws-cdk-cli#802);
+      * nested `cdk.out/asset` trees in %TEMP% have broken Windows outright, and were
+        removable only with `robocopy <empty> <target> /purge` because the paths exceeded
+        what rmdir and Explorer handle (aws/aws-cdk#11730).
+
+    There is also a CORRECTNESS reason, not just a disk one: an interrupted bundling
+    leaves `bundling-temp-<hash>` / an empty `asset.<hash>` behind, and CDK SKIPS
+    re-bundling when that directory already exists — so the residue of an aborted session
+    makes a LATER deploy fail (aws/aws-cdk#33201, #25711). Reaping is part of keeping the
+    next run correct.
+
+THE OWNERSHIP RULE, AND WHY IT IS SAFE
+    Concurrent agent sessions share one temp directory, so deleting another session's
+    in-flight scratch would corrupt its run. Two tiers, and neither needs cross-run
+    bookkeeping:
+
+    1. Anything under --scoped-temp is PROVABLY ours (that directory is this tree's own
+       TMPDIR/TEMP/TMP, set per worktree), so it is removed wholesale.
+    2. Outside it, an entry is removed only when it MATCHES A KNOWN PATTERN and has not
+       been modified for --quiet-minutes. That second half is the ownership proxy: these
+       tools never touch a temp directory again once their process exits, so an entry
+       untouched for 30 minutes belongs to a process that is gone. A sibling's long
+       `cdk synth` keeps writing into its own jsii-kernel dir, so its mtime stays fresh
+       and it is skipped. Anything unmatched is reported and never touched.
+
+    The script never deletes outside a temp root, never follows symlinks out of one, and
+    refuses to operate on a temp root that is a parent of the project directory.
+
+USAGE
+    python scripts/reap_agent_temp.py                      # report only (default)
+    python scripts/reap_agent_temp.py --apply              # delete what it reports
+    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply
+    python scripts/reap_agent_temp.py --json               # machine-readable summary
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Directory-name patterns that are unbounded agent-tool residue. Anchored, case-insensitive.
+# Deliberately NOT included: package caches (npm _cacache, pip, uv). Those are bounded,
+# self-managing, and deleting them costs rebuild time without fixing a leak.
+RESIDUE_PATTERNS: tuple[str, ...] = (
+    r"jsii-kernel-.+",           # aws/jsii#700 — one per cdk invocation, never removed
+    r"jsii-runtime-.+",
+    r"cdk\.out.*",               # aws/aws-cdk-cli#802 — randomized cloud assemblies
+    r"cdk-outdir-.+",
+    r"bundling-temp-.+",         # aws/aws-cdk#33201 — poisons the NEXT deploy
+    r"asset\.[0-9a-f]{16,}",     # staged asset dirs orphaned by an aborted synth
+    r"cdk-docker-.+",
+    r"pytest-of-.+",             # pytest self-prunes to 3, but an aborted run can orphan
+)
+
+DEFAULT_QUIET_MINUTES = 30
+
+
+@dataclass
+class Entry:
+    path: Path
+    size: int
+    age_minutes: float
+    reason: str
+    reaped: bool = False
+    error: str = ""
+
+
+@dataclass
+class Report:
+    scoped: list[Entry] = field(default_factory=list)
+    matched: list[Entry] = field(default_factory=list)
+    skipped_recent: list[Entry] = field(default_factory=list)
+    unmatched: list[Entry] = field(default_factory=list)
+
+    @property
+    def reclaimable(self) -> int:
+        return sum(e.size for e in self.scoped + self.matched)
+
+    @property
+    def reclaimed(self) -> int:
+        return sum(e.size for e in self.scoped + self.matched if e.reaped)
+
+
+def human(n: int) -> str:
+    """Bytes as a short human string. Sizes are the whole point of the report."""
+    step = 1024.0
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < step or unit == "TB":
+            return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
+        val /= step
+    return f"{val:.1f} TB"
+
+
+def tree_size(path: Path) -> int:
+    """Total bytes under path. Tolerates races and permission errors — a temp tree can
+    vanish or be locked mid-walk, and that must not abort the report."""
+    if path.is_file() or path.is_symlink():
+        try:
+            return path.lstat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for root, dirs, files in os.walk(path, onerror=lambda _e: None, followlinks=False):
+        for name in files:
+            try:
+                total += Path(root, name).lstat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def newest_mtime(path: Path) -> float:
+    """Most recent mtime anywhere in the tree. The ownership proxy must use the NEWEST
+    mtime, not the root's: a directory created an hour ago can still be written into now,
+    and reaping it because its own mtime looked old would delete live work."""
+    try:
+        newest = path.lstat().st_mtime
+    except OSError:
+        return time.time()
+    if path.is_file() or path.is_symlink():
+        return newest
+    for root, dirs, files in os.walk(path, onerror=lambda _e: None, followlinks=False):
+        for name in list(dirs) + list(files):
+            try:
+                newest = max(newest, Path(root, name).lstat().st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def matches_residue(name: str) -> str:
+    for pat in RESIDUE_PATTERNS:
+        if re.fullmatch(pat, name, flags=re.IGNORECASE):
+            return pat
+    return ""
+
+
+def remove_tree(path: Path) -> str:
+    """Delete a file or directory tree. Returns "" on success, else an error string.
+
+    Windows needs two escape hatches and both are load-bearing: the \\\\?\\ prefix lifts
+    the 260-character MAX_PATH limit that defeats ordinary deletion of nested CDK asset
+    trees, and `robocopy <empty> <target> /purge` is the documented last resort for a tree
+    that still refuses to go (aws/aws-cdk#11730)."""
+    def onerror(func, p, exc):  # noqa: ANN001 - shutil callback signature
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+
+    target = path
+    if os.name == "nt" and not str(path).startswith("\\\\?\\"):
+        target = Path("\\\\?\\" + str(path.resolve()))
+
+    try:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target, onerror=onerror)
+        else:
+            target.unlink(missing_ok=True)
+        if not path.exists():
+            return ""
+    except OSError as exc:
+        if os.name != "nt":
+            return f"{type(exc).__name__}: {exc}"
+
+    if os.name == "nt" and path.exists():
+        empty = Path(tempfile.mkdtemp(prefix="reap-empty-"))
+        try:
+            subprocess.run(
+                ["robocopy", str(empty), str(path), "/purge", "/nfl", "/ndl", "/njh", "/njs"],
+                capture_output=True,
+                check=False,
+            )
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+        if path.exists():
+            return "still present after robocopy /purge (locked by a running process?)"
+    return "" if not path.exists() else "not removed"
+
+
+def temp_roots(extra: list[Path]) -> list[Path]:
+    """Every distinct temp root to inspect, resolved and de-duplicated."""
+    seen: dict[Path, None] = {}
+    for cand in [Path(tempfile.gettempdir()), *extra]:
+        try:
+            resolved = cand.resolve()
+        except OSError:
+            continue
+        if resolved.is_dir():
+            seen.setdefault(resolved, None)
+    return list(seen)
+
+
+def scan(
+    roots: list[Path],
+    scoped: Path | None,
+    project: Path,
+    quiet_minutes: float,
+) -> Report:
+    report = Report()
+    now = time.time()
+
+    if scoped is not None and scoped.is_dir():
+        # Provably ours: reap the CONTENTS, keeping the root so TMPDIR stays valid for a
+        # session that is still running.
+        for child in sorted(scoped.iterdir()):
+            report.scoped.append(
+                Entry(child, tree_size(child), (now - newest_mtime(child)) / 60.0, "scoped")
+            )
+
+    for root in roots:
+        if scoped is not None and (root == scoped or scoped in root.parents):
+            continue
+        if root == project or root in project.parents:
+            # Refuse a temp root that contains the project — a mistyped TMPDIR must never
+            # turn this into a source-tree deleter.
+            continue
+        try:
+            children = sorted(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            pattern = matches_residue(child.name)
+            if not pattern:
+                continue
+            size = tree_size(child)
+            age = (now - newest_mtime(child)) / 60.0
+            entry = Entry(child, size, age, pattern)
+            if age < quiet_minutes:
+                report.skipped_recent.append(entry)
+            else:
+                report.matched.append(entry)
+    return report
+
+
+def reap(report: Report) -> None:
+    for entry in report.scoped + report.matched:
+        err = remove_tree(entry.path)
+        entry.reaped = not err
+        entry.error = err
+
+
+def emit_text(report: Report, applied: bool, quiet_minutes: float) -> None:
+    """One-glance output. Sizes first; detail only where it is actionable."""
+    verb = "Cleaned" if applied else "Reclaimable"
+    total = report.reclaimed if applied else report.reclaimable
+    print(f"{verb}: {human(total)}")
+
+    groups: dict[str, tuple[int, int]] = {}
+    for entry in report.scoped + report.matched:
+        if applied and not entry.reaped:
+            continue
+        key = "session-scoped temp" if entry.reason == "scoped" else entry.reason
+        count, size = groups.get(key, (0, 0))
+        groups[key] = (count + 1, size + entry.size)
+    for key, (count, size) in sorted(groups.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {count}x {key}  ({human(size)})")
+
+    if report.skipped_recent:
+        size = sum(e.size for e in report.skipped_recent)
+        print(
+            f"  skipped {len(report.skipped_recent)} touched <{quiet_minutes:g} min ago "
+            f"({human(size)}) - may be another session's live work"
+        )
+    failures = [e for e in report.scoped + report.matched if applied and not e.reaped]
+    for entry in failures:
+        print(f"  FAILED {entry.path}: {entry.error}")
+    if not applied and report.reclaimable:
+        print("  (report only - re-run with --apply to delete)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--apply", action="store_true", help="delete; default is report only")
+    parser.add_argument("--scoped-temp", type=Path, default=None,
+                        help="this tree's own TMPDIR; its CONTENTS are removed wholesale")
+    parser.add_argument("--temp-root", type=Path, action="append", default=[],
+                        help="an additional temp root to inspect (repeatable)")
+    parser.add_argument("--project-dir", type=Path, default=Path.cwd(),
+                        help="project root; a temp root containing it is refused")
+    parser.add_argument("--quiet-minutes", type=float, default=DEFAULT_QUIET_MINUTES,
+                        help=f"outside --scoped-temp, skip entries touched more recently "
+                             f"(default {DEFAULT_QUIET_MINUTES})")
+    parser.add_argument("--json", action="store_true", help="machine-readable summary")
+    args = parser.parse_args(argv)
+
+    project = args.project_dir.resolve()
+    scoped = args.scoped_temp.resolve() if args.scoped_temp else None
+    report = scan(temp_roots(args.temp_root), scoped, project, args.quiet_minutes)
+
+    if args.apply:
+        reap(report)
+
+    if args.json:
+        print(json.dumps({
+            "applied": args.apply,
+            "reclaimable_bytes": report.reclaimable,
+            "reclaimed_bytes": report.reclaimed,
+            "entries": [
+                {"path": str(e.path), "bytes": e.size, "age_minutes": round(e.age_minutes, 1),
+                 "reason": e.reason, "reaped": e.reaped, "error": e.error}
+                for e in report.scoped + report.matched
+            ],
+            "skipped_recent": [
+                {"path": str(e.path), "bytes": e.size, "age_minutes": round(e.age_minutes, 1)}
+                for e in report.skipped_recent
+            ],
+        }, indent=2))
+    else:
+        emit_text(report, args.apply, args.quiet_minutes)
+
+    return 1 if any(e.error for e in report.scoped + report.matched) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

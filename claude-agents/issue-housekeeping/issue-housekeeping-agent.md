@@ -248,8 +248,9 @@ The agent MUST:
   1. Detect and install the parallel test runner plugin during Discovery
      Step 8 (e.g., `pytest-xdist` for Python pytest projects).
   2. Record two test command variants in `test_baseline.md`:
-     TEST_COMMAND_FAILFAST (parallel + stop on first failure) and
-     TEST_COMMAND_FULL (parallel + run to completion).
+     TEST_COMMAND (bounded parallelism, runs to completion — there is no
+     fail-fast variant, because a run must report every failure so they can be
+     fixed in one pass).
   3. Use these command variants consistently for every test invocation
      throughout the Main Loop and CI verification.
   4. If parallel execution is unavailable, log this as a limitation in
@@ -408,83 +409,82 @@ Rust / Go:
   - `cargo test` and `go test` are parallel by default. No additional
     installation needed.
 
-### Test Command Templates
+### Test Command Template (ONE command — no fail-fast variant)
 
-Record two command variants in `test_baseline.md`:
+Record ONE command as `TEST_COMMAND` in `test_baseline.md`, used everywhere a test
+run is called for (Phase C.4, Step 4, Step 9).
 
-  TEST_COMMAND_FAILFAST — used during per-fix verification (Phase C.4):
-  TEST_COMMAND_FULL — used for full-suite runs (Phase C.5, Step 4, Step 9):
+**There is deliberately no fail-fast variant.** A run that stops at the first
+failure reports one problem, so you fix it, re-run, find the next, and spend a
+whole cycle per failure. A run must report EVERY failure so they can be fixed in
+one pass. This is the same reason the project's CI pipeline is built not to fail
+fast (see the `ci-owns-the-test-suite` rule).
 
-Python (pytest + xdist):
-  - TEST_COMMAND_FAILFAST:
-    `<venv-invocation> pytest -x -n auto -q`
-    (`-n auto` from pytest-xdist distributes tests across all available
-    CPU cores; `-x` stops at first failure.)
-  - TEST_COMMAND_FULL:
-    `<venv-invocation> pytest -n auto -q`
-    (`-n auto` for parallel; no `-x` so the full suite runs to
-    completion.)
+**Parallelism is BOUNDED, not `auto`.** One worker per vCPU is correct on a
+dedicated CI runner and wrong on a developer machine: it makes the host unusable,
+and when several per-issue worktrees do it at once the agent process is killed
+mid-run and the work is lost.
+
+Python (the project's own runner — PREFERRED when present):
+  - TEST_COMMAND: `<venv-invocation> python scripts/run_tests.py`
+    (bounded workers = `min(4, cores // 4)`, floor 1; refuses `-x`/`--maxfail`;
+    adds `--continue-on-collection-errors` so a broken import in one module
+    cannot hide the rest of the suite. Pass paths or `-k <expr>` to run only the
+    tests affected by a fix.)
+
+Python (pytest + xdist, no runner script):
+  - TEST_COMMAND: `<venv-invocation> pytest -n 2 -q -ra --continue-on-collection-errors`
+    (`-n 2` rather than `-n auto`; raise it only after measuring that the host
+    stays usable. `-ra` lists every non-passing outcome at the end, which is what
+    makes fix-them-all-at-once possible.)
 
 Python (pytest without xdist — fallback):
-  - TEST_COMMAND_FAILFAST: `<venv-invocation> pytest -x -q`
-  - TEST_COMMAND_FULL: `<venv-invocation> pytest -q`
-  - Log this as a limitation in `test_baseline.md`.
+  - TEST_COMMAND: `<venv-invocation> pytest -q -ra --continue-on-collection-errors`
+  - Log the missing xdist as a limitation in `test_baseline.md`.
 
 Python (unittest only):
-  - TEST_COMMAND_FAILFAST:
-    `<venv-invocation> python -m unittest discover -v --failfast`
-  - TEST_COMMAND_FULL:
-    `<venv-invocation> python -m unittest discover -v`
-  - Note: unittest does not natively support parallel execution. Log
-    this limitation in `test_baseline.md`.
+  - TEST_COMMAND: `<venv-invocation> python -m unittest discover -v`
+  - Note: unittest does not natively support parallel execution. Log this
+    limitation in `test_baseline.md`.
 
 JavaScript/TypeScript (Jest):
-  - TEST_COMMAND_FAILFAST:
-    `<pkg-manager> test -- --bail --maxWorkers=auto`
-  - TEST_COMMAND_FULL:
-    `<pkg-manager> test -- --maxWorkers=auto`
+  - TEST_COMMAND: `<pkg-manager> test -- --maxWorkers=50%`
+    (`50%` rather than `auto`, for the same reason as `-n 2` above.)
 
 JavaScript/TypeScript (Vitest):
-  - TEST_COMMAND_FAILFAST:
-    `<pkg-manager> test -- --run --bail 1`
-  - TEST_COMMAND_FULL:
-    `<pkg-manager> test -- --run`
+  - TEST_COMMAND: `<pkg-manager> test -- --run`
   (Vitest is threaded by default; no additional parallel flag needed.)
 
 JavaScript/TypeScript (Mocha):
-  - TEST_COMMAND_FAILFAST:
-    `<pkg-manager> test -- --bail --parallel`
-  - TEST_COMMAND_FULL:
-    `<pkg-manager> test -- --parallel`
-  - Verify parallel mode produces identical results to sequential by
-    running both during the pre-flight baseline. If results differ,
-    fall back to sequential and log the limitation.
+  - TEST_COMMAND: `<pkg-manager> test -- --parallel`
+  - Verify parallel mode produces identical results to sequential by running both
+    during the pre-flight baseline. If results differ, fall back to sequential and
+    log the limitation.
 
 Rust:
-  - TEST_COMMAND_FAILFAST:
-    `cargo test -- --test-threads=0`
-    (Rust test binaries are parallel by default; `--test-threads=0`
-    uses all available cores. There is no native fail-fast flag; the
-    agent monitors output and terminates early on first failure if
-    needed.)
-  - TEST_COMMAND_FULL:
-    `cargo test -- --test-threads=0`
+  - TEST_COMMAND: `cargo test`
+    (Rust test binaries are parallel by default and already run every test;
+    `--test-threads=N` bounds it if the host struggles.)
 
 Go:
-  - TEST_COMMAND_FAILFAST:
-    `go test ./... -failfast -count=1`
-    (Go runs test packages in parallel by default. `-count=1` disables
-    test caching to ensure fresh results.)
-  - TEST_COMMAND_FULL:
-    `go test ./... -count=1`
+  - TEST_COMMAND: `go test ./... -count=1`
+    (Go runs test packages in parallel by default. `-count=1` disables test
+    caching to ensure fresh results. No `-failfast`.)
 
-Also determine the full CI command if available (e.g., a Makefile target,
-a `scripts/ci.sh`, or a composite command that includes linting, type
-checking, and tests). Record as `CI_COMMAND` in `test_baseline.md`.
+Also determine the full check command if available — `python scripts/run_checks.py`
+when the project has it (the same command its CI jobs run, so local and CI results
+cannot drift), else a Makefile target or `scripts/ci.sh` composing lint, type
+checking and tests. Record as `CI_COMMAND` in `test_baseline.md`.
+
+**Prefer the project's CI run over a local full-suite run** wherever a CI run
+exists for the SHA you are judging: it is the authoritative result, it costs you
+nothing, and it reports every failure. Retrieve it through the project's wrapper
+script. Run locally when there is no such run — or when you need a result for an
+uncommitted local state, which is the normal case in Phase C.
 
 ## Discovery Step 9: Pre-Flight Test Baseline (Gate)
 
-Run the full test suite using TEST_COMMAND_FULL (parallel execution).
+Run the full test suite using TEST_COMMAND (bounded parallel execution).
 Capture exit code, totals (passed / failed / skipped / errored),
 duration. Record in `test_baseline.md`.
 
@@ -635,21 +635,22 @@ following phases in order.
        - Ensure tests would have FAILED before the fix (if possible to
          verify by reasoning about the pre-fix code).
 
-  C.4 Run the test suite (fail-fast mode, parallel):
-       - Execute TEST_COMMAND_FAILFAST from 	est_baseline.md.
-       - If tests fail:
-           * Analyze the failure.
-           * Fix the issue (code fix or test fix as appropriate).
-           * Re-run tests.
-           * Repeat up to 3 times. If still failing after 3 attempts,
-             reclassify as TYPE2 and proceed to Phase D.
+  C.4 Run the tests affected by the fix:
+       - Execute TEST_COMMAND from `test_baseline.md`, scoped to the tests the
+         fix touches (paths or `-k <expr>`). Fast, and enough to tell whether
+         the fix works.
+       - If tests fail: analyze, fix EVERY reported failure in one pass (the
+         command reports all of them, so do not fix one and re-run to find the
+         next), then re-run. Repeat up to 3 times. If still failing after 3
+         attempts, reclassify as TYPE2 and proceed to Phase D.
 
-  C.5 Run the full test suite (parallel, without fail-fast):
-       - Execute TEST_COMMAND_FULL from 	est_baseline.md.
+  C.5 Run the whole suite once, to catch regressions:
+       - Execute TEST_COMMAND from `test_baseline.md` with no scoping. It runs to
+         completion, so this one run is the complete regression picture.
        - All tests must pass.
-       - If any pre-existing test fails that is unrelated to the fix,
-         this indicates a regression. Revert the fix, reclassify as
-         TYPE2, and proceed to Phase D.
+       - If any pre-existing test fails that is unrelated to the fix, this
+         indicates a regression. Revert the fix, reclassify as TYPE2, and proceed
+         to Phase D.
 
   C.6 Commit the fix:
        `git commit -am "fix(<scope>): resolve issue #<number> — <description>"`
@@ -768,11 +769,16 @@ Otherwise, return to Step 1 for the next issue.
 
 ## Step 4: Final CI Verification
 
-  4.1 Run the full test suite using TEST_COMMAND_FULL (parallel, without
-      fail-fast). Record results in `ci_verification.md`.
+  4.1 Establish the suite result. Prefer the project's CI run for the SHA you
+      are verifying (retrieved through the wrapper script — authoritative, free,
+      and it reports every failure). Only if no such run exists, run the full
+      suite locally with TEST_COMMAND (bounded parallel, runs to completion).
+      Record which of the two you used, with the run id and SHA where
+      applicable, in `ci_verification.md`.
 
   4.2 If a CI_COMMAND was detected, run it. Record results in
-      `ci_verification.md`.
+      `ci_verification.md`. It runs every check and reports every failure in one
+      pass — fix ALL of them before re-running, never one at a time.
 
   4.3 If all tests and CI steps pass: proceed to Step 5.
 

@@ -10,9 +10,13 @@ final filename) and then extends or adapts it as the project evolves.
 |---|---|---|
 | `aws_config.py.template` | `src/aws_config.py` | Always (any project that talks to AWS) |
 | `aws_accounts.json.template` | `config/aws_accounts.json.template` | Always (any project that talks to AWS) |
-| `githooks/pre-commit` | `.githooks/pre-commit` | Always (tracked, version-controlled hook) |
+| `githooks/pre-commit` | `.githooks/pre-commit` | Always (tracked hook: lint + security, no tests) |
+| `githooks/pre-push` | `.githooks/pre-push` | Always (tracked hook: type check; suite only during a declared CI outage) |
 | `setup-hooks.sh.template` | `scripts/setup-hooks.sh` | Always (ENABLES the tracked hooks per clone) |
 | `pre-commit-config.yaml.template` | `.pre-commit-config.yaml` | Always |
+| `run_tests.py.template` | `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast) |
+| `run_checks.py.template` | `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
+| `ci_outage_mode.py.template` | `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
 | `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects |
 | `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects |
 | `gitlab.json.template` | `config/gitlab.json.template` | GitLab-hosted projects |
@@ -24,6 +28,29 @@ longer generates a hook — it points `core.hooksPath` at `.githooks` once
 per clone (overriding any system-level hooks dir such as git-defender)
 and ensures the hooks are executable. The setup prompt also MIGRATES any
 pre-existing customized `.git/hooks/*` into the tracked `.githooks/`.
+
+## Where checks run (the contract these templates implement)
+
+| Boundary | What runs | Cost |
+|---|---|---|
+| `pre-commit` hook | ruff lint, ruff-format, bandit (staged), secret scan | < 2 s |
+| `pre-push` hook | mypy | seconds |
+| `pre-push` hook, **CI-outage marker declared** | mypy + full suite, bounded workers | the exception |
+| CI | every check + the full suite, **no fail-fast**, all failures reported together | authoritative |
+| local, on demand | `scripts/run_tests.py` on the affected tests; `run_checks.py` for everything | your call |
+
+Both git hooks run whole pre-commit *stages* rather than named hook ids, so
+`.pre-commit-config.yaml`'s `stages:` fields decide what runs when and adding a
+check needs no hook edit. The test suite is never a precondition for a commit;
+`scripts/run_checks.py` is the same command CI runs, which is what keeps a local
+pipeline run from drifting away from the real one during an outage.
+
+The rule these templates implement is
+`claude-agents/spec-workflow/rules/ci-owns-the-test-suite.md` (Kiro steering 8.34 in
+`KiroProjectSetupPrompt.v2.txt`). It records the three measured failures that made
+the split necessary — hour-long commits, a host made unusable by `pytest -n auto`
+across concurrent worktrees, and one CI run per failure — so read it before
+"simplifying" any of this back.
 
 ## Conventions
 

@@ -66,6 +66,31 @@
 #     provenance. Filing quotas are removed from every agent; zero filed
 #     issues is a valid outcome; everything else goes to
 #     docs/findings-ledger.md.
+#   - MOVES THE TEST SUITE OUT OF THE COMMIT PATH ENTIRELY (new steering
+#     8.34 ci-owns-the-test-suite.md + reshaped PART 2.2 and PART 7).
+#     Measured problem: gating every commit on the full suite made a commit
+#     a 60-minute operation on real projects, so agents stopped committing
+#     and batched everything into one unreviewable change; `pytest -n auto`
+#     across several per-issue worktrees made the host unusable and killed
+#     the agent process. New split: pre-commit = lint + security (< 2 s),
+#     pre-push = mypy, CI = the full suite. PART 2.2 now ships a TRACKED
+#     .githooks/ pair (pre-commit + pre-push) plus scripts/run_tests.py
+#     (bounded workers, refuses -x), scripts/run_checks.py and
+#     scripts/ci_outage_mode.py, and adds the missing Part 2.3
+#     (core.hooksPath) the templates already assumed.
+#   - MAKES CI EXHAUSTIVE RATHER THAN FAIL-FAST (new PART 7.0). A step list,
+#     a stage chain, a `needs:` edge between check jobs, a matrix without
+#     fail-fast: false, and `pytest -x` each cause one failure to be
+#     reported per run. Now: one stage, one job per check group, ONE command
+#     per job (`run_checks.py --group X`, which aggregates), and a final
+#     always-run report job that merges the per-group JSON. Steering 8.25's
+#     debugging loop gains the matching obligation — enumerate every failing
+#     job, group by root cause, fix them ALL, push once — and its Rung 3 now
+#     declares/clears the shared CI-outage marker and runs the pipeline via
+#     the same run_checks.py that CI runs, so the mirror cannot drift.
+#     Coverage flags move out of pytest `addopts` into
+#     `run_tests.py --coverage`: in addopts they made every targeted run pay
+#     for instrumentation and fail a whole-project threshold.
 
 ---
 
@@ -444,47 +469,154 @@ match exactly for workflow→hook conversion).
    bring deps current.
 3. STOP all further setup if the venv cannot be activated.
 
-### Part 2.2 — Pre-commit hook (project-local, venv-bound)
+### Part 2.2 — Version-controlled git hooks (tracked `.githooks/`) and the check scripts
 
-The hook hardcodes the absolute path to the venv `pre-commit`
-executable, so it works regardless of how git is invoked (terminal,
-IDE, GUI client) and regardless of PATH state. Each developer
-generates their own hook by running the setup script — `.git/hooks/`
-is not version-controlled.
+Project hooks live in a TRACKED `.githooks/` directory committed to the repo —
+NOT in the untracked `.git/hooks/`. This makes the standards they enforce
+travel with the project to every clone and every developer, instead of being a
+local artifact each person regenerates. Git runs them because `core.hooksPath`
+is pointed at `.githooks` (Part 2.3).
+
+There are TWO hooks, and the split between them is the point:
+
+- `pre-commit` — lint (ruff + ruff-format) and security (bandit over the
+  staged files, plus a secret scan). Under two seconds, so commits are meant
+  to be frequent.
+- `pre-push` — the type check (mypy), and the full test suite ONLY while
+  CI-OUTAGE MODE is declared.
+
+The TEST SUITE runs in CI (PART 7). It is never a precondition for a commit.
+Steering 8.34 (`ci-owns-the-test-suite.md`) is the rule that states this and
+explains the three measured failures that made it necessary; the files below
+are its mechanism.
 
 1. If `.pre-commit-config.yaml` does not exist, copy
    `templates/pre-commit-config.yaml.template` to the project root as
-   `.pre-commit-config.yaml`. If it exists, apply Rule 1: preserve
-   existing repos and hooks, add the ruff/ruff-format hooks if no
-   ruff hooks are configured, preserve existing `exclude` patterns
-   and pinned `rev` values.
-2. If `scripts/setup-hooks.sh` does not exist, copy
-   `templates/setup-hooks.sh.template` to `scripts/setup-hooks.sh`.
-   If it exists, preserve it.
-3. After the venv is set up and dev deps are installed, run
-   `bash scripts/setup-hooks.sh` to generate `.git/hooks/pre-commit`.
-4. README.md (merge — do not overwrite):
+   `.pre-commit-config.yaml`. If it exists, apply Rule 1: preserve existing
+   repos and hooks, add the ruff/ruff-format hooks if no ruff hooks are
+   configured, preserve existing `exclude` patterns and pinned `rev` values.
+   **Then check the `stages:` key on every hook.** The template sets
+   `[pre-commit]` on ruff/ruff-format/bandit/detect-secrets/detect-private-key,
+   `[pre-push]` on mypy, and `[manual]` on pytest. A hook with NO `stages:`
+   defaults to the pre-commit stage — which is exactly how a pytest hook ends
+   up running the whole suite on every commit. If the existing config has a
+   pytest (or other slow) hook without `stages:`, move it to `[manual]` and
+   report the change.
+2. **MIGRATE existing hooks, then CREATE the standard ones.** Build
+   `.githooks/`:
+   a. If the project already has CUSTOMIZED hooks in `.git/hooks/` (any file
+      that is NOT a `*.sample` and was not auto-generated by the old
+      `setup-hooks.sh` mechanism), MOVE each into `.githooks/` so it becomes
+      version-controlled. If a migrated hook hardcodes an absolute venv or
+      interpreter path, rewrite it to discover the path at runtime (see the
+      portable pattern in `templates/githooks/pre-commit`); flag anything
+      whose intent is unclear rather than guessing.
+   b. A `.git/hooks/pre-commit` produced by the OLD generated mechanism (the
+      former `setup-hooks.sh` behavior, which wrote a venv-absolute path into
+      an untracked hook) is SUPERSEDED — do not migrate it; the tracked
+      `pre-commit` from the template replaces it.
+   c. Copy `templates/githooks/pre-commit` and `templates/githooks/pre-push`
+      into `.githooks/` if not already present. Both are portable (they
+      discover the venv at runtime, so they work on every OS and inside git
+      worktrees, where the venv lives in the MAIN checkout).
+   d. Record the executable bit in the index for every hook — required so the
+      hook actually runs on Linux/macOS clones, since Windows
+      `core.filemode=false` drops it otherwise:
+      `git update-index --chmod=+x .githooks/<hook>`.
+   e. Add a `.gitattributes` rule `.githooks/** text eol=lf`: a CRLF shell
+      script fails to execute on Linux/macOS. (Merge per Rule 1.)
+   f. COMMIT `.githooks/` and `.gitattributes` — they are tracked. Do NOT add
+      `.githooks/` to `.gitignore`.
+3. Copy the check scripts from `templates/` into `scripts/` (strip the
+   `.template` suffix):
+   - `run_tests.py` — the ONE definition of how tests are invoked. Bounded
+     local workers (`min(4, cores // 4)`, floor 1), `--workers auto` for CI
+     only, and it REFUSES `-x`/`--maxfail` so no caller can make a run report
+     one failure instead of all of them.
+   - `run_checks.py` — runs every check group and reports every failure in one
+     pass. PART 7 makes each CI job a single call to it, which is what stops
+     the pipeline from failing fast; the same script is what a local pipeline
+     run uses, so the two cannot drift.
+   - `ci_outage_mode.py` — `declare` / `status` / `clear` for CI-OUTAGE MODE.
+     It writes a marker into the SHARED git dir so ONE declaration covers
+     every concurrent worktree of the clone, and the `pre-push` hook reads it.
+4. Generate the secret-scan baseline once and COMMIT it — the detect-secrets
+   hook fails on every clone without it:
+   ```bash
+   detect-secrets scan > .secrets.baseline
+   ```
+   Re-run it after auditing a legitimate finding. It is the audited allow-list,
+   so it belongs in version control (steering 8.29).
+5. If `scripts/setup-hooks.sh` does not exist, copy
+   `templates/setup-hooks.sh.template` to `scripts/setup-hooks.sh`. This
+   script no longer GENERATES hooks; it ENABLES the tracked ones (Part 2.3).
+   After dev deps install, run `bash scripts/setup-hooks.sh` once per clone.
+6. README.md (merge — do not overwrite):
    ````markdown
    ### Git hooks setup
 
-   After installing dev dependencies, install the pre-commit hook:
+   After installing dev dependencies, enable the project's tracked hooks
+   (once per clone — a fresh clone does not inherit `core.hooksPath`):
 
    ```bash
    bash scripts/setup-hooks.sh
    ```
 
-   This generates `.git/hooks/pre-commit` with the absolute path to
-   the project's venv. The hook runs ruff lint and format on every
-   commit. Slow checks (mypy, pytest, bandit) are left for CI.
+   The hooks live in the tracked `.githooks/` directory, so they are shared
+   with everyone. `pre-commit` runs lint and security checks on the staged
+   files (about a second — commit as often as you like). `pre-push` runs the
+   type check. The TEST SUITE runs in CI, not locally; see
+   `.kiro/steering/ci-owns-the-test-suite.md`.
    ````
 
 What runs where:
 
 | When | What runs | Why |
 |---|---|---|
-| pre-commit hook | ruff + ruff-format | fast (<1 s), auto-fixes most issues |
-| CI pipeline | ruff + mypy + bandit + pytest | full validation, slower is fine |
-| manual | `pre-commit run mypy` etc. | opt-in pre-push checks |
+| pre-commit hook | ruff, ruff-format, bandit (staged), secret scan | < 2 s, so commits stay frequent; a leaked credential cannot be undone after a push, which is why the secret scan is here and not only in CI |
+| pre-push hook | mypy | whole-project analysis, so the push boundary suits it; on a staged subset it is both slow to warm and unreliable |
+| pre-push hook, CI-OUTAGE MODE | mypy + full suite (bounded workers) | the one sanctioned local full-suite run — nothing downstream will run it |
+| CI pipeline | every check + the full suite, no fail-fast | authoritative, and the only run that reports ALL failures at once |
+| manual | `python scripts/run_tests.py <paths>`; `python scripts/run_checks.py` | the affected tests while you work; the whole pipeline on demand |
+
+Local hooks are fast feedback but BYPASSABLE (`git commit --no-verify`) and
+ABSENT on a clone that has not run `setup-hooks.sh` — so CI MUST mirror these
+checks as the authoritative gate (PART 7). The TDD gate hook (PART 8A) blocks
+`--no-verify` on both commit and push for agent sessions.
+
+### Part 2.3 — Point git at the tracked hooks (core.hooksPath)
+
+Some environments set a SYSTEM-level git hooks directory — notably corporate
+security tools such as git-defender, which write `core.hooksPath` into the
+system gitconfig. When that is set, git ignores the project's hooks entirely:
+the tracked hooks never fire, and every command would need a manual
+`-c core.hooksPath=.githooks` override.
+
+`scripts/setup-hooks.sh` fixes this once per clone by setting `core.hooksPath`
+in the repo's LOCAL config to the tracked, RELATIVE `.githooks` path:
+
+```bash
+git config --local core.hooksPath .githooks
+```
+
+- LOCAL scope overrides the system value for THIS repo only (it does not touch
+  the system/global config or other repos), so terminal, IDE, GUI clients, and
+  every automated agent use the project hooks with NO per-command flag.
+- RELATIVE is correct here because `.githooks` is TRACKED: git resolves
+  `core.hooksPath` from the working-tree root, so it also resolves correctly
+  inside git worktrees (each worktree checks out its own `.githooks/`) — which
+  matters because the issue-work-orchestrator (PART 8A) commits inside
+  worktrees. (Contrast: pointing at the UNtracked `.git/hooks` would need an
+  absolute path, since that directory is not present in a worktree.)
+- A fresh clone does NOT inherit `core.hooksPath` (the setting lives in
+  `.git/config`, which is not cloned, and stock git has no post-clone hook), so
+  the one-time `setup-hooks.sh` enable step is required on every clone. The
+  hooks themselves ARE cloned (they are tracked); only the "use them" pointer
+  must be re-established.
+- Trade-off: this override means a system hooks tool (git-defender, etc.) no
+  longer runs for this repo. If you must keep the system tool, change the
+  tracked `.githooks/pre-commit` to also invoke it (chain), instead of relying
+  solely on the project hooks.
 
 ---
 
@@ -530,6 +662,10 @@ ENV/
 .coverage
 htmlcov/
 .hypothesis/
+
+# Check/test reports written by scripts/run_checks.py and scripts/run_tests.py
+# (per-group JSON + junit.xml). CI uploads them as artifacts; they are never committed.
+reports/
 
 # Type checking
 .mypy_cache/
@@ -636,8 +772,15 @@ older spelling.
 
 #### Dependencies (merge with existing)
 - `[project.dependencies]`: production deps
-- `[project.optional-dependencies.dev]`: pytest, pytest-cov, hypothesis,
-  ruff, mypy, bandit, pre-commit, boto3-stubs (if AWS project)
+- `[project.optional-dependencies.dev]`: pytest, pytest-cov, pytest-xdist,
+  hypothesis, ruff, mypy, bandit, detect-secrets, pre-commit, boto3-stubs
+  (if AWS project)
+  - `pytest-xdist` is what `scripts/run_tests.py` uses for its bounded `-n`;
+    without it the script silently runs sequentially, which is correct but
+    slow, so make it a declared dependency rather than an accident.
+  - `detect-secrets` backs the pre-commit secret scan (Part 2.2). Without it
+    the hook cannot run and a leaked credential is caught only in CI, after
+    the commit already exists.
 - `[project.optional-dependencies.cdk]`: aws-cdk-lib>=2.0.0, constructs>=10.0.0
 - `[project.optional-dependencies.test]`: any extra test-only deps
 
@@ -680,7 +823,13 @@ exclude = ["src/_version.py", "venv", ".venv", "cdk.out"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-addopts = "--cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=80"
+# NO coverage flags in addopts. They belong to the FULL-suite run only, and
+# scripts/run_tests.py adds them under --coverage (which CI's tests group passes).
+# Putting --cov-fail-under=80 here applies it to EVERY invocation, so running the
+# five tests you just wrote both pays the coverage instrumentation cost and FAILS
+# on a threshold that a five-test run can never meet. That makes the affected-tests
+# workflow of steering 8.34 unusable and pushes everyone back to full-suite runs.
+addopts = "-ra"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.bandit]
@@ -825,6 +974,68 @@ consistently.
    ```
 ````
 
+### PART 6.1 — Scoped temp directory + the temp reaper (disk-leak containment)
+
+Agent tooling leaks unbounded scratch into the SHARED OS temp directory, measured rather
+than theoretical: every `cdk` invocation orphans a `jsii-kernel-*` directory that is never
+removed (aws/jsii#700); randomized `cdk.out<hash>` cloud assemblies accumulate with nothing
+reused (aws/aws-cdk-cli#802 — 170 GB in two days); nested `cdk.out/asset` trees in `%TEMP%`
+have broken Windows outright, removable only with `robocopy <empty> <target> /purge` because
+the paths exceed what `rmdir` and Explorer handle (aws/aws-cdk#11730). It is also a
+CORRECTNESS problem: an aborted bundling leaves `bundling-temp-*` or an empty
+`asset.<hash>`, and CDK SKIPS re-bundling when that directory exists, so one interrupted
+session makes a LATER deploy fail (aws/aws-cdk#33201, #25711).
+
+**Install the reaper** (report-only by default; `--apply` deletes):
+
+```bash
+cp templates/reap_agent_temp.py.template scripts/reap_agent_temp.py
+python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp          # report
+python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
+```
+
+Its ownership rule is what makes it safe beside concurrent runs, with no cross-run
+bookkeeping: anything under `--scoped-temp` is provably this tree's, so its CONTENTS go
+wholesale (the root is kept, so a live run's `TMPDIR` stays valid); outside it, an entry is
+removed only when it matches a known residue pattern AND has not been modified for
+`--quiet-minutes` (default 30) — these tools never touch a temp directory again once their
+process exits, so an entry untouched that long belongs to a dead process, while a sibling's
+long `cdk synth` keeps writing and is skipped. Unmatched entries are reported, never
+touched; package caches are excluded on purpose (bounded and self-managing); a temp root
+CONTAINING the project is refused so a mistyped `TMPDIR` cannot become a source-tree
+deleter.
+
+**Scoping temp per tree — and the Kiro-specific limitation, stated plainly.**
+`TMPDIR`/`TEMP`/`TMP` are what `tempfile.gettempdir()` (Python, pytest) and `os.tmpdir()`
+(Node, jsii, the CDK CLI) resolve, so pointing them at `<tree>/tmp/os-temp` captures
+essentially all of the residue and makes it attributable. **Kiro CLI has no settings-level
+`env` block for shell commands** — the agent JSON exposes `tools`, `allowedTools`,
+`toolsSettings`, `toolAliases`, `hooks`, `mcpServers`, `resources` and `model`, and
+`.kiro/settings/mcp.json`'s `env` reaches MCP servers only. So there is no file that scopes
+temp for every command the way Claude Code's `.claude/settings.local.json` `env` block does
+(see ClaudeCodeSetupPrompt.txt Part 5.4).
+
+Two workable forms, in order of preference:
+
+1. **A per-command prefix on the invocations that actually leak** — CDK and pytest are
+   nearly all of it. One command, one scoped value, nothing persisted:
+   ```bash
+   TMPDIR=<abs>/tmp/os-temp TEMP=<abs>/tmp/os-temp TMP=<abs>/tmp/os-temp cdk synth ...
+   ```
+2. **A thin wrapper script** (`scripts/with_scoped_temp.sh` / `.ps1`) that sets the three
+   values and `exec`s its arguments, so the prefix is not retyped and cannot drift.
+
+Both are permitted by `no-environment-vars.md`'s second clarification (scoped configuration
+consumed by a specific subprocess); `setx`, `export` in a profile, and a persisting
+`$env:TMPDIR=` remain forbidden. The directory must EXIST and the path must be ABSOLUTE —
+Python and Node do not create a missing `TMPDIR`, they fail or silently fall back to the
+global temp dir, which is the leak returning unnoticed. `mkdir -p tmp/os-temp` at setup;
+`tmp/` is already gitignored (PART 3).
+
+Where the prefix is not used, the reaper still works — it just falls back to pattern
+matching in the shared temp dir, which is best-effort rather than provable. Say which mode
+the project is in when reporting a reap.
+
 ---
 
 ## PART 7 — CI / CD WORKFLOW
@@ -832,45 +1043,166 @@ consistently.
 Apply Rule 1. CI workflows are heavily customized; preserve everything
 existing. Add missing standard jobs only when they have no equivalent.
 
+CI is where this project's TEST SUITE runs. The local hooks do lint,
+security and type checks only (Part 2.2), and steering 8.34
+(`ci-owns-the-test-suite.md`) is the rule that says so. That makes the
+pipeline the authoritative gate rather than a second opinion, and it puts
+one hard requirement on its shape.
+
+### Part 7.0 — THE PIPELINE MUST NOT FAIL FAST (read this before editing any CI file)
+
+A red run must report EVERY failure, not the first one. Otherwise a worker
+fixes one problem per run and a ten-failure branch costs ten pipeline runs —
+the trial-and-error loop 8.34 forbids and, on a quota-limited account, the
+thing that exhausts the quota the capacity ladder (8.25) then has to cope
+with.
+
+Three mechanisms defeat you here, and all three must be handled:
+
+1. **A step list is fail-fast by construction.** A GitLab `script:` block
+   stops at the first non-zero command; a GitHub Actions `steps:` list stops
+   at the first failing step. So a job must NOT be a list of checks. Each job
+   runs exactly ONE command that internally runs its whole group and
+   aggregates:
+   ```
+   python scripts/run_checks.py --group <lint|types|security|tests>
+   ```
+   `scripts/run_checks.py` (Part 2.2) continues past a failing check, ends
+   with a consolidated `=== FAILED CHECKS (n) ===` block, and writes
+   `reports/checks-<group>.json`. **Never "simplify" a job back into a
+   multi-command script — that silently restores fail-fast.**
+2. **Stages and `needs:` skip siblings.** In GitLab, a later STAGE never runs
+   if an earlier one failed, so lint/types/security/tests must share ONE
+   stage and run in parallel. In GitHub Actions there are no stages, but a
+   `needs:` edge between check jobs has the same effect — so check jobs
+   declare NO `needs:` on each other. Only the final report job depends on
+   them, and only with `when: always` / `if: always()`.
+3. **The test runner's own early exit.** No `-x`, no `--maxfail`, no
+   `--stepwise`. `scripts/run_tests.py` refuses those flags outright and adds
+   `--continue-on-collection-errors`, so a broken import in one module cannot
+   hide the rest of the suite. Route the test job through it rather than
+   calling `pytest` directly. `--workers auto` is correct HERE (one worker per
+   vCPU on a dedicated runner) and nowhere else.
+
+The pipeline's verdict comes from a final `report` job that merges the
+per-group JSON and fails once, so a failure is never lost just because the
+job that found it was not the last to finish.
+
 ### Part 7.1 — GitLab (`.gitlab-ci.yml`)
 
-If no CI exists, create a baseline with `test`, `quality`, `security`
-stages. If CI exists, only add jobs whose purpose is missing:
+If no CI exists, create the baseline below: ONE `verify` stage whose jobs run
+in parallel, plus a `report` stage. If CI exists, only add jobs whose purpose
+is missing — and if the existing pipeline splits checks across sequential
+stages, say so in the migration report and recommend the single-stage shape
+(do not silently restructure a working pipeline; Part 7.4).
 
 ```yaml
+stages: [verify, report]          # ONE verify stage: siblings never skip each other
+
 .python-setup: &python-setup
   image: python:3.10  # preserve existing image
   before_script:
     - pip install -e ".[dev,cdk]"
+  artifacts:
+    when: always                  # a FAILED job's report is the one that matters most
+    paths: [reports/]
+    expire_in: 1 week
 
-test:
+lint:
   <<: *python-setup
-  stage: test
-  script:
-    - pytest test/ --cov=src --cov-report=term-missing --cov-fail-under=80
-  coverage: '/TOTAL.*\s+(\d+%)/'
+  stage: verify
+  script: [python scripts/run_checks.py --group lint]
 
-quality:
+types:
   <<: *python-setup
-  stage: quality
-  script:
-    - ruff check src/ test/ scripts/ cdk/
-    - ruff format --check src/ test/ scripts/ cdk/
-    - mypy src/ --exclude="src/_version.py" --ignore-missing-imports
+  stage: verify
+  script: [python scripts/run_checks.py --group types]
 
 security:
   <<: *python-setup
-  stage: security
-  script:
-    - bandit -r src/ scripts/ -x "src/_version.py" -f json -o bandit-report.json || true
-    - bandit -r src/ scripts/ -x "src/_version.py"
+  stage: verify
+  script: [python scripts/run_checks.py --group security]
+
+tests:
+  <<: *python-setup
+  stage: verify
+  script: [python scripts/run_checks.py --group tests]
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    when: always
+    paths: [reports/]
+    reports:
+      junit: reports/junit.xml    # every failing test in the MR widget, not just the first
+
+report:
+  <<: *python-setup
+  stage: report
+  when: always                    # runs even though a verify job failed — that is the point
+  script: [python scripts/run_checks.py --summary-from reports]
+  # Deliberately NO `needs:`. A `needs:` edge makes this job SKIP when a needed job fails,
+  # which is exactly the case the verdict is for. Plain stage ordering plus `when: always`
+  # runs it unconditionally, and the default artifact behaviour already downloads
+  # `reports/` from every job in earlier stages — which is why each verify job sets
+  # `artifacts: when: always` (a failed job's report is the one that matters most).
 ```
+
+Note each job's `script:` is a ONE-ELEMENT list. That is deliberate and is
+the whole mechanism of Part 7.0 — resist the urge to add a second command.
 
 ### Part 7.2 — GitHub Actions (`.github/workflows/`)
 
-Apply the same logic. If a workflow exists, preserve it; add the
-missing standard checks (ruff, mypy, bandit, pytest) only if no
-equivalent step exists.
+Same shape. One job per check group with NO `needs:` between them, one
+command per job, and a final `report` job with `if: always()`:
+
+```yaml
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false            # one failing matrix leg must not cancel the others
+      matrix:
+        group: [lint, types, security, tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+      - run: pip install -e ".[dev,cdk]"
+      - run: python scripts/run_checks.py --group ${{ matrix.group }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checks-${{ matrix.group }}
+          path: reports/
+
+  report:
+    runs-on: ubuntu-latest
+    needs: [verify]
+    if: always()                  # WITHOUT this, a failed verify leg skips the verdict
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+      - uses: actions/download-artifact@v4
+        with: {path: reports/, merge-multiple: true}
+      - name: Consolidated verdict
+        run: |
+          python scripts/run_checks.py --summary-from reports | tee verdict.txt
+          status=${PIPESTATUS[0]}
+          cat verdict.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+```
+
+The verdict step captures `PIPESTATUS[0]` rather than piping straight into
+`$GITHUB_STEP_SUMMARY`: the default `run` shell is `bash -e` WITHOUT
+`pipefail`, so a bare `cmd >> file` / `cmd | tee` would report success on a
+failing merge and the pipeline would go green with failures in it.
+
+`strategy.fail-fast: false` is mandatory: the default `true` CANCELS the
+remaining matrix legs as soon as one fails, which is precisely the behaviour
+Part 7.0 forbids. If a workflow exists, preserve it and add the missing
+standard checks only if no equivalent step exists — but a matrix without
+`fail-fast: false`, or a check step list of more than one command, is a
+defect to report and fix even in an existing workflow.
 
 ### Part 7.3 — Migration from black/isort/flake8
 
@@ -893,6 +1225,18 @@ overlap in the migration report.
 - Preserve existing Python version, coverage threshold, additional
   tools, deployment stages.
 - Flag conflicts; do not silently change existing values.
+- **Fail-fast is the one thing to fix rather than preserve.** A sequential
+  stage chain across check groups, a `needs:` edge between check jobs, a
+  missing `strategy.fail-fast: false`, a multi-command check step, or a
+  `pytest -x` / `--maxfail` in CI all defeat Part 7.0. Report each one, say
+  what it costs (one failure reported per run instead of all of them), and
+  offer the single-stage / one-command-per-job shape. Do not restructure a
+  working pipeline without saying so — but do not leave the defect unreported
+  either.
+- If the project's CI does NOT route through `scripts/run_checks.py`, record
+  that in the migration report: steering 8.25's Rung 3 relies on the local
+  run being literally the same script as the CI run, and without it a local
+  pipeline mirror has to be hand-derived from the workflow file and can drift.
 
 ---
 
@@ -1058,17 +1402,24 @@ inclusion: always
 
 Before marking any activity complete:
 
-1. **Run all tests:** `pytest test/`. Fix every failure (see
-   `tests-must-not-fail.md`).
-2. **Run CI checks locally:**
+1. **Run the AFFECTED tests:** `python scripts/run_tests.py <paths or -k expr>`.
+   Fix every failure (see `tests-must-not-fail.md`).
+   The FULL suite is CI's job, not this checklist's — see
+   `ci-owns-the-test-suite.md`. Do not run the whole suite here to feel
+   finished: the authoritative verdict is the CI run on the pushed SHA, and
+   on a large project a local full run costs an hour and proves the same
+   thing. (The one exception: while CI-OUTAGE MODE is declared, the
+   `pre-push` hook runs the suite for you at push time.)
+2. **Run every project check, locally, in one pass:**
    ```bash
-   ruff check src/ test/ scripts/ cdk/
-   ruff format --check src/ test/ scripts/ cdk/
-   mypy src/ --exclude="src/_version.py" --ignore-missing-imports
-   bandit -r src/ scripts/ -x "src/_version.py"
+   python scripts/run_checks.py
    ```
-   Apply Rule 3 (no output shortening) and Rule 5 (no ad-hoc variables —
-   keep each command on its own line as shown). Fix every issue before continuing.
+   This is the SAME command CI runs, so the two cannot drift apart. It runs
+   lint, type, security and test groups, continues past a failure instead of
+   stopping at the first one, and ends with a consolidated
+   `=== FAILED CHECKS (n) ===` block. Apply Rule 3 (no output shortening).
+   **Fix every failure it lists before continuing — all of them, in this
+   pass.** Do not fix one and re-run to discover the next.
 3. **Update docs** in `docs/` for any changes. Keep `docs/forLLMConsumption.md`
    current.
 4. **Flag deviations** between docs and implementation.
@@ -1090,7 +1441,14 @@ fileMatchPattern: "test/**/*.py"
 2. Coverage target: 80% minimum, 100% for critical paths.
 3. `test/package/test_x.py` covers `src/package/x.py`. Use pytest
    fixtures and hypothesis where useful.
-4. Run: `pytest test/ --cov=src --cov-report=term-missing`.
+4. Run tests through `scripts/run_tests.py`, never `pytest` directly —
+   it is the single definition of the invocation (bounded local workers,
+   no fail-fast, complete failure list):
+   - while working: `python scripts/run_tests.py test/package/test_x.py`
+     (the affected tests — fast, no coverage instrumentation)
+   - coverage check: `python scripts/run_tests.py --coverage`
+   - the FULL suite is CI's job, not yours: see
+     `ci-owns-the-test-suite.md`. Do not run it locally to satisfy a gate.
 
 <!-- MIGRATION: add project-specific testing rules below -->
 ```
@@ -1238,6 +1596,25 @@ CLARIFICATION: The `env` block inside `.kiro/settings/mcp.json` and the
 `terminal.integrated.env.*` block inside editor settings are NOT shell
 environment variables. They are scoped configuration consumed by a
 specific subprocess. They do not pollute global state. Leave them alone.
+
+CLARIFICATION 2 — the scoped TEMP DIRECTORY is permitted, and is the one
+case where NOT setting a variable is the leak. `TMPDIR` / `TEMP` / `TMP`
+may be pointed at a per-tree directory (`<tree>/tmp/os-temp`) through
+scoped configuration — a settings-file `env` block, or a per-command
+prefix on the one invocation that needs it. What stays forbidden is the
+global form: no `setx`, no `export` in a shell profile, no
+`$env:TMPDIR=` that outlives the command.
+
+This serves rule 1 rather than bending it. The rule exists because shared
+hardware means shared state, and the DEFAULT here is already the worst
+case: every project writes into one global temp directory, so their
+residue is indistinguishable and nobody can safely clean any of it. Agent
+tooling makes that acute — each `cdk` invocation orphans a
+`jsii-kernel-*` directory that is never removed, and randomized
+`cdk.out<hash>` assemblies accumulate unboundedly (a reported 170 GB in
+two days). Scoping temp per tree makes every artifact attributable to the
+tree that made it, which is what allows cleanup at all. See
+`scripts/reap_agent_temp.py` and the `/close-session` command.
 ```
 
 ### 8.15 `no-output-shortening.md` (always) — NEW IN v2
@@ -1633,8 +2010,9 @@ and gather the evidence first. State the evidence alongside the claim.
 ## Examples
 
 WRONG: "The Lambda now works."
-RIGHT: "Tests pass: `47 passed, 0 failed` from `pytest test/`. The
-previously-failing `test_lambda_handler_augmentation` now succeeds."
+RIGHT: "Tests pass: `47 passed, 0 failed` from
+`python scripts/run_tests.py test/test_lambda.py`. The previously-failing
+`test_lambda_handler_augmentation` now succeeds."
 
 WRONG: "The pipeline should pass with this fix."
 RIGHT: "Pipeline #326 status from `glab ci status`: `running (stage:
@@ -1692,7 +2070,15 @@ without it.
 | Web app | deploy to dev/staging | smoke tests, health endpoints |
 | CLI tool / library | run with test inputs | compare stdout to expected |
 | Data pipeline | trigger pipeline run | compare output data to expected |
-| Local-only | run pytest / scripts | verify results match |
+| Local-only | `python scripts/run_tests.py` / scripts | verify results match |
+
+The project's TEST SUITE is run by CI, not by this loop
+(`ci-owns-the-test-suite.md`): the CI run on the pushed SHA is the
+suite's verdict, and this E2E test is the additional thing CI cannot do —
+exercise the deployed, running system. So the E2E loop is not complete
+until BOTH the CI run is green and the deployed behaviour verifies. Run
+the affected tests locally while you build the E2E test; do not re-run
+the whole suite here.
 
 ## Pre-deployment data snapshot (when applicable)
 
@@ -1830,13 +2216,25 @@ There is exactly one way out of a red suite:
 - Apply `coding-standards.md`, `design-principles.md`, and
   `file-organization.md` to the fix.
 
-### Step 4: Verify and re-run the WHOLE suite
+### Step 4: Verify — locally on what you touched, in CI for the rest
 
 - Re-run the previously-failing test alone. Confirm pass with full
-  output captured.
-- Re-run the FULL suite (`pytest test/`). Confirm zero failures.
-  Fixing one test sometimes breaks another; you don't get to stop
-  until every test in the full suite passes.
+  output captured: `python scripts/run_tests.py <that test>`.
+- Re-run the tests AROUND it — the module, the package, whatever the fix
+  could plausibly reach. Fixing one test sometimes breaks another, and this
+  is where you catch that cheaply.
+- The FULL suite is CI's verdict, not a local one
+  (`ci-owns-the-test-suite.md`). Push the batch once and read the CI run:
+  it runs every test with no fail-fast, so it reports every remaining
+  failure at once. You still don't get to stop until every test passes —
+  what changed is WHERE the whole-suite run happens, never WHETHER it must
+  be green.
+- **Fix every failure that run reports, in one pass.** A red CI run is a
+  complete list; treating it as a queue to work one item at a time turns
+  one run into five.
+- While CI-OUTAGE MODE is declared the `pre-push` hook runs the full suite
+  locally at push time, with bounded workers. That is the only sanctioned
+  local full-suite run.
 
 ### Step 5: Document
 
@@ -1880,9 +2278,13 @@ during the current task.
   behavior.
 - `no-output-shortening.md`: read full pytest output, not the tail.
 - `coding-standards.md` + `design-principles.md`: govern HOW you fix.
-- `post-activity.md`: the post-activity checklist re-runs the full
-  suite as the gate; this rule is what governs your behavior when
+- `post-activity.md`: the post-activity checklist runs the affected tests
+  plus `run_checks.py`; this rule is what governs your behavior when
   that gate is red.
+- `ci-owns-the-test-suite.md`: WHERE the run happens (affected tests
+  locally, full suite in CI) and the requirement to fix every failure a
+  run reports in ONE pass. That rule never softens this one: a failing
+  test is still always fixed, never skipped, xfailed or deleted.
 - `use-lessons-learned.md`: document non-obvious failures so the
   next agent doesn't repeat the same root cause.
 ```
@@ -1970,24 +2372,54 @@ completion.
    script (`scripts/github_wrapper.py` / `scripts/gitlab_wrapper.py`) —
    never `gh`, `glab`, or raw `curl` (see `use-git-wrapper-scripts.md`).
 
-## On failure (the debugging loop)
+## On failure (the debugging loop) — ONE run in, ALL fixes out
 
-If the pipeline finishes in a failed state:
+The pipeline is built NOT to fail fast: every check group runs in its own
+job, no `needs:` chain skips a sibling because another failed, and each job
+hands its whole group to `scripts/run_checks.py`, which continues past a
+failure and ends with a consolidated `=== FAILED CHECKS (n) ===` block
+(PART 7). A red run is therefore a COMPLETE list of what is wrong, not the
+first thing that went wrong.
 
-1. Retrieve the full logs of the failed jobs via the wrapper script.
-   Apply `no-output-shortening.md` — read the complete logs, not a tail.
-2. Analyze the logs and determine the root cause with evidence (per
+That is a bargain, and this is your side of it. If the pipeline finishes in
+a failed state:
+
+1. **Enumerate before fixing anything.** Retrieve the full logs of EVERY
+   non-successful job via the wrapper script — not just the first, not just
+   the ones that look related. Within each, list every failing test and
+   every failing check. Apply `no-output-shortening.md`: complete logs, not
+   a tail. Do not start editing while you are still reading.
+2. **Group by root cause, and write the grouping down.** Ten failures are
+   usually two or three causes. Record
+   `N failures across M jobs → K root causes` in your state, with each
+   failure assigned to a group, and determine each cause with evidence (per
    `no-guessing.md`). Consult MCP doc servers and `docs/` as needed.
-3. Fix the underlying issue in the source, tests, or configuration.
-4. Re-run the commit/push workflow (the fix must itself pass the
-   pre-commit hook).
-5. Monitor the new pipeline run again.
-6. Repeat this loop until the pipeline completes successfully.
+3. **Fix EVERY group** in the source, tests, or configuration — all of
+   them, before the next push. Commit as you go; commits are cheap
+   (`ci-owns-the-test-suite.md`).
+4. **Verify locally what is cheap to verify**: the affected tests via
+   `python scripts/run_tests.py`, or `python scripts/run_checks.py --group
+   lint` for a lint break. Do not re-run the full suite locally to
+   pre-check the pipeline.
+5. **Push ONCE**, then monitor the new run to a terminal state.
+6. Repeat only if the new run surfaces something genuinely new.
+
+**Fixing one failure and re-pushing to discover the next is a violation of
+this rule, not a work style.** Each avoidable run costs pipeline minutes
+that are themselves the scarce resource the capacity ladder below exists to
+cope with. Record every run you cause, with its purpose and what it
+surfaced, so the run count is visible and reviewable. If one failure truly
+cannot be diagnosed from the logs in hand, say so explicitly with the
+evidence, fix everything else, and treat the extra run as a cost you are
+consciously choosing.
 
 This loop is the ONLY exit. You may not abandon a remote-changing
 operation with a red or unfinished pipeline. "It will probably pass",
 "the failure looks unrelated", and "I'll let CI sort it out" are all
-forbidden — they violate `no-guessing.md` and this rule.
+forbidden — they violate `no-guessing.md` and this rule. Note that "the
+failure looks unrelated" is also forbidden as a reason to fix only the
+related ones: an unrelated failure is still on your list
+(`tests-must-not-fail.md`).
 
 ## When CI CANNOT RUN AT ALL: the capacity ladder (CRITICAL)
 
@@ -2117,13 +2549,38 @@ in front of you.
 Reachable only when Rung 1 found no implemented mechanism AND Rung 2 has
 been discharged (an issue now exists, whether you filed it or found it).
 It is NOT an exception to prove-before-merge — it REPLACES remote CI with
-a complete local execution of the same pipeline:
+a complete local execution of the same pipeline. This is the ONE state in
+which the full test suite runs locally, and even here it runs at PUSH
+time, never at commit time (`ci-owns-the-test-suite.md`).
 
+0. **DECLARE the outage** so the mechanism knows, rather than relying on
+   you to remember:
+   ```bash
+   python scripts/ci_outage_mode.py declare --evidence-run <run-id> \
+       --issue <n> --rung 3
+   ```
+   It writes a marker into the SHARED git dir, so ONE declaration covers
+   every concurrent per-issue worktree in the clone — a per-worktree
+   marker would leave sibling runs pushing unverified code. From that
+   moment the `pre-push` hook runs the full suite on every push, and
+   `declare` refuses without the evidence run id and the Rung 2 issue,
+   which is how the disclosure material in step 4 gets captured at the
+   moment it is still in front of you instead of reconstructed later.
 1. Run EVERY job group of the workflow locally, inside the venv
-   (`use-venv.md`), reading complete output (`no-output-shortening.md`).
-   Derive the command list FROM the workflow file so the mirror cannot
-   drift; treat any failure exactly as a red CI (fix the root cause,
-   never skip).
+   (`use-venv.md`), reading complete output (`no-output-shortening.md`):
+   ```bash
+   python scripts/run_checks.py
+   ```
+   This is the SAME script each CI job runs (PART 7), so the local mirror
+   cannot structurally drift from the pipeline — you are not
+   reconstructing it, you are running it. It also does not stop at the
+   first failure, so one local pass gives you the whole list, exactly as
+   a real run would. Treat any failure exactly as a red CI: fix every
+   root cause in one pass, never skip.
+   *If this project's CI does NOT route through `run_checks.py`, fall
+   back to deriving the command list FROM the workflow file, and say so
+   in the disclosure — a hand-derived mirror can drift and the reader
+   needs to know which kind they are being shown.*
 2. Any step that genuinely cannot run locally (a missing toolchain that
    cannot be installed, a credentialed deploy job) is a DISCLOSED GAP:
    name the step and the reason. "Best-effort" means you disclose the
@@ -2137,7 +2594,13 @@ a complete local execution of the same pipeline:
    exhaustion" unless that is what the evidence says.
 5. Disclose every job of the merged run that did not execute. Once
    capacity returns, the normal rule resumes and a later run must
-   confirm green.
+   confirm green — and **clear the marker at that moment**:
+   ```bash
+   python scripts/ci_outage_mode.py clear
+   ```
+   Clearing is not housekeeping. While it is set, every push in every
+   worktree of this clone pays for a full local suite, which is the cost
+   this whole rule set exists to avoid.
 
 ### What is NOT this ladder
 
@@ -2179,6 +2642,12 @@ finished.
   mutation — take the lock and record it as a `DL-NNN` decision.
 - `continuous-work.md`: a capacity outage is NOT a hard blocker while a
   rung remains untried. Work down the ladder rather than stopping to ask.
+- `ci-owns-the-test-suite.md`: the other half of this rule. It owns WHERE
+  tests run (affected tests locally, full suite in CI), the commit-often /
+  push-once contract, the bounded local worker count, and the CI-outage
+  marker this rule declares at Rung 3. A pipeline that is scarce enough to
+  need a capacity ladder is a pipeline whose runs must not be spent on
+  one-failure-at-a-time debugging.
 - `always-test-e2e.md`: a remote change that triggers CI is part of
   the E2E loop; the E2E test is not complete until CI is green.
 - `docs/codebuild-ci-backup-mechanism.md` is installed by PART 12 and is
@@ -2322,16 +2791,20 @@ clean (`git status --porcelain` empty) except for deliberately-in-progress files
 no stale branches or worktrees.
 
 **COMMIT** (belong in version control): source, tests, configuration
-(`pyproject.toml`, `.pre-commit-config.yaml`, CI config), docs, IaC/CDK, scripts,
-spec artifacts kept under version control, `.gitignore`/`.gitattributes`.
+(`pyproject.toml`, `.pre-commit-config.yaml`, CI config), the tracked git hooks
+(`.githooks/`), the secret-scan baseline (`.secrets.baseline` — it is the audited
+allow-list, so without it the pre-commit hook fails on every clone), docs, IaC/CDK,
+scripts, spec artifacts kept under version control, `.gitignore`/`.gitattributes`.
 **NEVER COMMIT** (auto-generated/transient/machine-local): build/compiled output
 (`build/`, `dist/`, `*.egg-info/`, `*.pyc`, `__pycache__/`), caches (`.pytest_cache/`,
 `.mypy_cache/`, `.ruff_cache/`, `.hypothesis/`), coverage (`.coverage`, `htmlcov/`),
-venvs (`venv/`, `.venv/`), editor/OS cruft, secrets/credentials, anything under
-`tmp/`, generated version files (`src/_version.py`), and per-run agent state
+check/test reports written by `scripts/run_checks.py` and `scripts/run_tests.py`
+(`reports/`), venvs (`venv/`, `.venv/`), editor/OS cruft, secrets/credentials, anything
+under `tmp/`, generated version files (`src/_version.py`), and per-run agent state
 (`.kiro/agent-state/`, `.kiro/worktrees/`). If a never-commit file is not already
 ignored, ADD it to `.gitignore` rather than leaving it untracked. Never `git add -A`
-blindly.
+blindly — committing often (`ci-owns-the-test-suite.md`) is encouraged and is NOT a
+licence to skip this classification.
 
 ## Worktrees and branches
 - Per-issue/per-task worktrees and branches are EPHEMERAL: when work reaches a
@@ -2658,6 +3131,165 @@ loop and yields after `LOOP_BLOCK_CAP` consecutive blocks, so everywhere else th
 the only thing standing between a long run and an unnecessary halt.
 ```
 
+### 8.34 `ci-owns-the-test-suite.md` (always) — fleet convention — NEW
+
+This is the rule that decides where the project's test suite executes. It is
+the companion of 8.25 (`remote-ci-must-pass.md`), which governs the CI run
+itself, and it is the reason PART 2's hooks and PART 7's pipeline are shaped
+the way they are. Install it as a steering file with `inclusion: always`.
+
+```markdown
+---
+inclusion: always
+---
+# CI Owns the Test Suite — commit cheaply, push once, fix everything (ALL agents)
+
+This rule governs WHERE tests run, WHEN you may push, and WHAT you must do
+with a red CI run. It is the companion of `remote-ci-must-pass.md`, which
+governs the CI run itself.
+
+## Why this rule exists
+
+Three measured failures of the previous arrangement, in which the full suite
+was a precondition for every commit:
+
+1. **Commits cost an hour.** On a project whose suite runs for 60 minutes, a
+   per-commit suite made each commit a 60-minute operation. Agents responded
+   rationally: they stopped committing, batched an entire feature into one
+   enormous commit, and the history became unreviewable — the exact opposite
+   of what a commit gate is for.
+2. **The machine died.** `pytest -n auto` takes one worker per vCPU. Several
+   concurrent per-issue worktrees each doing that made the host unusable and
+   got the agent process killed mid-run, losing the work.
+3. **Fail-fast turned one run into many.** A pipeline that stops at the first
+   failing stage reports ONE problem per run. The worker fixed it, pushed,
+   waited, found the next, and burned a full cycle per failure. Ten failures
+   meant ten pipeline runs.
+
+None of that bought any correctness. A local suite run and a CI suite run on
+the same SHA prove the same thing, and only one of them is free.
+
+## Where things run
+
+| Boundary | What runs | Cost |
+|---|---|---|
+| `pre-commit` hook | ruff lint, ruff-format, bandit (staged files), secret scan | < 2 s |
+| `pre-push` hook | mypy | seconds |
+| `pre-push` hook, **CI-OUTAGE MODE declared** | mypy + full suite, bounded workers | the exception |
+| CI | every check + the full suite, **no fail-fast**, all failures reported together | authoritative |
+| you, locally, while working | the AFFECTED tests — `python scripts/run_tests.py <paths or -k expr>` | your call |
+
+**The full test suite is never a precondition for a commit.** Not by a hook,
+not by a gate, not by your own discipline. If you are about to run the whole
+suite so that you are allowed to commit, that is this rule being violated.
+
+## Commit often; push once
+
+- A commit costs about a second. Commit at every natural boundary — a task
+  finished, a test written, a refactor separated from a behaviour change. A
+  readable series of small commits is the deliverable, not an accident.
+- **The push is the batching boundary.** Push when the batch of work is
+  complete and self-consistent, not when you want to know whether it works.
+  Never push "to see if CI passes" — that is the trial-and-error loop this
+  rule exists to end.
+- Before a push you owe: the paired tests for what you built, green,
+  captured. You do NOT owe a local full-suite run. CI runs the suite on the
+  pushed SHA and that run is the authoritative verdict.
+- `--no-verify` is forbidden on both commit and push. At commit the hook is a
+  second of lint and secret scanning, so there is nothing to save; at push it
+  is the only local gate there is. `kiro-tdd-gate.sh` blocks both.
+
+## Local test execution is bounded
+
+When you do run tests locally, go through `python scripts/run_tests.py`. It
+derives a BOUNDED worker count — `min(4, cores // 4)`, floor 1 — and refuses
+`-x` / `--maxfail`.
+
+- **Never `pytest -n auto` locally.** That is a CI-runner setting.
+  `run_tests.py --workers auto` exists for CI and nothing else.
+- **Never run suites in two worktrees at once.** The bound is per process;
+  four worktrees at four workers each is sixteen pytest processes, which is
+  how the host became unusable.
+- If a suite is flaky under parallelism, `--workers 1` is the honest answer
+  while the shared state gets fixed — not a retry loop, and never an `xfail`
+  (`tests-must-not-fail.md`).
+
+## One CI run per fix batch (the discipline that matters most)
+
+CI runs every check and reports every failure in a single run — that is what
+`scripts/run_checks.py` is for, and why no CI job may be a multi-command step
+list. Your side of that bargain: **use the whole report.**
+
+When a CI run comes back red:
+
+1. **Enumerate completely first.** Retrieve the logs of EVERY non-successful
+   job through the wrapper script, and within each, every failing test and
+   every failing check. Read complete output (`no-output-shortening.md`). Do
+   not start fixing while you are still reading.
+2. **Group by root cause.** Ten failures are usually two or three causes.
+   Write the grouping down: `N failures across M jobs → K root causes`.
+3. **Fix every group.** All of them, in this working session, before you push
+   again.
+4. **Push once.** Then monitor that run to a terminal state.
+
+**Fixing one failure and re-pushing to find the next is a rule violation, not
+a work style.** So is "I'll fix the obvious one and see what's left." If a
+failure genuinely cannot be diagnosed from the logs you have, say so
+explicitly with the evidence, fix everything else, and treat the extra run as
+a cost you are consciously choosing.
+
+Record each CI run you cause in your run state with its purpose and what it
+surfaced (run id, why you pushed, failures found, root-cause groups). The
+count is the metric: a fix that took four runs when it could have taken two
+is a defect in how the work was done, and without the record nobody can see
+it.
+
+## When CI cannot run at all
+
+That is `remote-ci-must-pass.md`'s capacity ladder, not this rule's business —
+with one mechanical consequence that lives here: while the outage lasts, the
+suite runs at PUSH time, never at commit time.
+
+```bash
+python scripts/ci_outage_mode.py declare --evidence-run <id> --issue <n> --rung <2|3>
+python scripts/ci_outage_mode.py clear      # the moment a real CI run goes green
+```
+
+`declare` writes a marker into the SHARED git dir, so one declaration covers
+every concurrent worktree in the clone, and the `pre-push` hook picks it up
+with no further configuration. Clearing it is not housekeeping: while it is
+set, every push in every worktree pays for a full local suite.
+
+## Self-check
+
+Before pushing, confirm: paired tests green and captured; the batch is
+complete rather than a probe; no `--no-verify` anywhere; no local full-suite
+run was performed to satisfy a gate. After a red CI run, confirm: every
+failing job read, every failure enumerated, root causes grouped and written
+down, all of them fixed, exactly one push.
+
+## Integration
+
+- `remote-ci-must-pass.md`: the CI run itself — monitoring it, the debugging
+  loop, and the capacity ladder when it cannot run. This rule says what you
+  do with its output.
+- `tests-must-not-fail.md`: a failing test is always fixed, never skipped or
+  xfailed. That is unchanged and unconditional; this rule only changes WHERE
+  the run happens.
+- `post-activity.md`: the completion checklist runs the affected tests
+  locally and takes the suite verdict from CI.
+- `keep-git-clean.md`: commit only what belongs — a frequent-commit habit is
+  not a licence to commit generated files or `reports/`.
+- `continuous-work.md`: waiting for a CI run is not a reason to end a turn.
+  Monitor it, and work on anything that does not depend on its result.
+- `no-output-shortening.md` / `no-guessing.md`: "every failing job" means
+  every log read in full, and every claim backed by quoted output.
+- `use-venv.md`: every local run happens inside the venv.
+- `scripts/run_tests.py`, `scripts/run_checks.py`, `scripts/ci_outage_mode.py`:
+  the mechanisms (PART 2). `run_checks.py` is the same command CI runs, which
+  keeps a local pipeline execution from drifting away from the real pipeline.
+```
+
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
 
 After creating and/or merging every steering file in this Part, verify
@@ -2815,9 +3447,14 @@ wiring is needed beyond the copy):
   and `@continue-work` is the manual recovery path. Claude Code's twin additionally binds to
   `SessionStart` matcher `compact`, which Kiro has no equivalent of.
 - `kiro-tdd-gate.sh` — `preToolUse` hook (matcher `execute_bash`) on the orchestrator,
-  conductor, and implementer. Exit code 2 BLOCKS a `git commit` that uses
-  `--no-verify`, or that commits an implementation task with no fresh green test
-  evidence.
+  conductor, and implementer. Exit code 2 BLOCKS: a `git commit` using `--no-verify`/`-n`;
+  a `git push` using `--no-verify`; a `git push` while a task marked complete has no test
+  capture, or the newest paired-test capture is red or full of skips; and a `git push`
+  while CI-OUTAGE MODE is declared with no green full-suite capture.
+  It gates PUSH, not commit — the evidence requirement used to sit on `git commit`, which
+  made every commit cost a full suite run and drove agents to one giant commit per feature
+  (steering 8.34). A commit now only has to avoid bypassing the hook. `-n` is banned on
+  commit only, deliberately: on `git push` it means `--dry-run`, which is harmless.
 - `kiro-claim-before-worktree.sh` — `preToolUse` hook (matcher `execute_bash`) on the
   orchestrator. Exit code 2 BLOCKS creating the per-issue worktree
   (`git worktree add … issue-<N>`) until `issue claim-check <N>` confirms the issue is
@@ -2988,16 +3625,29 @@ they reference those files rather than duplicating their content.
 
 #### 9.1 `run-ci-workflow.kiro.hook`
 - name: "Run Full CI Workflow"
-- description: "Trigger all CI checks locally (ruff, mypy, bandit, pytest)."
+- description: "Run every project check locally in one pass and fix every failure."
 - trigger: `userTriggered`
 - action: `askAgent`
-- prompt: "Run the project's full CI workflow locally:
-  1. Read `.gitlab-ci.yml` (or `.github/workflows/*.yml`) to confirm
-     which checks CI runs.
-  2. Run each one inside the venv. Apply the no-output-shortening rule.
-  3. Fix every issue before continuing.
-  4. Report which checks passed, which failed, and what was fixed.
-  Continue until every check passes."
+- prompt: "Run the project's full check suite locally, inside the venv:
+  ```bash
+  python scripts/run_checks.py
+  ```
+  This is the SAME command each CI job runs (PART 7), so what you see here is
+  what CI will see. It does NOT stop at the first failure: it runs every check
+  in every group and ends with a consolidated `=== FAILED CHECKS (n) ===`
+  block.
+  1. Read the COMPLETE output (no-output-shortening rule) — the summary block
+     at the end is the full list of what is wrong.
+  2. **Fix every listed failure in ONE pass.** Group them by root cause first;
+     ten failures are usually two or three causes. Do not fix one and re-run
+     to discover the next — that habit is what steering 8.34 forbids, and it
+     is just as wasteful locally as it is in CI.
+  3. Re-run `run_checks.py` once when all fixes are in.
+  4. Report: every failure the first run listed, the root-cause grouping, what
+     was fixed, and the clean final run.
+  If a check is reported as SKIPPED, its tool is missing from the venv —
+  install it AND add it to `pyproject.toml`'s dev extra. A skipped check has
+  not passed."
 
 #### 9.2 `test-coverage.kiro.hook`
 - name: "Check Test Coverage"
@@ -3005,12 +3655,17 @@ they reference those files rather than duplicating their content.
 - trigger: `userTriggered`
 - action: `askAgent`
 - prompt: "Analyze and improve test coverage:
-  1. `pytest test/ --cov=src --cov-report=term-missing --cov-report=html`.
-  2. Read the configured threshold from
-     `[tool.pytest.ini_options]` in pyproject.toml.
+  1. `python scripts/run_tests.py --coverage` (bounded workers; the coverage
+     flags and the threshold live in that script, NOT in
+     `[tool.pytest.ini_options]` — they are deliberately kept out of `addopts`
+     so that running a handful of affected tests does not fail on a
+     whole-project threshold).
+  2. Read the threshold from `COVERAGE_THRESHOLD` in `scripts/run_tests.py`.
   3. Identify uncovered files and lines, prioritizing critical paths.
   4. Add tests until the threshold is met (use hypothesis where
-     property-based testing fits).
+     property-based testing fits). Run the tests you are writing with
+     `python scripts/run_tests.py <path>` — no coverage, fast — and only
+     re-run with `--coverage` to check progress against the threshold.
   5. Report initial vs final coverage, tests added, and any remaining
      gaps with justification."
 
@@ -3082,20 +3737,31 @@ If remote changes exist:
    - body describing changes by component or purpose
 5. `git commit -m "<message>"`.
 
+A commit costs about a second (Step D), so commit at every natural boundary
+rather than accumulating one enormous change. A readable series of small
+commits is the deliverable (`ci-owns-the-test-suite.md`).
+
 ## Step D: Pre-commit hook handling
 
-`git commit` triggers the pre-commit hook (ruff lint + format).
+`git commit` triggers the pre-commit hook: ruff lint, ruff-format, bandit over
+the staged files, and a secret scan. No tests, no mypy — under two seconds.
 - Exit code 0: hook passed; proceed.
 - Non-zero exit: fix every reported issue. Then go back to Step B
   (there may be new remote changes), Step C (stage fixes), Step D
   (commit again).
-- NEVER use `--no-verify` to bypass the hook.
+- NEVER use `--no-verify` to bypass the hook. There is nothing to save — and
+  the secret scan is the one check whose miss cannot be undone after a push.
 
 ## Step E: Push (only used by git-push)
 
-`git push origin <branch>`. If rejected (non-fast-forward), go back
-to Step B and retry. If a new branch needs upstream tracking:
+Push ONCE, when the batch of work is complete — not to find out whether it
+works. `git push origin <branch>`. If rejected (non-fast-forward), go back to
+Step B and retry. If a new branch needs upstream tracking:
 `git push --set-upstream origin <branch>`.
+
+`git push` triggers the pre-push hook: mypy, plus the FULL test suite if
+CI-OUTAGE MODE is declared (`scripts/ci_outage_mode.py status`). Fix whatever
+it reports; never `--no-verify`.
 
 ## Step F: Monitor CI (only used by git-push)
 
@@ -3104,9 +3770,21 @@ wrapper script (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
 to fetch CI status — never `gh`/`glab`/`curl` (see
 `use-git-wrapper-scripts.md`).
 
-Wait for the pipeline to terminate. Apply the no-output-shortening rule
-to every command. If the pipeline failed, fix the cause (consult MCP
-doc servers and project docs as appropriate) and loop back to Step B.
+Wait for the pipeline to terminate. Apply the no-output-shortening rule to
+every command. CI is where this project's test suite runs, and it is built not
+to fail fast — so a red run is the COMPLETE list of what is wrong, not the
+first thing wrong.
+
+If the pipeline failed:
+1. Retrieve the logs of EVERY non-successful job and enumerate every failing
+   test and check before changing anything.
+2. Group them by root cause and record `N failures across M jobs → K root
+   causes`.
+3. Fix every group (consult MCP doc servers and project docs as appropriate),
+   committing as you go, then loop back to Step B and push ONCE.
+
+Fixing one failure and re-pushing to discover the next is forbidden
+(`ci-owns-the-test-suite.md`, `remote-ci-must-pass.md`).
 ```
 
 #### 9.5 `git-commit.kiro.hook`
@@ -3202,13 +3880,16 @@ without the Part 8A fleet — any stalled session can be restarted with it.
 - prompt: "Execute the git-push workflow. Reference
   `.kiro/steering/git-workflow-shared.md`.
   1. Run Step B for current branch and (if not main) for main.
-  2. Run Steps C and D.
-  3. Run Step E (push).
-  4. Run Step F (monitor CI). If CI fails, identify root causes,
-     fix, and loop back to Step C.
+  2. Run Steps C and D — as many commits as the work naturally divides into.
+  3. Run Step E (push) ONCE, when the batch is complete.
+  4. Run Step F (monitor CI). If CI fails, enumerate EVERY failing job and
+     every failure inside it FIRST, group them by root cause, fix them ALL,
+     then loop back to Step C and push once. Do not fix one failure and
+     re-push to find the next (`ci-owns-the-test-suite.md`).
   Exit only when CI passes. End with a summary listing files committed,
-  commit message(s), conflicts resolved, pre-commit fixes, CI status,
-  and the final commit hash from `git log --oneline -1`."
+  commit message(s), conflicts resolved, pre-commit/pre-push fixes, CI status,
+  the number of CI runs this took and what each surfaced, and the final commit
+  hash from `git log --oneline -1`."
 
 ---
 
@@ -3325,8 +4006,16 @@ Required sections (add only those that are missing):
 - Directory structure
 - Key components and their responsibilities
 - AWS configuration usage (if AWS project)
-- Testing strategy
-- Common commands
+- Testing strategy — including WHERE tests run: the affected tests locally via
+  `scripts/run_tests.py`, the full suite in CI, and the CI-outage exception
+  (steering `ci-owns-the-test-suite.md`, PART 2.2's hook split, PART 7's
+  pipeline). An assistant that does not know this will try to run the whole
+  suite before every commit, which is the failure mode the split exists to fix.
+- Common commands — at minimum:
+  `python scripts/run_tests.py <paths>` (affected tests),
+  `python scripts/run_checks.py` (the whole pipeline, locally, one pass),
+  `python scripts/ci_outage_mode.py status`,
+  `bash scripts/setup-hooks.sh` (once per clone)
 
 ### `docs/ProjectPlan.md`
 Required sections:
@@ -3421,17 +4110,68 @@ After completing all parts:
 1. **MCP servers** — every server in Part 0.2 returns data on its
    verification call. Apply Rule 3 to each verification command.
 2. **Virtual environment** — `venv/` activated, deps installed.
-3. **Pre-commit hook** — `scripts/setup-hooks.sh` ran successfully;
-   `.git/hooks/pre-commit` exists; `pre-commit run ruff --config .pre-commit-config.yaml`
-   succeeds.
-4. **CI checks** — `ruff check`, `ruff format --check`, `mypy`,
-   `bandit` all pass on the existing codebase (or only fail on
-   pre-existing issues; flag those).
-5. **Tests** — `pytest test/ --cov=src` runs (failures must be fixed
-   per `tests-must-not-fail.md`).
+3. **Git hooks** — `scripts/setup-hooks.sh` ran successfully;
+   `git config --get core.hooksPath` returns `.githooks`; both
+   `.githooks/pre-commit` and `.githooks/pre-push` are TRACKED with mode 100755
+   (`git ls-files -s .githooks/`); `.secrets.baseline` exists and is committed.
+   Then prove the split, because this is the assertion that regresses silently:
+   ```bash
+   pre-commit run --hook-stage pre-commit --files README.md
+   ```
+   The hook NAMES it prints are the stage's membership, and pytest must not be
+   among them. If it is, some hook is missing its `stages:` key (Part 2.2 step 1)
+   and the project is back to running the suite on every commit.
+   **Use `--files <one file>`, NOT `--all-files`.** On a project that has not been
+   ruff-formatted at this scope, `--all-files` REWRITES the whole codebase (ruff
+   `--fix` plus ruff-format) as a side effect of a verification step — a
+   destructive surprise mid-setup, and it buries the actual answer in a reformat
+   diff. One already-clean file enumerates the same hooks and changes nothing.
+   Confirm the inverse the same way — `pre-commit run --hook-stage pre-push
+   --files README.md` lists mypy, and `pre-commit run --hook-stage manual pytest`
+   is how the suite is invoked by hand.
+4. **Checks** — `python scripts/run_checks.py` runs and reports on the existing
+   codebase (pre-existing failures are flagged, not fixed silently). Verify it
+   does not fail fast: seed TWO independent failures (a lint error in one file
+   and a failing assertion in one test), run it once, and confirm the
+   consolidated `=== FAILED CHECKS (n) ===` block lists BOTH; then revert the
+   seeds. A run that reports only the first is the defect Part 7.0 exists to
+   prevent. Also confirm no check is reported as SKIPPED — a skipped check has
+   not passed, it means its tool is missing from the dev extra.
+5. **Tests** — `python scripts/run_tests.py` runs (failures must be fixed per
+   `tests-must-not-fail.md`), and:
+   - `python scripts/run_tests.py --print-command` shows a bounded `-n <N>`
+     with N = `min(4, cores // 4)`, floor 1 — NOT `-n auto`;
+   - `python scripts/run_tests.py -x` is REFUSED with a message;
+   - `addopts` in `pyproject.toml` carries no `--cov` flags, so a targeted run
+     of a handful of tests neither instruments coverage nor fails a
+     whole-project threshold.
+5a. **CI-outage marker** — round-trip it:
+   ```bash
+   python scripts/ci_outage_mode.py status   # expect exit 1, "NOT ACTIVE"
+   python scripts/ci_outage_mode.py declare --evidence-run 0 --issue 0 --rung 3
+   python scripts/ci_outage_mode.py status   # expect exit 0, "ACTIVE"
+   python scripts/ci_outage_mode.py clear
+   ```
+   Confirm the marker file lands in the SHARED git dir
+   (`git rev-parse --git-common-dir`), not in a worktree-local `.git` file —
+   that is what makes one declaration cover every concurrent worktree. Leave it
+   CLEARED. Then confirm the pre-push hook honours it: with no marker it must
+   report that CI owns the suite and run no tests.
+5b. **CI is not fail-fast** — read the CI config and assert: check groups share
+   ONE stage (GitLab) or carry NO `needs:` on each other (GitHub Actions); any
+   matrix sets `strategy.fail-fast: false`; every check job's script/steps is a
+   SINGLE command; the final report job has `when: always` / `if: always()`;
+   and no `-x`, `--maxfail` or `--stepwise` appears anywhere. Each of these
+   silently restores one-failure-per-run behaviour (Part 7.0).
 6. **Steering files** — every file in Part 8 exists in
    `.kiro/steering/`, AND every file conforms to the format at
-   https://kiro.dev/docs/steering/ (per the Part 8.26 check).
+   https://kiro.dev/docs/steering/ (per the Part 8.26 check). In particular
+   `ci-owns-the-test-suite.md` (8.34) exists with `inclusion: always`, and
+   `remote-ci-must-pass.md` (8.25) carries BOTH the enumerate-group-fix-all
+   debugging loop and the `ci_outage_mode.py` declare/clear steps in Rung 3 —
+   a ported body whose debugging loop still reads "fix, re-push, repeat" means
+   the batching discipline was dropped and the project will burn one pipeline
+   run per failure.
 7. **Hooks** — every hook in Part 9 exists in `.kiro/hooks/`.
 8. **Custom agents** — every agent from PART 8A exists in `.kiro/agents/`
    as `<name>.json` (filename stem equals the JSON `name`); each parses;
@@ -3443,6 +4183,15 @@ After completing all parts:
 9. **Git wrapper** — for the detected host, the wrapper exists and
    credential stub is in place. If a real token is configured, run
    one read-only command to confirm auth.
+9b. **Temp-leak containment** (PART 6.1) — `scripts/reap_agent_temp.py` exists and
+    `tmp/os-temp` exists. Run it report-only and confirm it lists a reclaimable total
+    without listing any unmatched entry as reclaimable:
+    ```bash
+    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp
+    ```
+    State which scoping mode the project uses — per-command prefix, wrapper script, or
+    none (best-effort pattern matching only). A 0 B report while the shared OS temp dir
+    visibly holds `jsii-kernel-*` means temp is not scoped, not that the disk is clean.
 9a. **CI capacity fallback** — `docs/codebuild-ci-backup-mechanism.md` exists (PART 12)
     and still reads as project-agnostic (its placeholder table is intact; no concrete
     stack/account/repository name has crept in), and
@@ -3526,6 +4275,23 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
 - Credential stub: [created / preserved / contains real token]
 - Manual action required: [list]
 
+## Test-execution policy (where checks run)
+- `.githooks/pre-commit`: [lint + security, staged files — no tests / migrated
+  from an existing hook: what it now runs]
+- `.githooks/pre-push`: [mypy; full suite only while CI-OUTAGE MODE is declared]
+- Hooks with no `stages:` key found in an existing `.pre-commit-config.yaml`:
+  [none / list, and where each was moved]
+- Test suite runs in: [CI]. Check scripts installed:
+  [run_tests.py / run_checks.py / ci_outage_mode.py]
+- `addopts` coverage flags: [absent — moved to `run_tests.py --coverage` /
+  left in place because: reason]
+- CI fail-fast audit: [single verify stage + one command per job + report job
+  with when:always / defects found: list each and whether it was fixed or only
+  reported]
+- CI routes through `scripts/run_checks.py`: [yes / no — if no, note that
+  steering 8.25 Rung 3's local mirror must be hand-derived and can drift]
+- `.secrets.baseline`: [generated + committed / already present]
+
 ## Configuration conflicts
 - [list, with what was kept vs skipped]
 
@@ -3555,14 +4321,22 @@ project/
 │   ├── settings/                # MCP and other settings
 │   └── specs/templates/         # spec templates
 ├── .vscode/
+├── .githooks/                   # TRACKED git hooks (Part 2.2)
+│   ├── pre-commit               # lint + security, staged files, < 2 s
+│   └── pre-push                 # mypy; full suite only during a CI outage
 ├── .pre-commit-config.yaml
+├── .secrets.baseline            # audited secret-scan allow-list (COMMITTED)
 ├── cdk/                         # AWS CDK (if used)
 ├── config/
 │   └── aws_accounts.json        # gitignored
 ├── credentials/                 # gitignored stubs
 ├── docs/
+├── reports/                     # gitignored check/test reports
 ├── scripts/
 │   ├── setup-hooks.sh
+│   ├── run_tests.py             # the ONE test invocation (bounded, no fail-fast)
+│   ├── run_checks.py            # every check, every failure, one pass — CI calls this
+│   ├── ci_outage_mode.py        # declare/clear the CI-outage marker
 │   ├── github_wrapper.py        # if GitHub
 │   └── gitlab_wrapper.py        # if GitLab
 ├── src/
@@ -3576,12 +4350,28 @@ project/
 | File | Purpose |
 |---|---|
 | `pyproject.toml` | metadata, deps, tool config |
-| `.gitlab-ci.yml` / `.github/workflows/` | CI pipeline |
-| `.pre-commit-config.yaml` | hook definitions (ruff, mypy, pytest) |
-| `scripts/setup-hooks.sh` | generates `.git/hooks/pre-commit` with venv path |
+| `.gitlab-ci.yml` / `.github/workflows/` | CI pipeline — one job per check group, no fail-fast |
+| `.pre-commit-config.yaml` | hook definitions; the `stages:` key decides commit vs push vs manual |
+| `.githooks/pre-commit` | lint + security on staged files. Never tests |
+| `.githooks/pre-push` | mypy; the full suite only while CI-OUTAGE MODE is declared |
+| `scripts/setup-hooks.sh` | points `core.hooksPath` at `.githooks` (once per clone) |
+| `scripts/run_tests.py` | the project's test command: bounded workers, refuses `-x` |
+| `scripts/run_checks.py` | runs every check group, reports every failure, one exit |
+| `scripts/ci_outage_mode.py` | declares/clears the shared CI-outage marker |
 | `src/aws_config.py` | AWS account singleton |
 | `config/aws_accounts.json` | account / profile / region mappings |
 | `docs/forLLMConsumption.md` | consolidated docs for AI assistants |
+
+### Where checks run
+| Boundary | What runs |
+|---|---|
+| `pre-commit` | ruff, ruff-format, bandit (staged), secret scan |
+| `pre-push` | mypy (+ full suite while CI-OUTAGE MODE is declared) |
+| CI | every check + the full suite, no fail-fast, all failures at once |
+| local, on demand | `run_tests.py <paths>` for affected tests; `run_checks.py` for everything |
+
+Steering `ci-owns-the-test-suite.md` (8.34) is the rule; the files above are its
+mechanism.
 
 ### Steering inclusion types
 | Type | Applied when |

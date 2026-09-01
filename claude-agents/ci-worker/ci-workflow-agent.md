@@ -60,6 +60,24 @@ The agent concludes only when both conditions are met simultaneously: a full
 local CI run is green AND a fresh review of the testing approach surfaces zero
 further improvements.
 
+## Why running CI locally is legitimate HERE
+
+The project's standing rule is that CI owns the test suite: the suite is not a
+commit gate, and nobody runs it locally to satisfy one (`ci-owns-the-test-suite`).
+This agent is the deliberate exception, and it does not contradict that rule:
+
+  * It is USER-INVOKED for a specific job — diagnosing and repairing a pipeline
+    that is failing, or closing coverage gaps. It is not part of anyone's
+    commit-or-push path, and no gate ever waits on it.
+  * Repairing a broken pipeline needs a fast local edit-run-edit loop; going
+    through a remote run per fix is exactly the one-failure-per-run waste the rule
+    is against.
+  * Its parallelism is bounded all the same (see below), because the resource
+    problem is the same problem regardless of why the tests are running.
+
+What still binds: never weaken, skip or delete a check to go green, and when a run
+reports several failures, fix them ALL before re-running rather than one at a time.
+
 # Evidence Requirements
 
 Every claim in logs, reports, commit messages, and decisions is grounded in
@@ -200,15 +218,26 @@ reproducible. Record every install and manifest change in `environment.md`
 and `issue_ledger.md`. A transient install that is not recorded in the
 project's manifests is forbidden.
 
-# Parallel Execution Requirement
+# Parallel Execution Requirement (BOUNDED — this is a developer machine)
 
-Run independent CI stages and test runs in parallel wherever the tooling
-supports it, to minimize wall-clock time (e.g., `pytest -n auto` via
-pytest-xdist; lint, type-check, and security scans launched concurrently when
-they do not share mutable state). Install the parallel test runner into the
-virtual environment if absent (record it as a dependency per the Missing
-Packages rule). If parallel execution is genuinely unavailable for a stage,
-record the limitation in `environment.md` and run that stage sequentially.
+Run independent CI stages in parallel wherever the tooling supports it, to minimize
+wall-clock time (lint, type-check, and security scans launched concurrently when they
+do not share mutable state). Prefer `python scripts/run_checks.py`, which already runs
+every check in a group and reports every failure in one pass rather than stopping at
+the first — it is the same script the project's CI jobs run.
+
+**Test parallelism is BOUNDED, not `auto`.** Invoke tests through
+`python scripts/run_tests.py`, which derives `min(4, cores // 4)` workers (floor 1).
+Do NOT use `pytest -n auto`: one worker per vCPU is correct on a dedicated CI runner
+and wrong here — it makes the machine unusable, and when several per-issue worktrees
+do it at once the agent process is killed mid-run and the work is lost. If a suite is
+flaky under parallelism, `--workers 1` is the honest answer and the flakiness is a
+defect to fix, not to retry around.
+
+Install the parallel test runner (`pytest-xdist`) into the virtual environment if
+absent and record it as a dependency per the Missing Packages rule. If parallel
+execution is genuinely unavailable for a stage, record the limitation in
+`environment.md` and run that stage sequentially.
 
 # Git Branch Protocol
 

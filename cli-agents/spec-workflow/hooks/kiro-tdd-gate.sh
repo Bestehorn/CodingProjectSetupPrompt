@@ -6,9 +6,29 @@
 # `tool_name`, `tool_input`, `session_id`, `cwd`. This hook inspects the shell command and
 # BLOCKS (exit 2 — the documented preToolUse block code, STDERR returned to the LLM) when:
 #   (a) the command bypasses verification: `git commit --no-verify` / `-n`, or
-#   (b) the command is `git commit` while the active spec has no fresh GREEN evidence for
-#       the task currently in progress.
+#       `git push --no-verify`;
+#   (b) the command is `git push` while a task marked complete in the active spec has no
+#       test-evidence capture, or the newest capture is red or riddled with skips;
+#   (c) the command is `git push` while CI-OUTAGE MODE is declared and no green full-suite
+#       capture exists — because in that state nothing downstream will run the suite either.
 # Otherwise it allows the command (exit 0).
+#
+# WHY THE GATE IS ON PUSH AND NOT ON COMMIT
+#   It used to block `git commit` unless the current task had a green capture. On a project
+#   whose suite takes an hour that made every commit cost an hour, so agents batched
+#   everything into one enormous commit and the history stopped being reviewable — the
+#   opposite of what the gate was for.
+#   Commits are now cheap (the pre-commit hook is lint + security only) and are meant to be
+#   frequent. The PUSH is the boundary where evidence is owed, because a push is what asks
+#   CI — and other people — to take the work seriously. See the ci-owns-the-test-suite
+#   steering rule.
+#
+#   Note this gate does NOT require a local full-suite run before a push. CI runs the suite
+#   on the pushed SHA and is authoritative. What it requires is that the per-task paired
+#   tests the workflow already captured are actually green.
+#
+# `-n` IS BANNED ON COMMIT ONLY, DELIBERATELY: for `git commit` it means --no-verify, but
+# for `git push` it means --dry-run, which is harmless and occasionally useful.
 #
 # Differences from the Claude Code version (spec-tdd-gate.sh):
 #   - matcher/tool is `shell`, not `Bash`; the command is still at tool_input.command;
@@ -34,21 +54,45 @@ if [[ -z "$cmd" ]]; then
   cmd="$(printf '%s' "$input" | grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"(.*)"/\1/')"
 fi
 
-# Only act on git commit commands.
-if ! grep -qE '(^|[;&| ])git[[:space:]]+commit([[:space:]]|$)' <<<"$cmd"; then
+# Match against the command with quoted strings REMOVED. Otherwise a commit whose message
+# mentions pushing (`git commit -m "prepare for push"`) is classified as a push and gated
+# against evidence it does not owe. The `([^;&|]*[[:space:]])?` allows for global options,
+# which matters because every orchestrator command is `git -C <worktree> …`.
+stripped="$(sed -E 's/"[^"]*"//g; s/'"'"'[^'"'"']*'"'"'//g' <<<"$cmd")"
+
+is_commit=0
+is_push=0
+grep -qE '(^|[;&| ])git[[:space:]]+([^;&|]*[[:space:]])?commit([[:space:]]|$)' <<<"$stripped" && is_commit=1
+grep -qE '(^|[;&| ])git[[:space:]]+([^;&|]*[[:space:]])?push([[:space:]]|$)' <<<"$stripped" && is_push=1
+# `git stash push` is not a remote push.
+grep -qE 'stash[[:space:]]+push' <<<"$stripped" && is_push=0
+
+# Not a commit or a push: nothing here applies.
+if (( is_commit == 0 && is_push == 0 )); then
   exit 0
 fi
 
 # (a) Ban verification bypass outright.
-if grep -qE '(--no-verify|[[:space:]]-n([[:space:]]|$))' <<<"$cmd"; then
-  echo "kiro-tdd-gate: 'git commit --no-verify'/-n is forbidden — commits must pass the pre-commit hook and be backed by green test evidence. Fix the failing checks instead of bypassing them." >&2
+if (( is_commit == 1 )) && grep -qE '(--no-verify|[[:space:]]-n([[:space:]]|$))' <<<"$stripped"; then
+  echo "kiro-tdd-gate: 'git commit --no-verify'/-n is forbidden. The pre-commit hook is lint + security only and takes about a second — there is nothing to save by skipping it, and a bypass is how a secret or a lint regression reaches the remote. Fix the reported issue instead." >&2
+  exit 2
+fi
+if (( is_push == 1 )) && grep -qE '(--no-verify)' <<<"$stripped"; then
+  echo "kiro-tdd-gate: 'git push --no-verify' is forbidden. The pre-push hook is the type check, plus the full suite when CI-OUTAGE MODE is declared — and in that state it is the ONLY thing verifying this push. Fix the cause instead of bypassing the hook." >&2
   exit 2
 fi
 
-# Locate the active spec workflow's state, SESSION-AWARE so concurrent runs don't
-# cross-talk. Preferred: map this session_id -> its run via the orchestrator registry and
-# use that run's runs/<run-id>/workflow_state.md. Fallback (e.g. a spec-conductor run with
-# no registry entry): most-recently-modified workflow_state.md under any agent-state dir.
+# Commits carry no evidence requirement: commit early, commit often.
+if (( is_push == 0 )); then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------------------
+# From here on the command is a push. Locate the active spec workflow's state,
+# SESSION-AWARE so concurrent runs don't cross-talk. Preferred: map this session_id -> its
+# run via the orchestrator registry and use that run's runs/<run-id>/workflow_state.md.
+# Fallback (e.g. a spec-conductor run with no registry entry): most-recently-modified
+# workflow_state.md under any agent-state dir.
 base="$proj/.kiro/agent-state"
 
 state_file=""
@@ -71,34 +115,81 @@ fi
 
 phase="$(grep -iE '^[*-]?[[:space:]]*Phase:' "$state_file" | tail -1 | sed -E 's/.*Phase:[[:space:]]*//')"
 spec_dir="$(grep -iE '^[*-]?[[:space:]]*CURRENT_SPEC:' "$state_file" | tail -1 | sed -E 's/.*CURRENT_SPEC:[[:space:]]*//' | tr -d '\r')"
-task_id="$(grep -iE '^[*-]?[[:space:]]*CURRENT_TASK:' "$state_file" | tail -1 | sed -E 's/.*CURRENT_TASK:[[:space:]]*//' | tr -d '\r')"
 
-# Only gate commits during implementation/verification.
+# Only gate pushes during implementation/verification. A spec-artifact push during the
+# design phases has no tests to be green yet, by construction.
 case "$phase" in
   *IMPLEMENT*|*VERIFY*) : ;;
   *) exit 0 ;;
 esac
 
-if [[ -z "$spec_dir" || -z "$task_id" ]]; then
-  # Can't identify the task; do not hard-block (non-blocking exit 0).
+if [[ -z "$spec_dir" ]]; then
+  # Can't identify the spec; do not hard-block (non-blocking exit 0).
   exit 0
 fi
 # spec_dir recorded relative to the project root; resolve it.
 [[ "$spec_dir" != /* && -d "$proj/$spec_dir" ]] && spec_dir="$proj/$spec_dir"
 
-green="$spec_dir/evidence/green/${task_id}.txt"
-if [[ ! -f "$green" ]]; then
-  echo "kiro-tdd-gate: no green evidence for task '$task_id' at $green — run the paired tests and capture a passing result before committing." >&2
-  exit 2
+tasks="$spec_dir/tasks.md"
+problems=""
+
+# (b) Every task marked complete must have a capture. An IMPL task produces a green
+#     paired-test capture; a pure TEST task produces a red one (that IS its evidence).
+if [[ -f "$tasks" ]]; then
+  while IFS= read -r line; do
+    id="$(sed -E 's/^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/' <<<"$line")"
+    [[ "$id" == "$line" ]] && continue           # no numeric id parsed
+    if [[ ! -f "$spec_dir/evidence/green/${id}.txt" && ! -f "$spec_dir/evidence/red/${id}.txt" ]]; then
+      problems+="  - task ${id} is marked complete but has no capture (evidence/green/${id}.txt or evidence/red/${id}.txt)."$'\n'
+    fi
+  done < <(grep -E '^[[:space:]]*-[[:space:]]*\[[xX]\]' "$tasks")
 fi
 
-# The green capture must actually be passing and free of skip/xfail dodges.
-if grep -qiE 'failed|error' "$green" && ! grep -qiE '0 failed|no failures|[1-9][0-9]* passed' "$green"; then
-  echo "kiro-tdd-gate: green evidence for task '$task_id' shows failures — not safe to commit." >&2
-  exit 2
+# The newest green capture must actually be passing and free of skip/xfail dodges.
+# Predicates are anchored on a runner SUMMARY COUNTER, never a bare word, and comment
+# lines are stripped first — a test NAME containing "skipped" or an agent's own
+# '# earlier this run: 3 failed' annotation must not be read as a failing/vacuous run
+# (mirrors spec-tdd-gate.sh: the twin gates read the same capture format and must not
+# disagree about what it means).
+latest_green="$( { ls -t "$spec_dir"/evidence/green/*.txt 2>/dev/null; } | head -1)"
+if [[ -n "$latest_green" ]]; then
+  capture="$(grep -vE '^[[:space:]]*#' "$latest_green" 2>/dev/null)"
+  if grep -qiE '[1-9][0-9]* (failed|failure|failures|error|errors)\b' <<<"$capture"; then
+    problems+="  - newest green capture ($latest_green) shows failures/errors."$'\n'
+  fi
+  if grep -qiE '[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b' <<<"$capture"; then
+    problems+="  - newest green capture ($latest_green) contains skipped/xfail tests — resolve them, do not push around them."$'\n'
+  fi
 fi
-if grep -qiE 'skipped|xfail|xpassed' "$green"; then
-  echo "kiro-tdd-gate: green evidence for task '$task_id' contains skipped/xfail tests — resolve them, do not commit around them." >&2
+
+# (c) CI-OUTAGE MODE: the pushed SHA will get no CI run, so the full suite must have been
+#     run locally. The marker lives in the SHARED git dir, so one declaration covers every
+#     worktree of the clone. A relative --git-common-dir is relative to the CURRENT
+#     directory, NOT to the top level of the working tree — joining it against
+#     --show-toplevel resolves outside the repo entirely when the cwd is a subdirectory.
+git_common="$(git -C "$proj" rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -n "$git_common" ]]; then
+  case "$git_common" in
+    /*|[A-Za-z]:*) ;;
+    *) git_common="$proj/$git_common" ;;
+  esac
+  if [[ -f "$git_common/ci-outage-mode" ]]; then
+    latest_regress="$( { ls -t "$spec_dir"/evidence/regress/*.txt 2>/dev/null; } | head -1)"
+    if [[ -z "$latest_regress" ]]; then
+      problems+="  - CI-OUTAGE MODE is declared, so no CI run will verify this push, and there is no full-suite capture under $spec_dir/evidence/regress/. Run 'python scripts/run_tests.py' and capture it."$'\n'
+    else
+      regress_capture="$(grep -vE '^[[:space:]]*#' "$latest_regress" 2>/dev/null)"
+      if grep -qiE '[1-9][0-9]* (failed|failure|failures|error|errors)\b' <<<"$regress_capture"; then
+        problems+="  - CI-OUTAGE MODE is declared and the newest full-suite capture ($latest_regress) is red."$'\n'
+      fi
+    fi
+  fi
+fi
+
+if [[ -n "$problems" ]]; then
+  echo "kiro-tdd-gate: not safe to push — the work is not yet proven:" >&2
+  printf '%s' "$problems" >&2
+  echo "Commits are free; a push asks CI and other people to take this seriously. Finish the batch, capture the evidence, then push once." >&2
   exit 2
 fi
 

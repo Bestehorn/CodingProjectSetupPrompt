@@ -21,8 +21,11 @@ claude --agent spec-conductor
                                         threat model, DevOps, AC→validation map)
         → DESIGN_REVIEW_LOOP  (6-reviewer panel ↔ author; exit: 0 A+B + full coverage)
         → TASKS (test-first)  → TASKS_REVIEW_LOOP (light panel; exit: 0 A+B)
-        → IMPLEMENT_LOOP (per task: RED → GREEN → no-regress, conductor captures evidence)
-        → VERIFY (adversarial-verifier re-runs & refutes; panel re-checks the diff)
+        → IMPLEMENT_LOOP (per task: RED → GREEN → commit, paired tests only, conductor
+                           captures evidence; no-regress = ONE CI run after the batch's
+                           single push)
+        → VERIFY (adversarial-verifier verifies & refutes — whole-suite verdict from the
+                   CI run; panel re-checks the diff)
         → EVIDENCE_REPORT (property → test → quoted output)
 ```
 
@@ -43,7 +46,8 @@ positive proof-coverage gate so silence ≠ approval.
 ### Proof with evidence (hard requirement)
 The `spec-implementer` writes tests and code but **never certifies its own work**. The
 conductor runs the tests and captures complete output to `evidence/`. The
-`adversarial-verifier` independently re-runs the suite and tries to *refute* every
+`adversarial-verifier` obtains an independent whole-suite result — normally the CI run
+for the pushed SHA, a local run only when none exists — and tries to *refute* every
 "it works" claim (kill-the-mutant: revert/stub the impl and require the test to fail;
 vacuity/skip/xfail scan; property stress; coverage; red-for-the-right-reason audit).
 The final `evidence/REPORT.md` quotes real command output for every passing claim.
@@ -56,7 +60,7 @@ The final `evidence/REPORT.md` quotes real command output for every passing clai
 | `spec-author` | Writes/edits requirements, design, tasks. Never grades itself. | gen + revise |
 | `spec-researcher` | Read-only codebase/MCP research bursts for the interview. | prompt |
 | `test-architect` ★ | Properties + coverage map + AC→test mapping (positive gate). | design, tasks, verify |
-| `adversarial-verifier` ★ | Re-runs & refutes every claim with evidence. | verify |
+| `adversarial-verifier` ★ | Verifies & refutes every claim with evidence (whole-suite verdict from CI). | verify |
 | `standards-reviewer` | Conformance to project/coding standards + `.claude/rules/`. | design, verify |
 | `best-practice-reviewer` | Alignment with external best practices (MCP/web). | design, verify |
 | `security-reviewer` | Threat model + vuln/secret/least-privilege review. | design, verify |
@@ -69,7 +73,16 @@ adversarial reviewer; runs in report-only mode under the conductor) and
 
 Phase procedures are authored once in `phases/spec-phase-*.md` and followed by both
 the conductor and the slash commands (single source of truth). The shared decision-log
-convention is `rules/agent-state-convention.md`. The TDD gates are in `hooks/`.
+convention is `rules/agent-state-convention.md`. The gates are in `hooks/`.
+
+**Where tests run.** Per task the conductor runs only the PAIRED tests and commits;
+commits are cheap (the pre-commit hook is lint + security) and are meant to be frequent.
+The whole-suite regression verdict comes from ONE CI run over the finished batch after a
+single push. `spec-tdd-gate.sh` therefore gates the PUSH, not the commit — the evidence
+requirement used to sit on `git commit`, which made every task cost a full suite run and
+drove agents to one giant commit per feature. `rules/ci-owns-the-test-suite.md` is the
+rule; the exception is a declared CI outage, where the `pre-push` hook runs the suite
+locally with bounded workers.
 
 ## The hooks (in `claude-agents/spec-workflow/hooks/`)
 
@@ -81,7 +94,7 @@ convention is `rules/agent-state-convention.md`. The TDD gates are in `hooks/`.
 | `continuous-work-reinject.sh` | SessionStart (`compact\|resume\|startup`) | Re-injects the continuous-work contract plus THIS session's recorded place (phase, issue, branch, worktree, PR). When identity is unresolvable it SAYS SO rather than guessing — the predecessor borrowed the most recently touched run directory and handed one session another run's issue number. |
 | `issue-loop-gate.sh` | Stop | The PRIMARY brake. Blocks while the run has CLAIMED tracked work (`CURRENT_ISSUE`/`CURRENT_SPEC`/an orchestrator `MODE`) and has NOT affirmatively said it is idle, finished, or escalated. Polarity is inverted on purpose: an UNRECOGNISED `Status` means work in flight, because arming on the single literal `IN_PROGRESS` let `WORKING`, `ACTIVE`, `in progress` and four other plausible words each disable it. `WORKABLE_ISSUES_REMAIN` gates NOTHING: it chooses the refusal's wording and feeds the progress fingerprint. `AWAITING_USER` is checked for SUBSTANCE, not presence — a placeholder, an angle-bracketed token, or a one-word answer is rejected. Fails CLOSED on a `BROKEN` identity, an unrecognised verdict, and a missing or partially-sourced library. |
 | `spec-stop-gate.sh` | Stop | The evidence gate. Blocks on a `[x]` task with no capture, a capture that shows no PASSING result (existence was being read as proof — two zero-byte files were accepted as evidence), a failing latest capture, a real skip/xfail counter, an unparseable checked task line, and an ABSENT `tasks.md` **or** `CURRENT_SPEC` at phase IMPLEMENT/VERIFY — both are the mandatory-artifact case the gate exists for. Honours `AWAITING_USER`, resolves a spec inside a per-issue WORKTREE, and matches runner counters rather than bare words so a test NAME containing "skipped" cannot force the agent to edit its own evidence. |
-| `spec-tdd-gate.sh` | PreToolUse(Bash) | Bans `git commit --no-verify`/`-n` outright, and blocks a commit during IMPLEMENT/VERIFY with no fresh green evidence for the current task. Resolves identity through `hook-state-lib.sh`. Its internal ORDER is load-bearing: the bypass ban and the non-commit exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a COMMIT but never an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
+| `spec-tdd-gate.sh` | PreToolUse(Bash) | Bans `git commit --no-verify`/`-n` and `git push --no-verify` outright, and blocks a PUSH during IMPLEMENT/VERIFY when a checked task has no evidence capture, the newest green capture is red or skip-ridden, or CI-OUTAGE MODE is declared with no green full-suite capture. Commits carry no evidence requirement — commit early, commit often (`rules/ci-owns-the-test-suite.md`). Resolves identity through `hook-state-lib.sh`. Its internal ORDER is load-bearing: the bypass bans and the non-push exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a PUSH but never a commit or an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
 | `red-for-right-reason.sh` | — | Helper for the RED-phase audit (a test must fail for the reason the task predicts). |
 | `MIGRATION.md` | — (docs) | How to deploy all of this to a project whose agents are ALREADY RUNNING: what a live session can and cannot pick up, why the delivery channel is a blocking Stop hook's stderr rather than the tidier JSON `decision` form, and which live sessions the contract handshake does NOT reach. |
 | `tests/` | — (suites) | SEVEN self-contained suites, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.sh` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.sh` is the counterpart of `test_stop_gates.sh`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.sh` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
@@ -130,11 +143,12 @@ the unit.** This suite therefore defines no global named `base`, `session`, `orc
 `UNREGISTERED` (an entry with an absent, empty, absolute or path-traversing `state_dir`, and a
 malformed registry), the counter's clamping and base-10 handling, and the field-parsing contract.
 
-`hooks/tests/test_tdd_gate.sh` (**21 cases**) covers the commit gate in BOTH directions, which are
-asymmetric: it must never refuse a non-commit command even when its own library is broken, and it
-must always refuse a commit it cannot justify. It pins the measured fail-open where a capture
-reading `3 failed, 5 passed` was ALLOWED because the old escape clause matched "5 passed", while
-`0 failed, 5 passed` must still pass.
+`hooks/tests/test_tdd_gate.sh` (**42 cases**) covers the push gate in BOTH directions, which are
+asymmetric: it must never refuse a non-push command — commits included, which carry no evidence
+requirement — even when its own library is broken, and it must always refuse a push it cannot
+justify. It pins the measured fail-open where a capture reading `3 failed, 5 passed` was ALLOWED
+because the old escape clause matched "5 passed", while `0 failed, 5 passed` must still pass, plus
+the CI-outage rung (a push with no CI run behind it owes a green full-suite capture).
 
 `hooks/tests/test_reinject.sh` covers the SessionStart re-injector with 23 substring
 assertions over its emitted text, because that hook's contract is what it SAYS rather than an
@@ -174,14 +188,14 @@ terminal-value agreement this project had to adjudicate twice:
 ```bash
 bash claude-agents/spec-workflow/hooks/tests/test_crlf_hygiene.sh    # 11 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_hook_state_lib.sh  # 64 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_tdd_gate.sh        # 21 passed, 0 failed
+bash claude-agents/spec-workflow/hooks/tests/test_tdd_gate.sh        # 42 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_reinject.sh        # 23 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_stop_gates.sh      # 24 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_gate_overblock.sh  # 50 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_unpinned_fixes.sh  # 32 passed, 0 failed
 ```
 
-225 assertions in total. Take each number from the `TOTAL:` line the suite itself prints rather
+246 assertions in total. Take each number from the `TOTAL:` line the suite itself prints rather
 than from this file — a count quoted in prose and never re-measured is how the library suite came
 to be described as "30 cases" in one paragraph while the runnable block above said 64.
 
@@ -228,7 +242,9 @@ cp claude-agents/spec-workflow/phases/*.md                .claude/specs/_workflo
 cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # agent-state-convention,
                                                                          # no-ai-attribution, keep-git-clean,
                                                                          # issue-tracking, per-worktree-venv,
-                                                                         # issue-filing-discipline
+                                                                         # issue-filing-discipline,
+                                                                         # continuous-work,
+                                                                         # ci-owns-the-test-suite
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
@@ -256,10 +272,11 @@ Then register the hooks in `.claude/settings.json`:
 | Event | Hook | Note |
 |---|---|---|
 | SessionStart | `session-register.sh` | must run — it seeds the state the gates read |
+| SessionStart | `scoped-temp-init.sh` | creates `tmp/os-temp` so the scoped `TMPDIR` is usable |
 | SessionStart (`compact\|resume\|startup`) | `continuous-work-reinject.sh` | |
 | Stop | `issue-loop-gate.sh` | the primary brake |
 | Stop | `spec-stop-gate.sh` | the evidence gate |
-| PreToolUse(Bash) | `spec-tdd-gate.sh` | the commit/evidence gate |
+| PreToolUse(Bash) | `spec-tdd-gate.sh` | the push/evidence gate (commits carry no evidence requirement) |
 | PreToolUse(Bash) | `claim-before-worktree.sh` | blocks a per-issue worktree until the claim is visible on the remote |
 | PreToolUse(Bash) | `issue-filing-gate.sh` | blocks an issue-create call whose body carries no filing rationale |
 
@@ -268,9 +285,12 @@ the measured failure: with nothing seeding `runs/<run-id>/`, both gates resolved
 exited 0 on every turn-end for 189 sessions. Add to root `CLAUDE.md`:
 "All agents follow `.claude/rules/agent-state-convention.md` for state and decision
 logging, `.claude/rules/no-ai-attribution.md` for descriptive names with no
-Claude/AI attribution in commits, PRs, issues, branches, or worktrees, and
+Claude/AI attribution in commits, PRs, issues, branches, or worktrees,
 `.claude/rules/issue-filing-discipline.md` for when an issue may be filed at all
-(observed defects only, fix-first, zero filings is a valid outcome)."
+(observed defects only, fix-first, zero filings is a valid outcome), and
+`.claude/rules/ci-owns-the-test-suite.md` for where tests run (affected tests locally,
+full suite in CI; commit often, push once; fix every failure a CI run reports in one
+pass)."
 `ClaudeCodeSetupPrompt.txt` (Part 12) does all of this for you.
 
 ## Durable state (preserved for later agents)

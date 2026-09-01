@@ -1,30 +1,89 @@
-# All available pre-commit hooks. The tracked git hook in .githooks/pre-commit
-# selectively runs only the fast ones (ruff + ruff-format). Slow ones
-# (mypy, pytest) are available via `pre-commit run <id>` or in CI.
+# Hook inventory for this project. The `stages:` field on each hook is what decides WHEN
+# it runs, and the tracked git hooks in .githooks/ run whole STAGES rather than named ids —
+# so this file is the single source of truth for the commit/push/CI split:
+#
+#   pre-commit  ruff, ruff-format, bandit, detect-secrets, detect-private-key   (< 2 s)
+#   pre-push    mypy                                                           (seconds)
+#   manual      pytest — CI owns the suite; see below
+#
+# WHY pytest IS `stages: [manual]` AND NOT A COMMIT HOOK
+#   The test suite runs in CI, which runs every check and reports every failure in one
+#   pass. Gating each commit on the suite made commits cost minutes on real projects, hogged
+#   the machine (see run_tests.py on worker bounds), and pushed agents toward one giant
+#   commit instead of a readable series. Manual stage keeps `pre-commit run --hook-stage
+#   manual pytest` working on demand without ever firing on a commit.
+#   The single exception — a proven CI capacity outage — is handled at PUSH time by
+#   .githooks/pre-push reading the marker written by scripts/ci_outage_mode.py.
+#
+#   Do not remove the `stages:` keys. Without them pre-commit defaults a hook to the
+#   pre-commit stage, which is exactly how the suite ends up back on every commit.
+#
+# `default_install_hook_types` matters for anyone who runs `pre-commit install` directly
+# instead of using the tracked .githooks/ + core.hooksPath mechanism: without it, only the
+# pre-commit hook is installed and nothing type-checks at push time.
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
       - id: ruff
         args: [--fix]
+        stages: [pre-commit]
         exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
       - id: ruff-format
+        stages: [pre-commit]
         exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
 
+  # Security at the commit boundary. bandit is fast because pre-commit passes it only the
+  # STAGED files; the full recursive scan is CI's `security` group.
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.6
+    hooks:
+      - id: bandit
+        args: [-c, pyproject.toml]
+        stages: [pre-commit]
+        exclude: ^(test/|old/|workspace/|tmp/|venv/)
+        additional_dependencies: ["bandit[toml]"]
+
+  # A pushed credential cannot be un-pushed, so secret detection is the one check that has
+  # to be earlier than CI. Requires a committed `.secrets.baseline`; generate it once with
+  #   detect-secrets scan > .secrets.baseline
+  # and re-run that after auditing a legitimate finding.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        stages: [pre-commit]
+        exclude: ^(venv/|tmp/|\.secrets\.baseline$)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+        stages: [pre-commit]
+
+  # Whole-project type analysis: the push boundary, not the commit boundary. Running mypy
+  # on a staged subset is both slow to warm and unreliable.
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.17.0
     hooks:
       - id: mypy
         args: [--ignore-missing-imports]
+        stages: [pre-push]
         exclude: ^(test/|old/|workspace/|tmp/|venv/|scripts/)
         additional_dependencies: [types-requests, types-python-dateutil]
 
   - repo: local
     hooks:
+      # On demand only. The invocation lives in scripts/run_tests.py so that this hook, the
+      # pre-push outage path, the CI test job and the agent fleet cannot drift apart:
+      # bounded local workers, no fail-fast, complete failure list.
       - id: pytest
-        name: pytest
-        entry: pytest
+        name: pytest (manual — CI owns the suite)
+        entry: python scripts/run_tests.py
         language: system
-        args: [--cov=src, --cov-fail-under=80]
+        stages: [manual]
         pass_filenames: false
         always_run: true

@@ -476,16 +476,29 @@ for every artifact listed in the Conventions section.
 
 The working branch remains local. No `git push` is executed at any point.
 
-## Discovery Step 9: Determine the Test Invocation (Parallel Preferred)
+## Discovery Step 9: Determine the Test Invocation (Parallel, but BOUNDED)
 
 Determine the exact test command, including parallel flags. Record in
 `test_baseline.md`. Preference order:
 
+This agent runs the suite once PER CANDIDATE, which is deliberate — per-candidate
+attribution is the only thing that makes a removal provably safe, and it cannot be
+replaced by a single CI run over a batch. That makes the worker count matter more here
+than anywhere else: one worker per vCPU, times a long candidate list, is what makes the
+host unusable and gets the agent process killed mid-run. So parallelism is BOUNDED
+(`min(4, cores // 4)`), never `auto`. If the project ships `scripts/run_tests.py`, use
+it — it derives that bound, refuses `-x`, and is the same invocation the rest of the
+fleet uses.
+
 Python:
-  - If `pytest` present: `<venv-invocation> pytest -n auto --cov=src
+  - If `scripts/run_tests.py` present (PREFERRED): `<venv-invocation> python
+    scripts/run_tests.py --coverage`
+    (bounded workers; add `--junit` if you want machine-readable per-candidate results.)
+  - Else if `pytest` present: `<venv-invocation> pytest -n 2 --cov=src
     --cov-report=json:.kiro/agent-state/dead-code-removal-agent/coverage.json
-    --cov-report=term -q`
-    (`-n auto` from pytest-xdist; coverage via pytest-cov or coverage.)
+    --cov-report=term -q -ra`
+    (`-n 2` from pytest-xdist rather than `-n auto`; raise it only after measuring that
+    the host stays usable with the whole candidate list. Coverage via pytest-cov.)
   - If `unittest` only: fall back to
     `<venv-invocation> python -m unittest discover -v`
     (Parallel unittest requires third-party runners; if none present, run
@@ -954,7 +967,11 @@ typical projects converge in two.
 - Leaving `TEMPORARY` tool installs in place at termination.
 - Committing dependency manifest changes outside Discovery Step 5.4.
 - Batching multiple removals into one commit.
-- Running a test subset instead of the full suite.
+- Running a test subset instead of the full suite. (This agent is the ONE place that
+  legitimately runs the whole suite repeatedly: per-candidate attribution is what makes
+  a removal provably safe, and a single CI run over a batch cannot tell you WHICH
+  removal broke something. The general rule that CI owns the suite still binds the
+  worker COUNT — bounded, never `auto`, per Discovery Step 9.)
 - "Simplifying" surrounding code after a removal.
 - Reformatting imports, even to make them "look cleaner".
 - Deleting tests that actually exercise behavior, on the rationale that

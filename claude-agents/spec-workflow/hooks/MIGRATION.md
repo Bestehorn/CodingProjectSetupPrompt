@@ -329,7 +329,7 @@ mkdir -p /tmp/gp/hooks && cp .claude/hooks/issue-loop-gate.sh /tmp/gp/hooks/
 bash .claude/hooks/tests/test_crlf_hygiene.sh     # 11 — a CR smuggled through a line protocol
 bash .claude/hooks/tests/test_hook_state_lib.sh   # 64 — identity, parsing, counters, cap validation
 bash .claude/hooks/tests/test_stop_gates.sh       # 24 — Stop gate exit codes
-bash .claude/hooks/tests/test_tdd_gate.sh         # 21 — commit gate, both directions
+bash .claude/hooks/tests/test_tdd_gate.sh         # 42 — push gate, both directions
 bash .claude/hooks/tests/test_reinject.sh         # 23 — no cross-run adoption + delivery invariants
 bash .claude/hooks/tests/test_gate_overblock.sh   # 50 — the OVER-block direction: turns that must be ALLOWED
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # 32 — handshake BLOCK by text, evidence, mtime, cross-gate
