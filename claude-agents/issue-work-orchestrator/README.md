@@ -251,3 +251,28 @@ This agent is designed for long autonomous runs and performs real remote operati
   with the spec, `decisions/decision-log.md` (DL-NNN), and `evidence/` (the proof chain).
 - Everything follows `.claude/rules/agent-state-convention.md`. `.claude/agent-state/`
   and `.claude/worktrees/` are gitignored. `.kiro/` is never touched.
+
+## Procedure changelog (maintainers)
+
+Historical notes moved out of the agent definition; current behavior is fully stated
+there, and the full incident accounts live in
+[`../spec-workflow/hooks/MIGRATION.md`](../spec-workflow/hooks/MIGRATION.md) §Incident
+record (installed as `.claude/hooks/MIGRATION.md`).
+
+- **SELECT's tracker claim was once a hand-rolled sequence.** The step originally
+  described a re-fetch → additive-label → assign → re-read-verify sequence the agent had
+  to execute and remember to verify. It was superseded by the wrapper's single
+  fail-closed `issue start <X>` (GitHub `start-issue`), which performs the same sequence
+  and exits non-zero if the claim did not land; the definition now states only the
+  current command. The live trap that remains documented inline is the whole-set
+  `issue update --labels` replace, which drops other labels.
+- **`WORKABLE_ISSUES_REMAIN` used to BE the loop gate's block condition** (which is how
+  single-issue runs that set it to `no` were never gated); the loop gate armed only on
+  the literal `Status: IN_PROGRESS` (Incident `seven-synonyms`); and the evidence gate
+  once released on a PREFIX match of a terminal value the loop gate refused (Incident
+  `whole-value-vs-substring`). All three were corrected — the semantics the definition
+  now points to are the authoritative contract in `.claude/docs/run-identity.md` §5, and
+  the "What actually holds and releases" section above describes the corrected gate.
+- **The definition's identity section once retold the `invented-run-label` incident and
+  the `SESSION_ID` third-rung re-derivation in full**; both are now one-line pointers.
+  The authoritative telling is `run-identity.md` §2/§6 and MIGRATION.md.

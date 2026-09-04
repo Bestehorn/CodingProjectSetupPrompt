@@ -282,6 +282,7 @@ CLAUDE.md                      # always-on project memory (root)
   rules/                       # path-scoped + always-on rule files (≈ steering)
   commands/                    # slash commands (≈ Kiro userTriggered hooks)
   agents/                      # custom subagents (≈ .kiro/agents/)
+  docs/                        # on-demand reference docs read by agents (never auto-loaded)
   agent-state/                 # long-running-agent checkpoint state (gitignored)
 ```
 
@@ -468,8 +469,8 @@ credentials/*
 ```
 
 Do NOT gitignore `.claude/settings.json`, `.claude/rules/`, `.claude/commands/`,
-`.claude/agents/`, `.mcp.json`, or `CLAUDE.md` — those are team-shared and
-checked in. Do NOT gitignore `.githooks/` or `.secrets.baseline` either: the
+`.claude/agents/`, `.claude/docs/`, `.mcp.json`, or `CLAUDE.md` — those are
+team-shared and checked in. Do NOT gitignore `.githooks/` or `.secrets.baseline` either: the
 hooks are the tracked standard (Part 2.2) and the baseline is the audited
 secret-scan allow-list, without which the pre-commit hook fails on every clone.
 Do NOT add `.kiro/` to `.gitignore` if it is already tracked.
@@ -1009,7 +1010,8 @@ than a second opinion, and it puts one hard requirement on its shape.
 first one — otherwise a worker fixes one problem per run and a ten-failure branch
 costs ten pipeline runs, which is the trial-and-error loop the rule forbids and,
 on a quota-limited account, what exhausts the quota the capacity ladder
-(`remote-ci-must-pass.md`) then has to cope with. Three mechanisms defeat you,
+(`docs/ci-capacity-ladder.md`, pointed at by `remote-ci-must-pass.md`) then has
+to cope with. Three mechanisms defeat you,
 and all three must be handled:
 
 1. **A step list is fail-fast by construction** — a GitLab `script:` block stops
@@ -1168,13 +1170,29 @@ When porting `post-activity.md`, `tests-must-not-fail.md` and `always-test-e2e.m
 from Kiro steering, port the CURRENT bodies (Kiro 8.6, 8.23, 8.22): all three were
 changed so that the AFFECTED tests run locally and the FULL suite verdict comes from
 CI. A ported body that still says "run all tests: `pytest test/`" before marking work
-complete reinstates the per-commit suite this setup removed. Same for
-`remote-ci-must-pass.md` (Kiro 8.25): its debugging loop must carry the
-enumerate → group-by-root-cause → fix-all → push-once obligation, and Rung 3 must
-declare and clear the CI-outage marker via `scripts/ci_outage_mode.py`.
+complete reinstates the per-commit suite this setup removed. Two of the ports are
+KERNEL+COMPANION splits, and each must produce BOTH files:
+
+- `tests-must-not-fail.md` (Kiro 8.23) is TWO files: the always-on kernel
+  `.claude/rules/tests-must-not-fail.md` (the standard plus the COMPLETE
+  forbidden-claims and forbidden-actions lists, and the pointer to the companion)
+  AND `.claude/rules/tests-must-not-fail-procedures.md` carrying the full
+  diagnosis/repair procedure with `paths: ["test/**/*.py"]` frontmatter —
+  Claude Code's `paths:` scoping is the direct equivalent of the Kiro companion's
+  `fileMatch` / `fileMatchPattern: "test/**/*.py"`.
+- `remote-ci-must-pass.md` (Kiro 8.25) is a kernel plus a PROJECT DOC: the
+  always-on rule keeps the core rule, the full ONE-PASS red-CI loop
+  (enumerate → group-by-root-cause → fix-all → push-once), the rung-naming ladder
+  summary, and the `scripts/ci_outage_mode.py` declare/clear backstop; the FULL
+  capacity ladder (Rungs 0–3 with their evidence obligations) lives in
+  `docs/ci-capacity-ladder.md` — deliberately NOT under `.claude/rules/`, where a
+  file with no `paths:` would load into every session. The kernel points at the
+  doc; Part 9 and checklist 11a verify the split.
 
 Path-scoped (`paths:`):
 - `testing.md` → `["test/**/*.py"]`
+- `tests-must-not-fail-procedures.md` → `["test/**/*.py"]` (the procedure half of
+  the tests-must-not-fail split above; the kernel stays always-on)
 - `dependencies.md` → `["**/*.py"]`
 - `cdk-rules.md`, `cdk-deployment-only.md` → `["cdk/**/*.py"]`
 - `lambda-rules.md` → `["src/lambda_handlers/**/*.py"]`
@@ -1227,8 +1245,11 @@ cross-platform behavioral contract and not a per-tool preference. Three things d
 - **The Enforcement sections describe DIFFERENT gates, correctly.** Kiro's blocks while
   `WORKABLE_ISSUES_REMAIN=yes` and yields after `LOOP_BLOCK_CAP`; Claude's `issue-loop-gate.sh`
   blocks on CLAIMED tracked work with an INVERTED `Status` polarity, and treats
-  `WORKABLE_ISSUES_REMAIN` as wording only (Part 13.3). Never state one host's condition as if
-  it held on both — that is the specific error this note exists to prevent.
+  `WORKABLE_ISSUES_REMAIN` as wording only (Part 13.3). The Claude rule's Enforcement section
+  carries only the load-bearing facts (inverted polarity, durable block caps) and points at
+  `.claude/docs/run-identity.md` for the full release vocabulary and verdicts. Never state one
+  host's condition as if it held on both — that is the specific error this note exists to
+  prevent.
 - **`AskUserQuestion` appears only on the Claude side**, since it is a Claude Code tool.
 
 **Why it exists.** Agents halt on their own initiative far more than users interrupt them.
@@ -1336,7 +1357,7 @@ Install the translated subagents from this repo's `claude-agents/` directory
 into the project's `.claude/agents/`:
 
 ```bash
-mkdir -p .claude/agents
+mkdir -p .claude/agents .claude/docs
 cp claude-agents/dead-code/dead-code-removal-agent.md         .claude/agents/
 cp claude-agents/doc-review/doc-reviewer-agent.md             .claude/agents/
 cp claude-agents/ci-worker/ci-workflow-agent.md               .claude/agents/
@@ -1346,9 +1367,21 @@ cp claude-agents/product-management/product-management-agent.md .claude/agents/
 cp claude-agents/spec-review/spec-review-agent.md             .claude/agents/
 cp claude-agents/spec-review/spec-prompt-author-agent.md      .claude/agents/
 cp claude-agents/cv/cv-*.md                                   .claude/agents/
+
+# Agent-sibling templates → .claude/docs/ (ON-DEMAND, deliberately NOT rules/:
+# each is read by its agent AT DRAFTING TIME, not loaded into every session)
+cp claude-agents/issue-intake/issue-draft-template.md          .claude/docs/
+cp claude-agents/product-management/pm-proposal-template.md    .claude/docs/
+cp claude-agents/issue-housekeeping/housekeeping-templates.md  .claude/docs/
+cp claude-agents/dead-code/language-matrix.md                  .claude/docs/dead-code-language-matrix.md
 ```
 
-(Install only the agents the project needs. See `claude-agents/README.md` for
+(Install only the agents the project needs, but install each agent WITH its
+sibling template: `issue-intake`, `product-management` and `issue-housekeeping`
+read their drafting templates from `.claude/docs/` at the moment they produce a
+draft/proposal, and `dead-code` reads `.claude/docs/dead-code-language-matrix.md`
+at language setup — the agent definitions point at those exact paths instead of
+carrying the templates in their bodies. See `claude-agents/README.md` for
 per-agent tool/permission notes and `claude-agents/cv/README.md` for the CV
 suite. The CV orchestrator must be run as the MAIN session —
 `claude --agent cv-orchestrator` — because Claude Code subagents cannot spawn
@@ -1412,9 +1445,9 @@ mkdir -p docs
 cp project-docs/codebuild-ci-backup-mechanism.md docs/
 ```
 
-This is what `remote-ci-must-pass.md`'s capacity ladder (Rung 2) points an
-implementing worker at, so installing the rule without the guide leaves that rung
-dangling.
+This is what the capacity ladder's Rung 2 (`docs/ci-capacity-ladder.md`,
+summarized and pointed at by `remote-ci-must-pass.md`) points an implementing
+worker at, so installing the ladder without the guide leaves that rung dangling.
 
 It is deliberately **project-agnostic**: placeholders for every name the project
 must choose (`<runner-project-name>`, `<mode-variable>`, `<fallback-token>`, …),
@@ -1436,12 +1469,18 @@ Apply Rule 1 if the project already has a `docs/` file of that name: where its
 version is a genuine local evolution, keep it and record the divergence rather
 than overwriting it.
 
-**And confirm the ported `remote-ci-must-pass.md` actually carries the ladder.**
-Part 8.2 ports rule bodies from `.kiro/steering/` or from
-KiroProjectSetupPrompt.v2.txt Part 8, and the capacity ladder lives in that
-rule's Part 8.25 body. It is the section that makes "CI has no minutes left" a
-three-rung decision instead of a licence, so verify all three rungs are present
-after porting:
+**And confirm the capacity-ladder split survived the port.** Part 8.2 ports
+`remote-ci-must-pass.md` (Kiro 8.25) as a KERNEL plus a project doc: the
+always-on rule carries the core rule, the ONE-PASS red-CI loop, and a
+rung-naming summary that POINTS at `docs/ci-capacity-ladder.md`, while that doc
+carries the FULL ladder — the text that makes "CI has no minutes left" a
+three-rung decision instead of a licence. Verify three things after porting:
+the kernel carries the ONE-PASS loop and the rung summary + pointer;
+`docs/ci-capacity-ladder.md` exists and carries all three rungs with their
+evidence obligations; and the full ladder text does NOT survive inside the
+always-on rule (nothing was deleted in the split — only relocated behind the
+pointer, so a rule still carrying the whole ladder means the port duplicated
+instead of splitting). The three rungs, as the doc must state them:
 
 1. **Fallback already implemented → USE it.** Relocating the pipeline is
    MANDATORY and local execution is FORBIDDEN, because a relocated run is a real
@@ -1542,7 +1581,11 @@ this prompt (leave any existing one alone).
    `ci-owns-the-test-suite.md` exists with no `paths:` frontmatter, and grep the
    ported `post-activity.md` / `tests-must-not-fail.md` for a surviving
    "run all tests: `pytest test/`" precondition — that phrasing reinstates the
-   per-commit suite this setup removed.
+   per-commit suite this setup removed. Confirm the tests-must-not-fail split
+   landed as TWO files: the kernel `tests-must-not-fail.md` always-on (no
+   `paths:`) with the complete forbidden-claims/actions lists, and
+   `tests-must-not-fail-procedures.md` present with
+   `paths: ["test/**/*.py"]` and carrying the full diagnosis/repair procedure.
 7. Settings — `.claude/settings.json` parses; permissions + any hooks valid. If Part 12
    was installed, confirm the `hooks` object is the UNION of Part 6.2's and Part 12.2's
    entries (a second `"hooks"` key replaces rather than merges), that all THREE
@@ -1576,13 +1619,17 @@ this prompt (leave any existing one alone).
     before concluding the disk is clean.
 11a. CI capacity fallback — `docs/codebuild-ci-backup-mechanism.md` exists
     (Part 9) and still reads as project-agnostic (its placeholder table is intact;
-    no concrete stack/account/repository name has crept in), and
-    `.claude/rules/remote-ci-must-pass.md` carries the capacity ladder: Rung 1
+    no concrete stack/account/repository name has crept in). Then verify the
+    kernel/doc split: the kernel `.claude/rules/remote-ci-must-pass.md` carries
+    the ONE-PASS red-CI loop and the rung summary + pointer;
+    `docs/ci-capacity-ladder.md` exists and carries the FULL ladder — Rung 1
     (use an implemented fallback; local execution forbidden), Rung 2 (file once
     via `issue-intake` after checking open AND closed issues), Rung 3 (local
-    pipeline as a disclosed workaround). Grep the rule for all three rungs — a
-    ported body that stops at the debugging loop means the ladder was dropped,
-    and the project will fall back to local execution as its FIRST move.
+    pipeline as a disclosed workaround), all gated by Rung 0's structural
+    refusal classifier, each with its evidence obligations; and the full ladder
+    text does NOT survive inside the always-on rule. A kernel with no pointer,
+    or a missing doc, means the ladder was dropped and the project will fall
+    back to local execution as its FIRST move.
 12. Issue-filing containment (if any tracker-capable agent was installed) —
     `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no
     `paths:`); `docs/findings-ledger.md` exists with its table header;
@@ -1693,10 +1740,11 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
   `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
   `spec-phase-implement.md`.
-- **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (decision log + the
-  per-run `runs/<run-id>/` state model, registry, and locks for concurrent runs — and in
-  §1b–1f the IDENTITY CONTRACT the hooks and the agents must agree on, summarized in
-  Part 12.2a),
+- **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (the state-directory
+  layout, plain `Name: value` field semantics, and the decision log — and, in §1a, the
+  clause that BINDS every registered run to the IDENTITY CONTRACT the hooks and the
+  agents must agree on; the contract's authoritative copy is `.claude/docs/run-identity.md`,
+  installed below and summarized in Part 12.2a),
   `no-ai-attribution.md` (descriptive names only; no Claude/AI/bot attribution in any
   commit, PR/MR, issue, branch, worktree, or tag), `keep-git-clean.md` (commit
   source/config/docs/tests, never generated/temp files, no stale worktrees/branches,
@@ -1716,6 +1764,15 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   failure) — all always-loaded — and
   `per-worktree-venv.md` (CONDITIONAL, `paths:`-scoped to cdk/app projects: each worktree
   gets its own venv when running code/CDK from worktrees).
+- **On-demand docs** → `.claude/docs/`: `run-identity.md` — the AUTHORITATIVE
+  run-identity/gate-release contract: the registry/locks/`runs/<run-id>/` layout (§1), the
+  registry-derived run id (§2), the seeded field set (§3), `Name: value` field semantics
+  (§4), the release vocabulary (§5), and the `SESSION_ID` rung, the
+  `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, and the block caps (§6). Deliberately NOT in
+  `rules/`: a rules/ file with no `paths:` loads into EVERY session, while this one is read
+  on demand by registered runs before their first state write —
+  `agent-state-convention.md` §1a is what sends them there. Its incident narratives live in
+  `hooks/MIGRATION.md` §Incident record, not in any always-loaded file.
 - **Hook scripts** → `.claude/hooks/` (make the `*.sh` executable):
   - `hook-state-lib.sh` — the ONE identity-and-state library, sourced by ALL FIVE hook scripts:
     `session-register.sh`, `continuous-work-reinject.sh`, `issue-loop-gate.sh`,
@@ -1790,6 +1847,13 @@ cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-co
                                                                # issue-filing-discipline,
                                                                # continuous-work,
                                                                # ci-owns-the-test-suite
+mkdir -p .claude/docs
+cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, deliberately NOT in
+                                                               # rules/: the authoritative
+                                                               # run-identity/gate-release contract,
+                                                               # read by registered runs at start —
+                                                               # a rules/ file with no paths: would
+                                                               # load into EVERY session
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
@@ -2062,9 +2126,11 @@ gates resolved state from the registry and then exited 0 because it was absent, 
 registered sessions in one clone neither gate had EVER blocked a turn-end — and a run under an
 explicit instruction never to stop without a proven reason ended four turns unopposed.
 
-Five clauses. The authoritative statement of each is `.claude/rules/agent-state-convention.md`
-§1b–1f; what follows is the summary to put in the project's `CLAUDE.md` or the orchestrator's
-prompt, because these clauses bind the AGENT as much as the hooks.
+Five clauses. The authoritative statement of each is `.claude/docs/run-identity.md`
+(installed by Part 12.1; the always-on RULE `.claude/rules/agent-state-convention.md` §1a is
+what binds every registered run to read that doc before its first state write). What follows
+is the summary to put in the project's `CLAUDE.md` or the orchestrator's prompt, because
+these clauses bind the AGENT as much as the hooks.
 
 1. **The run id is DERIVED FROM THE REGISTRY, never chosen.** It is the `state_dir` recorded
    for this `session_id` in
@@ -2173,7 +2239,9 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > All agents follow the identity contract in `.claude/rules/agent-state-convention.md`: the
 > run id comes from `registry.json`'s `state_dir` for this `session_id` and is never a
 > self-chosen readable label; state fields are plain `Name: value` lines corrected by
-> APPENDING at the end of the file; `resume_state.md` always carries `SESSION_ID:`.
+> APPENDING at the end of the file; `resume_state.md` always carries `SESSION_ID:`; the
+> authoritative contract is `.claude/docs/run-identity.md` — registered runs read it before
+> their first state write.
 > All agents and the main session follow `.claude/rules/ci-owns-the-test-suite.md`: the
 > full test suite is NEVER a precondition for a commit. Commit at every natural boundary
 > (the pre-commit hook is lint + security, about a second); run the AFFECTED tests
@@ -2506,7 +2574,9 @@ issue next?"; it must select the next one and continue.
   progress note must never be a way to end a turn. BOTH Stop gates route this through the
   library's `hook_phase_is_terminal`, so they cannot disagree — the evidence gate previously
   used a prefix-matching raw grep and released on exactly that narrative form while this gate
-  refused it.
+  refused it. The vocabulary an agent writes against is `.claude/docs/run-identity.md` §5
+  (release values and placeholders) and §6 (identity verdicts and block caps) — point agents
+  at that file, never at a paraphrase.
 - **`AWAITING_USER` is checked for SUBSTANCE, not presence.** It is a self-issued permission
   slip, so a placeholder — including any angle-bracketed token such as the literal `<reason>`
   the gate itself once printed — a one-word token (`no`, `false`, `0`, `waiting`, `blocked`,
@@ -2600,6 +2670,7 @@ expected outcome, not a sign that something was missed.
 | `.claude/rules/*.md` | scoped/always rules (≈ steering) |
 | `.claude/commands/*.md` | slash commands (≈ userTriggered hooks) |
 | `.claude/agents/*.md` | custom subagents (≈ .kiro/agents) |
+| `.claude/docs/*.md` | on-demand reference docs (the run-identity contract, agent drafting templates) — read by agents when needed, never auto-loaded |
 | `.claude/hooks/` | hook scripts + `hook-state-lib.sh` + `CONTRACT_VERSION` (checked in) |
 | `.claude/agent-state/` | long-running-agent state (gitignored) |
 | `.claude/agent-state/<agent>/runs/<run-id>/` | ONE run's state; `<run-id>` is registry-derived (Part 12.2a) |
@@ -2665,7 +2736,9 @@ expected outcome, not a sign that something was missed.
   session-keyed identity/state library; no mtime rung), and CONTRACT_VERSION (keys the
   once-per-run contract handshake).
   Shared always-loaded rules in .claude/rules/: agent-state-convention.md (decision
-  log + the identity contract, §1b–1f), no-ai-attribution.md (descriptive names, no AI
+  log + state layout; §1a binds registered runs to the identity contract, whose
+  authoritative copy is the on-demand .claude/docs/run-identity.md), no-ai-attribution.md
+  (descriptive names, no AI
   attribution), keep-git-clean.md (commit-what-belongs, no stale worktrees/branches),
   issue-tracking.md (checklists + metadata + live issue updates + Q&A on issue),
   issue-filing-discipline.md (observed defects only, fix-first before filing, zero filings

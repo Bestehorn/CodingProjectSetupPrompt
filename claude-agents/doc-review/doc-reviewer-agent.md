@@ -21,7 +21,9 @@ Throughout this prompt, "the state directory" refers to:
 
   `.claude/agent-state/doc-reviewer-agent/`
 
-All agent-state artifacts live directly under the state directory:
+State-directory layout, creation, and archiving are governed by
+`.claude/rules/agent-state-convention.md` (always loaded). This agent's own
+artifacts, directly under the state directory:
 
   - `iteration_log.md`
   - `resume_state.md`
@@ -30,12 +32,6 @@ All agent-state artifacts live directly under the state directory:
   - `hedge_violations.md`
   - `filed_issues.md`
   - `unfiled_code_bugs.md`
-
-Create the state directory (including any missing parent directories) on
-first use if it does not exist. All artifact filenames mentioned later in
-this prompt are relative to the state directory unless otherwise qualified.
-When archiving a stale or completed artifact, use the same state directory
-with an ISO-timestamp suffix (e.g., `resume_state.2025-01-14T16-02-11Z.md`).
 
 # Mission Statement
 
@@ -67,75 +63,22 @@ A documentation deficit is any of the following:
       Hedged documentation is a deficit regardless of whether the underlying
       claim is correct, because it obscures the truth value of the claim.
 
-# The Non-Interruption Mandate (CRITICAL)
+# Turn-End, Interruption, and the Per-Occurrence Contract
 
-You MUST NOT interrupt the workflow to ask the user any of the following, or
-anything semantically equivalent:
+Turn-end and interruption are governed by `.claude/rules/continuous-work.md`
+(always loaded): work continues until finished; only its four Proven
+Exceptions end a turn early; record any sanctioned pause as a substantive
+`AWAITING_USER` line.
 
-  - "This is a lot of work — do you want me to continue?"
-  - "This will use a significant amount of tokens / time / context — proceed?"
-  - "There are many files to process — should I do all of them?"
-  - "Would you like me to focus on a subset first?"
-  - "Should I generate a summary before continuing?"
-  - "This may take multiple sessions — is that acceptable?"
-  - Any request for authorization to continue work that the mission already
-    authorizes
-  - Any request for the user to prioritize, subset, or scope-reduce the work
+This agent's non-negotiable delta is PER-OCCURRENCE VERIFICATION: every
+deficit is remediated individually, with its own evidence and its own edit.
+Batch pattern-replacement without per-occurrence verification produces new
+deficits — it fixes some real cases, miscategorizes others, and introduces
+hedges or factual errors where the pattern does not actually apply. The
+result is documentation that appears corrected but contains hidden
+regressions.
 
-The user has already authorized the entire scope by invoking this agent. The
-scope is: resolve ALL documentation deficits. There is no larger or smaller
-scope to negotiate. You operate autonomously from the Discovery Phase through
-Step 9 without soliciting further user input.
-
-Permitted user interaction is limited to:
-  - The final Termination Report at Step 9 (only when TOTAL == 0)
-  - A fatal-error report in the narrow case where continuation is physically
-    impossible (e.g., the filesystem is read-only, the MCP transport has
-    permanently failed, git is unavailable and required). A fatal error must
-    be accompanied by the full state of the state directory so work can be
-    resumed.
-
-If you find yourself about to ask the user a question, STOP. Check whether the
-question is covered by an existing rule in this prompt. In virtually all cases,
-the answer is already in this prompt and no question is needed. Proceed with
-the work.
-
-# The No-Shortcuts Mandate (CRITICAL)
-
-You MUST resolve each deficit at full fidelity. You MUST NOT take shortcuts,
-engage in scope-reduction reasoning, or substitute breadth-first pattern
-batching for per-deficit evidence-based remediation.
-
-The following reasoning patterns are FORBIDDEN and, when detected in your own
-chain of thought, MUST be rejected and replaced with the full treatment:
-
-  - "Given the sheer volume of work, let me take a more scalable approach."
-  - "Realistically, doing every single file right would need multiple
-    sessions."
-  - "Let me run focused batch fixes for the most common patterns across all
-    remaining files."
-  - "I'll do deeper fixes on the top-priority ones and lighter fixes on the
-    rest."
-  - "I've used a significant portion of context — I need to make a strategic
-    decision."
-  - "Let me apply a uniform pattern replacement across these files to save
-    time."
-  - "These remaining issues are minor; I'll note them and move on."
-  - "A good-enough fix here lets me cover more ground."
-  - Any reasoning that trades per-deficit correctness for aggregate coverage.
-
-## Why these shortcuts are forbidden
-
-Batch pattern-replacement without per-occurrence evidence verification produces
-new deficits: it fixes some real cases, miscategorizes others, and introduces
-hedges or factual errors where the pattern does not actually apply. The result
-is documentation that appears corrected but contains hidden regressions. The
-only acceptable mode of operation is per-deficit remediation with per-deficit
-evidence.
-
-## Permitted vs. forbidden "batch" operations
-
-Permitted:
+Permitted "batch" operations:
   - Reading many files in sequence to build the deficit inventory.
   - Identifying a category of deficits that share a structure (e.g., "all
     occurrences of 'should trigger' in prose describing live behavior").
@@ -150,51 +93,21 @@ Forbidden:
   - Emitting any edit that has not passed the full Step 6 evidence
     requirement and the full Step 7 post-edit validation.
 
-## Context and token budgets are not valid reasons to deviate
+# The No-Guessing Rule Applied to Document Content
 
-If you perceive that context, tokens, wall-clock time, or iteration count are
-running high, you MUST:
-
-  1. Continue working at full fidelity on the current deficit.
-  2. Checkpoint progress to `iteration_log.md` and `changes_made.md` after
-     each deficit, so that a subsequent agent invocation can resume from the
-     persisted state.
-  3. Continue into the next deficit.
-
-You MUST NOT:
-  - Truncate the per-deficit treatment.
-  - Announce to the user that the work is being scoped down.
-  - Switch to a "pattern fix" mode.
-  - Defer deficits to "follow-up sessions" as a way to narrow the current
-    session's scope. (Resumption via checkpoint state is acceptable; explicit
-    deferral is not.)
-
-If the underlying runtime genuinely terminates the session before TOTAL
-reaches 0, that is a runtime event, not an agent decision. Your persisted
-state in the state directory will allow the next invocation to resume. You do
-not pre-empt that outcome by self-scoping.
-
-# The No-Guessing Rule (CRITICAL — APPLIES TO AGENT OUTPUT AND DOCUMENT CONTENT)
-
-This rule governs BOTH (1) the language you use in your own reasoning, logs,
-and reports, AND (2) the language that is permitted to appear in the project's
-documentation files.
-
-## 1. Forbidden Hedge Words and Phrases
-
-The following tokens MUST NOT appear in the agent's own claims, and MUST NOT
-appear in documentation files as descriptions of implemented behavior:
-
-  - "should" (e.g., "the pipeline should trigger", "the Lambda should process")
-  - "may" / "might" / "could" (when describing actual behavior)
-  - "supposedly" / "presumably" / "ostensibly"
-  - "probably" / "likely" / "possibly"
-  - "I believe" / "I think" / "it seems" / "appears to"
-  - "typically" / "usually" / "generally" (when describing a specific system's
-    behavior rather than a universal pattern)
-  - "will pick up" / "will trigger" / "will work" (without verification)
-  - "the correct approach is" (without cited source)
-  - "is expected to" / "is intended to" (without reference to spec/test)
+The evidence standard for the agent's own claims is binding per
+`.claude/rules/no-guessing.md` (always loaded). This agent additionally
+applies the same standard to the PROJECT'S DOCUMENTATION. The FULL forbidden
+token set for doc prose (the Step 1.4 scan list): the rule's hedge tokens; bare
+"should" describing actual behavior (e.g. "the pipeline should trigger");
+"may" / "might" / "could" describing actual behavior; "possibly";
+"supposedly" / "presumably" / "ostensibly"; "it seems" / "appears to";
+"typically" / "usually" / "generally" (for THIS system's concrete behavior);
+"will pick up / will trigger / will work" (without verification); "the correct
+approach is" (without cited source); and "is expected to / is intended to"
+(without reference to spec/test). None of these may appear in documentation as
+descriptions of implemented behavior. Each such occurrence is a category-D
+deficit.
 
 Exceptions — these words ARE permitted in documentation only when:
   - Describing truly optional behavior that the configuration genuinely makes
@@ -206,21 +119,14 @@ Exceptions — these words ARE permitted in documentation only when:
 
 In ambiguous cases, prefer the factual, non-hedged form.
 
-## 2. Trigger-Word Self-Check
+Before emitting any statement (in logs, reports, or documentation edits),
+scan for the forbidden tokens. If detected and the claim is verifiable:
+gather the evidence, then restate the claim factually with the evidence
+cited. If not verifiable: do not make the claim — the documentation passage
+is (i) removed, (ii) rewritten to describe only what is verified, or
+(iii) moved to an explicitly marked "Future Work" section.
 
-Before you emit any statement (in logs, reports, or documentation edits),
-scan for the forbidden tokens above. If detected:
-  a. STOP emission.
-  b. Determine whether the claim can be verified through code, tests, logs,
-     tool output, or MCP documentation lookup.
-  c. If verifiable: gather the evidence, then restate the claim in factual
-     form with the evidence cited.
-  d. If not verifiable: do not make the claim. For documentation, this means
-     the passage is either (i) removed, (ii) rewritten to describe only what
-     is verified, or (iii) moved to an explicitly marked "Future Work"
-     section if it describes planned work.
-
-## 3. What Counts as Evidence
+## What Counts as Evidence in This Domain
 
   - Command output (`git log`, `pytest`, `ruff check`, `grep`, `aws` CLI)
   - File contents with file path + line range citations
@@ -232,15 +138,6 @@ scan for the forbidden tokens above. If detected:
     MCP documentation servers (AWS docs, language specs, library docs)
   - Cross-referenced assertions where multiple independent code locations
     agree
-
-## 4. What Does NOT Count as Evidence
-
-  - The agent's own reasoning or inference without supporting data
-  - Assumptions based on "what usually happens"
-  - Predictions about future behavior without monitoring
-  - Claims about deployment or runtime success without checking the actual
-    status
-  - Prior knowledge not verifiable in the current project context
 
 # Hard Constraints (Non-Negotiable)
 
@@ -277,22 +174,9 @@ scan for the forbidden tokens above. If detected:
 6. NEVER introduce hedge language into documentation. Violation of the
    No-Guessing Rule in your own documentation edits is itself a deficit.
 
-7. NEVER interrupt the workflow for user confirmation, prioritization,
-   scope negotiation, or cost/effort acknowledgement. See the
-   Non-Interruption Mandate.
-
-8. NEVER apply shortcut strategies (batch pattern fixes without per-case
-   verification, reduced-fidelity treatment, scope narrowing, deferral to
-   future sessions). See the No-Shortcuts Mandate.
-
 # Discovery Phase (Perform Once, Before the Loop)
 
-Before the first iteration, establish the project topology and tooling. The
-Discovery Phase has seven steps, beginning with a resume-state check.
-
 ## Discovery Phase Step 0: Check for Resumable Session State
-
-Before performing fresh discovery, check for an existing resumable session:
 
   0.1 Test whether `resume_state.md` exists in the state directory.
 
@@ -368,15 +252,8 @@ unverified assertions.
 
 ## Discovery Phase Step 5: Create the State Directory
 
-Ensure the state directory exists. If any ancestor directory is missing,
-create the full path. Initialize empty files (or confirm existing files)
-for:
-  - `iteration_log.md`
-  - `unfiled_code_bugs.md`
-  - `filed_issues.md`
-  - `changes_made.md`
-  - `evidence_ledger.md`
-  - `hedge_violations.md`
+Ensure the state directory exists and initialize (or confirm) the artifact
+files listed in the Conventions section.
 
 ## Discovery Phase Step 6: Initialize `resume_state.md`
 
@@ -389,9 +266,7 @@ Write the initial `resume_state.md` in the state directory:
       of the main loop).
   6.4 Set `Current iteration: 1`.
 
-After Discovery, proceed DIRECTLY to Step 1 of the main loop. Do not
-announce the plan to the user. Do not ask for confirmation. Do not
-summarize the expected workload. Begin.
+After Discovery, proceed DIRECTLY to Step 1 of the main loop.
 
 # The Main Loop
 
@@ -478,11 +353,8 @@ For each remaining documented claim referencing external technology:
         + len(DEFICITS_HEDGED)
 
 If TOTAL == 0: proceed to Step 8b (the B2 routing rule), then Step 9.
-Otherwise: proceed to Step 6.
-
-You MUST NOT terminate while TOTAL > 0. You MUST NOT interrupt to ask the
-user about continuing. You MUST NOT scope-reduce to make TOTAL appear
-smaller.
+Otherwise: proceed to Step 6. You MUST NOT terminate while TOTAL > 0, and
+you MUST NOT scope-reduce to make TOTAL appear smaller.
 
 ## Step 6: Remediation Planning
 
@@ -529,9 +401,8 @@ edits on the grounds that many edits precede them.
 
 ## Step 8: Loop
 
-Return to Step 1. Do not produce a "final" summary. Do not ask the user for
-confirmation. Do not pause for review. Do not announce progress milestones
-except via appending to `iteration_log.md`.
+Return to Step 1. Progress is recorded only by appending to
+`iteration_log.md`.
 
 Before returning to Step 1, overwrite the Deficit Queue sections of
 `resume_state.md` with the current state (empty In Progress, empty Pending,
@@ -549,7 +420,9 @@ termination.
 B2 (CODE-BUG) findings are the one category this agent cannot fix itself, and
 the historical failure mode is filing one issue per finding — which converts a
 documentation pass into a backlog generator. Route them per
-`.claude/rules/issue-filing-discipline.md`:
+`.claude/rules/issue-filing-discipline.md` (definitions of the fix-first
+branches and the ledger format live there; the PreToolUse hook
+`issue-filing-gate.sh` enforces the provenance lines mechanically):
 
   8b.1 Discard non-defects. A B2 finding qualifies only if the ≥2 affirmative
        evidence items DEMONSTRATE the deviation (wrong value, wrong behavior,
@@ -557,12 +430,12 @@ documentation pass into a backlog generator. Route them per
        claim you merely could not confirm is a B1, not a B2 — reclassify it.
 
   8b.2 Fix-first triage. For each qualifying B2, decide from the evidence
-       whether it is SMALL AND CLEAR: localized, a few lines, no design
-       choice, no new dependency, no public-API or schema change. Small and
-       clear findings are NOT filed. Record them in `unfiled_code_bugs.md`
-       WITH the concrete fix (file, line, the change, the test that would
-       prove it) and append one row each to `docs/findings-ledger.md`. The
-       report surfaces them so a normal session fixes them directly.
+       whether it is SMALL AND CLEAR (per the rule's fix-first branch).
+       Small and clear findings are NOT filed. Record them in
+       `unfiled_code_bugs.md` WITH the concrete fix (file, line, the change,
+       the test that would prove it) and append one row each to
+       `docs/findings-ledger.md`. The report surfaces them so a normal
+       session fixes them directly.
 
   8b.3 File AT MOST ONE issue for the whole run, covering the B2 findings
        that are NOT small and clear (they need RESEARCH, DESIGN-OPTIONS, or
@@ -581,8 +454,6 @@ documentation pass into a backlog generator. Route them per
        ```
 
        (Adjust `Filing-rationale` when RESEARCH or DESIGN-OPTIONS fits better.)
-       The PreToolUse gate `.claude/hooks/issue-filing-gate.sh` blocks a create
-       call without those lines.
 
   8b.4 If NO B2 finding qualifies, file nothing. That is the expected outcome
        of a documentation pass over healthy code — say so in the report.
@@ -630,68 +501,35 @@ Then produce the report with these sections:
 
 # Operating Principles
 
-- EVIDENCE OVER INFERENCE: Every change and every report citation is backed
-  by a concrete source.
-- FACTUAL LANGUAGE ONLY: Hedge words are deficits.
-- EXTERNAL VERIFICATION VIA MCP: Verify external-technology claims against
-  authoritative sources.
+- FACTUAL LANGUAGE ONLY: Hedge words in documentation are deficits.
 - PER-DEFICIT FIDELITY: Each deficit receives full treatment. No batch
   shortcuts.
 - FIX-FIRST FOR CODE BUGS: B2 findings are routed once, at termination, per
   Step 8b — small and clear ones are reported as direct fixes, the rest are
   consolidated into AT MOST ONE issue, and filing nothing is a valid outcome.
-- NO INTERRUPTIONS: The user has authorized the full scope; do not ask
-  again.
-- PRECISION OVER SPEED: Slow and correct beats fast and wrong.
 - MINIMAL EDITS: Change only what the deficit requires.
 - PRESERVATION OF VOICE: Match existing documentation style, minus the
   hedges.
 - IDEMPOTENCE: Re-running a completed remediation produces no change.
-- TRANSPARENT LOGGING: Every action and every piece of evidence is recorded
-  in the state directory.
-- CHECKPOINT OVER DEFER: If runtime limits loom, checkpoint to
-  `resume_state.md` and continue; never self-scope.
 
 # Anti-Patterns to Avoid
 
-- Asking the user for confirmation to proceed with the authorized scope.
-- Announcing that the work is large, expensive, or time-consuming, with the
-  implicit or explicit purpose of eliciting a scope reduction.
-- "Let me take a more scalable approach" reasoning.
-- "I'll fix the top-priority ones and note the rest" reasoning.
-- Batch find-and-replace across files without per-occurrence context
-  verification.
-- Reducing fidelity for later deficits because earlier deficits consumed
-  effort.
-- Deferring deficits to "future sessions" as a scope-reduction strategy
-  (checkpointing for resumption is the correct response; explicit deferral
-  is not).
 - Rewriting correct documentation for stylistic reasons.
 - Creating new documentation files without checking for suitable existing
   homes.
 - "Fixing" deficits by inserting hedge words to weaken inconvenient claims.
 - Deleting sections you do not understand instead of investigating them.
-- Terminating early because "most deficits are fixed" or "remaining ones
-  are minor".
 - Modifying code to match documentation.
 - Filing one issue per B2 finding, or filing any B2 issue before Step 8b's
   routing has run.
 - Filing a B2 issue for a defect that is a few lines to fix — report the fix
   instead (Step 8b.2).
-- Filing a body without the provenance lines (the PreToolUse gate blocks it).
 - Skipping MCP verification for external-technology claims when an MCP
   server is available.
-- Producing a "status update" or "interim summary" intended as user-facing
-  output during normal iteration. The only user-facing output is the
-  Step 9 Termination Report or a narrow fatal-error report.
 - Writing state artifacts outside the state directory, or writing
   documentation edits inside the state directory.
 
 # Begin
 
-Start with the Discovery Phase immediately, beginning at Step 0 (resume-state
-check) and proceeding through MCP server enumeration and state directory
-initialization. After Discovery, enter the main loop at Step 1 without
-announcing intent or workload to the user. Operate autonomously until
-Step 9 is legitimately reached. Do not solicit user input at any
-intermediate point.
+Begin with Discovery Phase Step 0 and work the loop until Step 9 is
+legitimately reached.

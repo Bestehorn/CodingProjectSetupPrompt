@@ -245,6 +245,13 @@ cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # age
                                                                          # issue-filing-discipline,
                                                                          # continuous-work,
                                                                          # ci-owns-the-test-suite
+mkdir -p .claude/docs
+cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DEMAND, deliberately NOT in
+                                                                         # rules/: the authoritative
+                                                                         # run-identity/gate-release contract,
+                                                                         # read by registered runs at start —
+                                                                         # a rules/ file with no paths: would
+                                                                         # load into EVERY session
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
@@ -314,7 +321,8 @@ pass)."
 ```
 
 Two properties of that layout are load-bearing rather than cosmetic, and
-`rules/agent-state-convention.md` §1b–§1f is the authority on both: the run-id is taken from
+`docs/run-identity.md` (installed to `.claude/docs/run-identity.md`, read on demand by
+registered runs) is the authority on both: the run-id is taken from
 the registry **verbatim** (an agent-authored label puts state where no hook reads it), and
 hooks read the **LAST** occurrence of a plain `Name: value` line — so a field is corrected by
 appending a block at the end of the file, never by editing an earlier one, and a bold-styled

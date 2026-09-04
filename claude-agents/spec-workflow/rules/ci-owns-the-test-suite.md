@@ -1,29 +1,16 @@
 # CI Owns the Test Suite — commit cheaply, push once, fix everything (ALL agents, always loaded)
 
-This rule is shared by EVERY agent and the main session. It is installed at
-`.claude/rules/ci-owns-the-test-suite.md` (no `paths:` frontmatter → always loaded) and is
-pointed to from the project's root `CLAUDE.md`. It governs WHERE tests run, WHEN you are
-allowed to push, and WHAT you must do with a red CI run. It is the companion of
-`remote-ci-must-pass.md`, which governs the CI run itself.
+Governs WHERE tests run, WHEN you may push, and WHAT you do with a red CI run. Companion
+of `remote-ci-must-pass.md`, which governs the CI run itself.
 
-## Why this rule exists
-
-Three measured failures of the previous arrangement, in which the full suite was a
-precondition for every commit:
-
-1. **Commits cost an hour.** On a project whose suite runs for 60 minutes, a per-commit
-   suite made each commit a 60-minute operation. Agents responded rationally: they stopped
-   committing, batched an entire feature into one enormous commit, and the history became
-   unreviewable — the exact opposite of what a commit gate is for.
-2. **The machine died.** `pytest -n auto` takes one worker per vCPU. Several concurrent
-   per-issue worktrees each doing that made the host unusable and got the agent process
-   killed mid-run, losing the work.
-3. **Fail-fast turned one run into many.** A CI pipeline that stops at the first failing
-   stage reports ONE problem per run. The worker fixed it, pushed, waited, found the next,
-   and burned a full cycle per failure. Ten failures meant ten pipeline runs.
-
-None of that bought any correctness. A local suite run and a CI suite run on the same SHA
-prove the same thing, and only one of them is free.
+Why (three MEASURED failures of the per-commit-suite arrangement; full accounts in the
+`scripts/run_tests.py` header and `.claude/hooks/MIGRATION.md` §Incident record): a
+60-minute suite made every commit an hour, so agents
+batched whole features into single unreviewable commits; concurrent worktrees each
+running `pytest -n auto` made the host unusable and killed the agent mid-run; fail-fast
+CI reported one failure per run, so ten failures cost ten pipeline runs. None of it
+bought correctness — a local and a CI suite run on the same SHA prove the same thing, and
+only one is free.
 
 ## Where things run
 
@@ -119,18 +106,11 @@ grouped and written down, all of them fixed, exactly one push.
 
 ## Integration
 
-- `remote-ci-must-pass.md`: the CI run itself — monitoring it, the debugging loop, and the
-  capacity ladder when it cannot run. This rule says what you do with its output.
-- `tests-must-not-fail.md`: a failing test is always fixed, never skipped or xfailed. That
-  is unchanged and unconditional; this rule only changes WHERE the run happens.
-- `post-activity.md`: the completion checklist runs the affected tests locally and takes the
-  suite verdict from CI.
-- `keep-git-clean.md`: commit only what belongs — a frequent-commit habit is not a licence
-  to commit generated files or `reports/`.
-- `continuous-work.md`: waiting for a CI run is not a reason to end a turn. Monitor it, and
-  work on anything that does not depend on its result meanwhile.
-- `no-output-shortening.md` / `no-guessing.md`: "every failing job" means every log read in
-  full, and every claim about a failure backed by quoted output.
-- `scripts/run_tests.py`, `scripts/run_checks.py`, `scripts/ci_outage_mode.py`: the
-  mechanisms. `run_checks.py` is the same command CI runs, which is what keeps a local
-  pipeline execution from drifting away from the real pipeline.
+`remote-ci-must-pass.md` governs the CI run itself (monitoring, debugging loop, capacity
+ladder); `tests-must-not-fail.md` still bars every skip/xfail dodge unconditionally —
+this rule only changes WHERE the run happens; frequent commits are not a licence to
+commit generated files (`keep-git-clean.md`); waiting on CI is not a turn-end
+(`continuous-work.md`); "every failing job" means full logs and quoted evidence
+(`no-output-shortening.md`, `no-guessing.md`). The mechanisms are `scripts/run_tests.py`,
+`scripts/run_checks.py` (the same command CI runs, so a local pipeline cannot drift from
+the real one), and `scripts/ci_outage_mode.py`.

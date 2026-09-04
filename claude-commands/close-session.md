@@ -5,10 +5,8 @@ disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
-<!-- The archive tool is listed because the final step offers to invoke it after an explicit go-ahead; a body
-     that directs a tool the frontmatter allowlist excludes is a trap that fails at the last step of the
-     command. It is an MCP tool and may be absent (a plain CLI session has no session-management server): in
-     that case RECOMMEND archiving and let the user do it, rather than reporting a failure. -->
+<!-- archive_session is allowlisted because the final step invokes it after an explicit go-ahead.
+     It is an MCP tool and may be absent (plain CLI): then RECOMMEND archiving rather than reporting a failure. -->
 
 Answer **"can we close this session?"** — by finishing anything unfinished, not by describing
 it. Steps 1–2 and the remediation in steps 4–6 and 8 may CHANGE things (that is the point);
@@ -31,18 +29,11 @@ your own scope from `.claude/agent-state/issue-work-orchestrator/registry.json` 
 `runs/<run-id>/` → the seeded `CURRENT_ISSUE` / `WORKTREE` / `BRANCH` / `PR` fields. With no
 run state, your scope is the current working tree.
 
-**Run identity — read this before writing any state (NON-NEGOTIABLE).**
-`session-register.sh` (SessionStart) has ALREADY created this session's `runs/<run-id>/`
-directory and seeded `resume_state.md` and `workflow_state.md` in it. Your job is to UPDATE
-those files; you do not choose where they live. Find the path by reading `registry.json` and
-using the `state_dir` of the entry keyed by THIS session's `session_id`, VERBATIM. NEVER
-invent a readable run-id label such as `run-issue<N>-<timestamp>`: every Stop gate resolves
-state from the registry-derived path, and state written anywhere else is read by NOTHING —
-measured, exactly this deviation left both Stop hooks inert for a whole session. State fields
-are plain `Name: value` lines and hooks read the LAST occurrence: correct a value by
-APPENDING a new block at the END of the file, use the seeded field NAMES exactly (`BRANCH`,
-`WORKTREE`, `PR` — not `CURRENT_BRANCH`/`CURRENT_WORKTREE`/`CURRENT_PR`), and keep
-`SESSION_ID:` intact.
+**Read `.claude/docs/run-identity.md` BEFORE this run's first state write.** It is the
+binding contract for run identity, the seeded fields, the release vocabulary, and the gate
+verdicts — state written to a path or spelling of your own devising is read by NOTHING
+(MEASURED: Incident `invented-run-label`, `.claude/hooks/MIGRATION.md`). The seeded field
+NAMES are `BRANCH`/`WORKTREE`/`PR` — never `CURRENT_BRANCH`-style.
 
 **Be terse.** Every finding is one line. No preamble, no restating these instructions, no
 narrating what you are about to check. The verdict is the FIRST line of your reply so the
@@ -65,9 +56,8 @@ complete output; report the conclusion).
    - Only when it genuinely passes, continue. If it CANNOT pass (a Proven Exception from
      `continuous-work.md` — irreversible action, sensitive information, a real design fork,
      a hard blocker), state which one in one line with its proof and record it as an
-     `AWAITING_USER` line naming the ACTUAL reason (the gates check it for SUBSTANCE; an
-     escalation described only in chat is indistinguishable from abandoning the work): not
-     closeable.
+     `AWAITING_USER` line naming the ACTUAL reason (checked for SUBSTANCE —
+     `run-identity.md` §5): not closeable.
 
 **Step 2 — Is CI still running? (wait for it; it is part of the work)**
    Pending CI means the work is not finished, so this precedes every cleanliness check.
@@ -154,10 +144,10 @@ complete output; report the conclusion).
    APPEND a block at the END of this run's `resume_state.md` carrying `Status: COMPLETED` and
    a terminal `Phase` (`DONE`/`COMPLETED`/`ABANDONED`/`ESCALATED`) — **that terminal value is
    what releases `issue-loop-gate.sh`**, and it must be the WHOLE value of the field
-   (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`). `WORKABLE_ISSUES_REMAIN` does not
-   release the gate and never did. Do NOT record a terminal `Phase` to end a turn on work
-   that is not finished: that is the failure the gate exists to catch, and the state file is
-   the record someone will trust later.
+   (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`; vocabulary: `run-identity.md` §5). Do
+   NOT record a terminal `Phase` to end a turn on work that is not finished: that is the
+   failure the gate exists to catch, and the state file is the record someone will trust
+   later.
 
 **Output format — exactly this, nothing more**
 

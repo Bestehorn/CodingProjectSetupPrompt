@@ -5,10 +5,12 @@ disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
-Take issue **$ARGUMENTS** (call it issue X) from open to **merged and closed**, following
-the lifecycle in `.claude/agents/issue-work-orchestrator.md` exactly — but scoped to THIS
-ONE ISSUE. You play the orchestrator role in this session; you do not launch a nested
-orchestrator, and you do NOT continue into the rest of the backlog when X is done.
+Take issue **$ARGUMENTS** (call it issue X) from open to **merged and closed**, scoped to
+THIS ONE ISSUE. Steps 1–8 below ARE the single-issue lifecycle; consult the matching phase
+section of `.claude/agents/issue-work-orchestrator.md` only if a detail here leaves a
+question open — never read the whole file up front. You play the orchestrator role in this
+session; you do not launch a nested orchestrator, and you do NOT continue into the rest of
+the backlog when X is done.
 
 If `$ARGUMENTS` is empty, STOP and ask which issue to work — never guess an issue number.
 Accept `77`, `#77`, or a host-native ID (`PROJ-123`); normalize it and use the wrapper's
@@ -26,59 +28,28 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
 (`agent-state-convention.md`). Never touch `.kiro/`.
 
 **Step 0: Single-issue mode (state + autonomy)**
-   - **Run identity — read this before writing any state (NON-NEGOTIABLE).**
-     `session-register.sh` (SessionStart) has ALREADY created this session's `runs/<run-id>/`
-     directory and seeded `resume_state.md` and `workflow_state.md` in it. **Your job is to
-     UPDATE those files. You do not choose where they live.** Read
-     `.claude/agent-state/issue-work-orchestrator/registry.json`, find the entry whose KEY is
-     THIS session's `session_id`, and use that entry's `state_dir` value VERBATIM (it is
-     relative to `.claude/agent-state/issue-work-orchestrator/`). The `State file:` line in
-     the `## Your recorded place in the work` block that `continuous-work-reinject.sh` prints
-     at session start / resume / compaction is the same path character for character — use it
-     if you have it.
-   - **NEVER invent a readable run-id label** such as `run-issue<N>-<timestamp>`, and do not
-     read "derive `RUN_ID`" as licence to author one. Every Stop gate resolves this session's
-     state from the registry-derived path; state written anywhere else is read by NOTHING,
-     which silently disables every gate for the whole session. MEASURED: exactly this
-     deviation left both Stop hooks inert and cost four spurious turn-ends under a standing
-     instruction never to stop without a proven reason.
-   - **Field mechanics, because the hooks are literal.** State fields are plain `Name: value`
-     lines and every hook reads the **LAST** occurrence of each, so **correct a value by
-     APPENDING a new block at the END of the file** — never edit an earlier line, never
-     prepend. A bold `**Name:** value` spelling is read by NO hook, and a line inside a fenced
-     code block is ignored. Keep `SESSION_ID:` intact: it is the rung by which a hook recovers
-     this run if its state ever lands under a differently-named directory. Use the seeded
-     field NAMES exactly — `BRANCH`, `WORKTREE`, `PR`, not `CURRENT_BRANCH`/`CURRENT_WORKTREE`/
-     `CURRENT_PR`; `spec-stop-gate.sh` reads `WORKTREE` to find a spec that lives inside a
-     per-issue worktree, and a renamed field is invisible rather than merely untidy. Prose you
-     add to that file for a human reader must contain no `Name: value` lines of its own — an
-     accidental one becomes an authoritative field, and last-occurrence-wins means a late
-     example beats the real record.
+   - **Read `.claude/docs/run-identity.md` BEFORE this run's first state write.** It is the
+     binding contract for run identity, the seeded fields, the release vocabulary, and the
+     gate verdicts — state written to a path or spelling of your own devising is read by
+     NOTHING (MEASURED: Incident `invented-run-label`, `.claude/hooks/MIGRATION.md`).
    - If this run's `resume_state.md` already shows `Status: IN_PROGRESS` for a
      DIFFERENT `CURRENT_ISSUE`, do not abandon it: report the in-flight issue and ask
      whether to finish that one first or run X in a separate session. If it shows
      `Status: IN_PROGRESS` for issue X, RESUME at the recorded phase (re-attach to the
      existing worktree / branch / PR) instead of restarting.
-   - Record `MODE: SINGLE_ISSUE` (that exact spelling — the loop gate's MODE claim predicate matches
-     `ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO`), `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`,
-     `AWAITING_USER: none`, and `WORKABLE_ISSUES_REMAIN: no`.
-   - **What `WORKABLE_ISSUES_REMAIN: no` does and does NOT do.** It ONLY chooses the WORDING
-     of an `issue-loop-gate.sh` refusal — finish the issue in flight, versus select the next
-     one. **It does NOT release the gate and it does not let you stop mid-issue.** The gate
-     blocks turn-end while this run has claimed tracked work and has not recorded an idle
-     `Status`, a terminal `Phase`/`Status`, or a substantive `AWAITING_USER`, regardless of
-     that field. It used to BE the block condition, so a single-issue run setting it to `no`
-     switched the gate off for itself — that is fixed, and the belief that `no` releases you
-     is precisely what the old gate rewarded. What lets this command finish after ONE issue is
-     reaching a terminal `Phase` on X and not selecting another, not this field.
+   - Record `MODE: SINGLE_ISSUE` (that exact spelling — it is what the loop gate's MODE
+     claim matches), `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
+     `WORKABLE_ISSUES_REMAIN: no`.
+   - **`WORKABLE_ISSUES_REMAIN: no` gates NOTHING** (`run-identity.md` §5): it only chooses
+     the WORDING of an `issue-loop-gate.sh` refusal. What lets this command finish after ONE
+     issue is reaching a terminal `Phase` on X and not selecting another, not this field.
    - Autonomy still applies WITHIN the issue: do not stop mid-lifecycle to report progress
      or ask whether to continue. The only permitted pauses are a genuine escalation, a
      branch-protection approval wait, and the "already claimed by someone else" decision in
      Step 2 — and each is recorded MECHANICALLY as `AWAITING_USER: <the actual reason>`, not
-     merely described in chat. That field is checked for SUBSTANCE, not presence: a
-     placeholder, an angle-bracketed template, or a one-word token (`no`, `false`, `0`,
-     `waiting`, `blocked`, `?`) is rejected, and an escalation the gate cannot see is
-     indistinguishable from abandoning the work — the turn-end will be REFUSED. Checkpoint
+     merely described in chat; the field is checked for SUBSTANCE, not presence
+     (`run-identity.md` §5), and an escalation the gate cannot see is indistinguishable from
+     abandoning the work — the turn-end will be REFUSED. Checkpoint
      `resume_state.md` + your registry heartbeat after every step.
    - **EVERY exit from this command needs a RECORDED release, including the early ones.** The
      "X is already closed" stop in Step 1, the "claimed by someone else" stop in Step 2, the

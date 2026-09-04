@@ -91,6 +91,17 @@
 #     Coverage flags move out of pytest `addopts` into
 #     `run_tests.py --coverage`: in addopts they made every targeted run pay
 #     for instrumentation and fail a whole-project threshold.
+#   - SHRINKS THE ALWAYS-ON STEERING FOOTPRINT (Part 8) without weakening any
+#     contract. 8.25 keeps an always-on kernel (core rule + the full ONE-PASS
+#     debugging loop + a rung-naming ladder summary); the FULL capacity
+#     ladder moved to docs/ci-capacity-ladder.md (a project doc, never
+#     auto-loaded — read at the kernel's pointer). 8.23 keeps the standard
+#     and the COMPLETE forbidden-claims/actions lists always-on; the
+#     diagnosis/repair procedure moved to tests-must-not-fail-procedures.md
+#     (fileMatch test/**/*.py). 8.16 keeps one worked example instead of
+#     four. 8.34 mirrors the Claude twin's compressed why-paragraph. Do NOT
+#     re-inline the moved text into always-on steering: nothing was deleted,
+#     only relocated behind named pointers, and 8.26 now verifies the split.
 
 ---
 
@@ -1268,7 +1279,10 @@ creating or merging steering files. Do not invent front-matter keys or
 inclusion values not listed there.
 
 
-Place all files in `.kiro/steering/`.
+Place all steering files in `.kiro/steering/`. EXCEPTION: `docs/ci-capacity-ladder.md`
+(created by 8.25) is a project doc, NOT steering — placing it in `.kiro/steering/` with no
+front matter would make it `inclusion: always` and re-inflate the footprint the 8.25 split
+removed.
 
 ### 8.1 `tech-stack.md` (always)
 ```markdown
@@ -1708,35 +1722,23 @@ inclusion: always
 
 When you run a shell command, do NOT introduce per-command temporary
 variables with descriptive names (`$touched`, `$f`, `$pyFiles`,
-`$logPath`, `$matches`, etc.). Every new variable name forces the user
-to approve a brand-new command pattern, halts the work, and pollutes
-the allowed-commands list with names that will never appear again.
+`$logPath`, `$matches`, etc.).
 
 ## Why this matters
 
 Kiro's command approval system pattern-matches on the literal command
-text. The two snippets below look very similar to a human, but the
-approval system sees two unrelated commands:
-
-```powershell
-$touched = git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' }
-```
-```powershell
-$changed = git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' }
-```
-
-Each new descriptive name (`$touched`, `$changed`, `$pyOnly`, `$mod`)
-triggers a fresh approval prompt. Across a multi-step task this adds
-up to dozens of unnecessary interruptions and a long list of one-off
-patterns the user has approved that will never be reused.
+text: `$touched = git diff ...` and `$changed = git diff ...` are two
+unrelated commands to it, however alike they look to a human. Each new
+descriptive name forces the user to approve a brand-new pattern — a halt
+in the work, dozens of interruptions across a multi-step task, and an
+allowed-commands list polluted with names that will never appear again.
 
 ## Required behavior
 
 ### 1. First, try to eliminate the variable entirely
 
 Most temp variables exist because the agent broke a pipeline up
-mentally. Stitch it back together. If the input to step B is the
-output of step A, pipe step A directly into step B.
+mentally. Stitch it back together, or split into independent commands:
 
 WRONG (PowerShell):
 ```powershell
@@ -1756,59 +1758,25 @@ git diff master..HEAD --name-only | Where-Object { $_ -like '*.py' -and -not ($_
 ```powershell
 Select-String -Path tmp/pylint.log -Pattern '^[A-Za-z].*\.py:\d+:.*: [RC]\d{4}:'
 ```
-Then read both outputs (per `no-output-shortening.md`) and reason about
-the intersection in the agent's own response. Shell isn't the right
-place to compute set intersections of structured data.
+Read both outputs in full (`no-output-shortening.md`) and reason about
+the intersection in your own response — the shell isn't the place to
+compute set intersections of structured data.
 
-WRONG (PowerShell, single-use variable):
-```powershell
-$f = 'D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json'
-Move-Item $f ($f + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-```
-
-RIGHT — inline the path; no variable needed:
-```powershell
-Move-Item 'D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json' ('D:\Users\bestem\.kiro\tasks\d964e20d2bef6a44\xgboost-training-stepfunctions.meta.json.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-```
-
-Yes, the path is repeated. That is the correct trade-off here: a
-duplicated literal triggers no approval prompt, while a one-off
-variable name does.
-
-WRONG (bash, single-use variable):
-```bash
-f="config/aws_accounts.json"; cp "$f" "${f}.bak"
-```
-
-RIGHT — inline:
-```bash
-cp config/aws_accounts.json config/aws_accounts.json.bak
-```
+A single-use variable that merely holds a literal (a path, a filename)
+is the same violation — inline the literal at every use site; a
+duplicated literal triggers no approval prompt, a one-off name does.
 
 ### 2. If a variable is genuinely unavoidable, use the canonical names
 
-If, after honest effort, you cannot eliminate a variable (e.g. you
-need to capture the result of an expensive command and reuse it in
-two places that cannot be expressed as one pipeline), use ONLY these
-names:
+If a variable truly cannot be eliminated (an expensive command's result
+reused in two places that cannot be one pipeline), use ONLY these names:
 
 - Single values (paths, IDs, counts, strings): `$v1`, `$v2`, `$v3`
 - Lists / arrays / collections: `$l1`, `$l2`, `$l3`
 
-These names are pre-approved as a stable pattern. The user approves
-the *shape* `$v1 = ...` once and never again.
-
-```powershell
-$v1 = git rev-parse HEAD
-git tag "release-$v1"
-git push origin "release-$v1"
-```
-
-```bash
-l1=$(git diff --name-only master..HEAD)
-ruff check $l1
-mypy $l1
-```
+These names are pre-approved as a stable pattern — the user approves the
+*shape* `$v1 = ...` once (e.g. `$v1 = git rev-parse HEAD; git tag
+"release-$v1"`) and never again.
 
 ### 3. Forbidden variable names (incomplete list)
 
@@ -1817,60 +1785,31 @@ Any descriptive name. Examples that are explicitly forbidden:
 `$result`, `$output`, `$tmp`, `$x`, `$y`, `$line`, `$content`,
 `$data`, `$count`, `$touched`, `$changed`, `$modified`, `$pyFiles`,
 `$logPath`, `$matches`, `$items`, `$entries`, `$buf`, `$buffer`.
-
-The list is illustrative, not exhaustive — anything other than
-`$v1`/`$v2`/`$v3`/`$l1`/`$l2`/`$l3` is forbidden inline.
+Anything other than `$v1`/`$v2`/`$v3`/`$l1`/`$l2`/`$l3` is forbidden
+inline.
 
 ### 4. If you'd need more than three variables, write a script
 
-If a single command would require more than three temporary variables
-to express, the command is too complex for the shell. Stop. Write a
-script in `tmp/`:
-
-- Python: `tmp/<descriptive_name>.py`
-- PowerShell: `tmp/<descriptive_name>.ps1`
-- Bash: `tmp/<descriptive_name>.sh`
-
-Inside a script file, normal variable naming applies (descriptive
-names are encouraged, per `coding-standards.md`). The shell
-invocation is then a single, stable, approval-friendly command:
-
-```powershell
-python tmp/intersect_pylint_with_diff.py
-```
-```bash
-python tmp/intersect_pylint_with_diff.py
-```
-
-Per `file-organization.md`, `tmp/` is gitignored and cleaned at the
-end of the task — these scripts are disposable.
+More than three temporary variables means the command is too complex for
+the shell. Write a disposable script in `tmp/` (`tmp/<name>.py` / `.ps1`
+/ `.sh`) — inside a script, descriptive names are encouraged, per
+`coding-standards.md` — and invoke it as one stable, approval-friendly
+command: `python tmp/intersect_pylint_with_diff.py`.
 
 ## Decision flow
 
-Before issuing any shell command that includes a `$name = ...` (PowerShell)
-or `name=...` followed by `$name` (bash), ask:
-
-1. Can this be expressed as a single pipeline with no variable?
-   YES -> rewrite as a pipeline.
-2. Can the literal value be inlined at each use site?
-   YES -> inline it.
-3. Do I genuinely need to capture and reuse a value?
-   YES -> use `$v1`/`$v2`/`$v3` or `$l1`/`$l2`/`$l3`.
-4. Would I need more than three such variables?
-   YES -> write a script in `tmp/` and invoke it.
+Eliminate (single pipeline) -> inline (the literal, at each use site) ->
+canonical names (`$v1`-`$v3` / `$l1`-`$l3`) -> more than three? script
+in `tmp/`.
 
 ## Integration
 
-- `no-output-shortening.md`: when you split a pipeline into separate
-  commands to avoid a variable, read the FULL output of each command,
-  not a tail.
-- `coding-standards.md`: applies to code files in `src/`, `test/`,
-  `cdk/`, `scripts/`, and `tmp/` scripts. CLI invocations are
-  governed by THIS rule, not by `coding-standards.md` (the two have
-  intentionally opposite naming policies because the constraints
-  differ).
-- `file-organization.md`: scripts in `tmp/` may be deleted at any
-  time; do not depend on them across tasks.
+`no-output-shortening.md`: a pipeline split into separate commands means
+reading the FULL output of each, not a tail. `coding-standards.md`
+governs code files (including `tmp/` scripts); CLI invocations follow
+THIS rule — intentionally opposite naming policies, because the
+constraints differ. `file-organization.md`: `tmp/` scripts are
+disposable.
 ```
 
 ### 8.17 `cdk-deployment-only.md` (conditional, CDK)
@@ -2101,42 +2040,24 @@ inclusion: always
 ---
 # Tests Must Not Fail (CRITICAL)
 
-## The baseline assumption
+Every task starts from a green baseline: 100% of tests pass, enforced by
+the pre-commit hook, the CI pipeline, and `post-activity.md`. If the tree
+has failing tests now, a previous task broke the baseline — fixing that
+breakage is part of starting the current task: not optional, not
+deferrable, not someone else's problem.
 
-Every implementation starts from a baseline where 100% of tests pass.
-This is enforced by:
-- The pre-commit hook (`.pre-commit-config.yaml` — see Part 2.2 of the
-  setup prompt) which runs ruff before every commit.
-- The CI pipeline (`.gitlab-ci.yml` / `.github/workflows/`) which runs
-  the full test suite before every merge.
-- The post-activity checklist in `post-activity.md` which mandates
-  green tests before any task is marked complete.
-
-If the project's working tree currently has failing tests, the
-baseline has been broken — by a previous task that should not have
-been marked complete. Fixing that breakage is part of starting the
-current task; it is not optional, it is not deferrable, and it is
-not someone else's problem.
-
-## What this means in practice
-
-When you run the test suite during or after an implementation and see
-ANY failure:
-
-1. The failure IS your problem. Whether the failing test exercises
-   code you touched or code you didn't, you are the agent currently
-   holding the work, and the work cannot be considered done while
-   the suite is red.
-2. You MUST investigate the root cause to evidence (per
-   `no-guessing.md`) and FIX it.
-3. You MUST NOT stop, defer, or hand off because a failure looks
-   "unrelated."
+**A failing test is NEVER skipped, xfailed, deleted, or weakened — it is
+FIXED.** Whether it exercises code you touched or code you didn't, you
+are the agent holding the work, and the work is not done while the suite
+is red. Investigate the root cause to evidence (`no-guessing.md`) and fix
+it.
 
 ## Forbidden claims (the "pre-existing / out of scope" excuse)
 
-The following claims are FORBIDDEN. They have repeatedly been used to
-justify shipping broken code in this project, and they are wrong on
-the facts as well as on the policy:
+These claims are FORBIDDEN. Each has repeatedly been used to justify
+shipping broken code in this project, and each is wrong on the facts as
+well as on the policy (the full rationale is in
+`tests-must-not-fail-procedures.md`):
 
 - "This test was already failing before my change."
 - "This failure is pre-existing."
@@ -2146,20 +2067,6 @@ the facts as well as on the policy:
 - "This is an environment issue, not a code issue."
 - "I'll fix this in a follow-up."
 - "Let's track this separately."
-
-Why these claims are wrong on the facts: see "The baseline
-assumption" above. The suite was green when this task started.
-A failure now means either (a) your change broke it, (b) a
-dependency or environment shift broke it AND your task is the one
-that has to absorb the fix, or (c) the test is genuinely flaky AND
-fixing the flakiness is part of your task. There is no fourth option
-in which the failure is "not yours."
-
-Why these claims are wrong on the policy: even in the rare case where
-a failure pre-dates your work, the policy says: fix it. The cost of
-unblocking the build NOW is always smaller than the cost of letting
-red tests accumulate, masking new regressions, and eroding trust in
-the suite.
 
 ## Forbidden actions
 
@@ -2172,13 +2079,66 @@ the suite.
   hooks)
 - adding a `pytest.mark` filter that excludes the test from the
   default run
+- relaxing an assertion to make it pass (assertion expectations encode
+  the required behavior)
 - any other mechanism that prevents the test from executing or from
   failing the build when it fails
 
 The test exists because someone designed a behavior and wrote a check
 for it. Unless a spec change has explicitly removed that behavior
-(documented in `.kiro/specs/<feature>/` with the spec change visible),
-the test must keep running and must keep enforcing the behavior.
+(documented in `.kiro/specs/<feature>/`), the test keeps running and
+keeps enforcing it.
+
+## The only allowed path
+
+Understand -> research -> fix -> verify -> document -> loop until green.
+The full diagnosis/repair procedure — including the verification
+boundaries (affected tests locally, full suite in CI) and the
+environmental-failure cases — is in `tests-must-not-fail-procedures.md`,
+which loads with `test/**/*.py` files. Read it before working any red
+test.
+```
+
+The procedure detail is deliberately split into a `fileMatch`-scoped
+companion so the always-on kernel stays small while nothing is weakened:
+the standard and both forbidden lists above bind every session; the
+procedure loads exactly when test files are in play. Create the companion
+as `.kiro/steering/tests-must-not-fail-procedures.md`:
+
+```markdown
+---
+inclusion: fileMatch
+fileMatchPattern: "test/**/*.py"
+---
+# Tests Must Not Fail — Diagnosis and Repair Procedures
+
+Companion of `tests-must-not-fail.md` (always loaded), which owns the
+standard: a failing test is never skipped, xfailed, deleted, or
+weakened — it is fixed. This file carries the full procedure and the
+rationale behind the kernel's forbidden lists.
+
+## The baseline assumption
+
+Every implementation starts from a baseline where 100% of tests pass.
+This is enforced by:
+- The pre-commit hook (`.pre-commit-config.yaml` — see Part 2.2 of the
+  setup prompt) which runs ruff before every commit.
+- The CI pipeline (`.gitlab-ci.yml` / `.github/workflows/`) which runs
+  the full test suite before every merge.
+- The post-activity checklist in `post-activity.md` which mandates
+  green tests before any task is marked complete.
+
+Why the kernel's forbidden claims are wrong on the facts: the suite was
+green when this task started. A failure now means either (a) your change
+broke it, (b) a dependency or environment shift broke it AND your task
+is the one that has to absorb the fix, or (c) the test is genuinely
+flaky AND fixing the flakiness is part of your task. There is no fourth
+option in which the failure is "not yours."
+
+Why they are wrong on the policy: even in the rare case where a failure
+pre-dates your work, the policy says: fix it. The cost of unblocking the
+build NOW is always smaller than the cost of letting red tests
+accumulate, masking new regressions, and eroding trust in the suite.
 
 ## The only allowed path
 
@@ -2272,6 +2232,8 @@ during the current task.
 
 ## Integration
 
+- `tests-must-not-fail.md`: the always-loaded kernel owns the standard
+  and the complete forbidden-claims / forbidden-actions lists.
 - `no-guessing.md`: every claim about a test failure ("this fails
   because X") needs evidence — the actual error message, the line of
   code that produced it, the doc reference that confirms expected
@@ -2351,85 +2313,92 @@ inclusion: always
 ---
 # Remote Repository Operations Are Not Done Until CI Passes (CRITICAL)
 
-Any operation that changes code on the remote repository — commit,
-push, merge, rebase-and-push, PR merge — is NOT finished until the
-corresponding CI pipeline (if one exists) has run to a successful
-completion.
-
 ## Core rule
 
-1. After any operation that updates the remote (push, merge, PR
-   merge), determine whether the repository has a CI pipeline.
-   - GitLab: a `.gitlab-ci.yml` exists, or the project has pipelines.
-   - GitHub: workflows exist under `.github/workflows/`.
-   - If there is genuinely no CI pipeline, the operation is finished
-     once the push/merge succeeds. State that no pipeline exists.
-2. If a CI pipeline exists, you MUST monitor it until it COMPLETES —
-   no matter how long it takes. Do not declare the operation done
-   while the pipeline is queued, running, or in any non-terminal
-   state. Poll until it reaches a terminal state (success or failure).
-3. Retrieve pipeline/run status and logs through the project's wrapper
-   script (`scripts/github_wrapper.py` / `scripts/gitlab_wrapper.py`) —
-   never `gh`, `glab`, or raw `curl` (see `use-git-wrapper-scripts.md`).
+Any remote-changing operation — push, merge, rebase-and-push, PR merge —
+is NOT finished until the CI pipeline for the pushed SHA reaches a
+successful terminal state. No CI configured at all — no `.gitlab-ci.yml` /
+`.github/workflows/` AND the project has no pipelines (server-side CI config
+and Auto DevOps count as CI)? Say so; the push completes the operation.
+Otherwise monitor to a terminal state, however long it takes — never
+abandon a queued, running, or red pipeline. Status and logs come only
+from the wrapper script (`use-git-wrapper-scripts.md`); declare success
+only with quoted evidence: run id, terminal status, commit SHA
+(`no-guessing.md`).
 
 ## On failure (the debugging loop) — ONE run in, ALL fixes out
 
-The pipeline is built NOT to fail fast: every check group runs in its own
-job, no `needs:` chain skips a sibling because another failed, and each job
-hands its whole group to `scripts/run_checks.py`, which continues past a
-failure and ends with a consolidated `=== FAILED CHECKS (n) ===` block
-(PART 7). A red run is therefore a COMPLETE list of what is wrong, not the
-first thing that went wrong.
-
-That is a bargain, and this is your side of it. If the pipeline finishes in
-a failed state:
+CI is built NOT to fail fast (PART 7): a red run is a COMPLETE list of
+what is wrong, not the first thing wrong. Your side of that bargain:
 
 1. **Enumerate before fixing anything.** Retrieve the full logs of EVERY
-   non-successful job via the wrapper script — not just the first, not just
-   the ones that look related. Within each, list every failing test and
-   every failing check. Apply `no-output-shortening.md`: complete logs, not
-   a tail. Do not start editing while you are still reading.
-2. **Group by root cause, and write the grouping down.** Ten failures are
-   usually two or three causes. Record
-   `N failures across M jobs → K root causes` in your state, with each
-   failure assigned to a group, and determine each cause with evidence (per
-   `no-guessing.md`). Consult MCP doc servers and `docs/` as needed.
-3. **Fix EVERY group** in the source, tests, or configuration — all of
-   them, before the next push. Commit as you go; commits are cheap
+   non-successful job via the wrapper; within each, list every failing
+   test and every failing check. Complete logs, not a tail
+   (`no-output-shortening.md`). Do not start editing while still reading.
+2. **Group by root cause, and write the grouping down:**
+   `N failures across M jobs → K root causes`, each cause established
+   with evidence (`no-guessing.md`).
+3. **Fix EVERY group** before the next push. Commit as you go
    (`ci-owns-the-test-suite.md`).
 4. **Verify locally what is cheap to verify**: the affected tests via
-   `python scripts/run_tests.py`, or `python scripts/run_checks.py --group
-   lint` for a lint break. Do not re-run the full suite locally to
-   pre-check the pipeline.
+   `python scripts/run_tests.py`, or `run_checks.py --group lint` —
+   never the full suite.
 5. **Push ONCE**, then monitor the new run to a terminal state.
 6. Repeat only if the new run surfaces something genuinely new.
 
-**Fixing one failure and re-pushing to discover the next is a violation of
-this rule, not a work style.** Each avoidable run costs pipeline minutes
-that are themselves the scarce resource the capacity ladder below exists to
-cope with. Record every run you cause, with its purpose and what it
-surfaced, so the run count is visible and reviewable. If one failure truly
-cannot be diagnosed from the logs in hand, say so explicitly with the
-evidence, fix everything else, and treat the extra run as a cost you are
-consciously choosing.
+**Fixing one failure and re-pushing to discover the next is a violation
+of this rule, not a work style.** Record every run you cause, with its
+purpose and what it surfaced. If one failure truly cannot be diagnosed
+from the logs in hand, say so with the evidence, fix everything else, and
+treat the extra run as a cost you consciously choose. This loop is the
+ONLY exit — never abandon a red or unfinished pipeline, and an
+"unrelated" failure is still on your list (`tests-must-not-fail.md`).
+"It will probably pass", "the failure looks unrelated", and "I'll let CI
+sort it out" are all forbidden — they violate `no-guessing.md` and this
+rule.
 
-This loop is the ONLY exit. You may not abandon a remote-changing
-operation with a red or unfinished pipeline. "It will probably pass",
-"the failure looks unrelated", and "I'll let CI sort it out" are all
-forbidden — they violate `no-guessing.md` and this rule. Note that "the
-failure looks unrelated" is also forbidden as a reason to fix only the
-related ones: an unrelated failure is still on your list
-(`tests-must-not-fail.md`).
+## When CI CANNOT RUN AT ALL: the capacity ladder (summary)
 
-## When CI CANNOT RUN AT ALL: the capacity ladder (CRITICAL)
+Take the FIRST rung that applies; local execution is the LAST, never the
+first; an outage is never a reason to stop (`continuous-work.md`).
+**Rung 0** — prove the refusal structurally (per-job evidence, never
+duration). **Rung 1** — an implemented CodeBuild fallback MUST be used:
+relocate the pipeline. **Rung 2** — not implemented: file/comment ONE
+issue via issue-intake. **Rung 3** — declare CI-OUTAGE MODE via
+`python scripts/ci_outage_mode.py declare --evidence-run <id> --issue <n> --rung <2|3>`
+(`clear` when a real run goes green), then run the pipeline locally,
+disclosed. `declare` hard-requires `--evidence-run` and `--issue`, so a
+rung cannot be skipped silently. The FULL ladder procedure with its
+evidence obligations lives in `docs/ci-capacity-ladder.md` — read that
+file THE MOMENT CI cannot run, before taking any rung.
 
-This section governs the case where the pipeline is not red but ABSENT —
+`ci-owns-the-test-suite.md` is the other half of this rule: WHERE tests
+run, commit-often / push-once, and the outage marker.
+```
+
+The full capacity ladder deliberately does NOT stay in the steering body
+above: it is needed only in the rare session that actually hits a capacity
+outage, and as `inclusion: always` steering it billed ~3.5k tokens to
+every session. It lives in a PROJECT DOC instead — never auto-loaded, read
+on demand at the kernel's pointer. Create `docs/ci-capacity-ladder.md`
+with exactly this content:
+
+```markdown
+# The CI Capacity Ladder — when CI cannot run at all
+
+Referenced by `.kiro/steering/remote-ci-must-pass.md` (the always-loaded
+kernel), whose summary names the rungs. This file is the NORMATIVE
+procedure: read it THE MOMENT CI cannot produce a run, BEFORE taking any
+rung. It is deliberately a project doc rather than steering, so it costs
+nothing until the rare session that needs it.
+
+This ladder governs the case where the pipeline is not red but ABSENT —
 the account's CI minutes/quota are exhausted, or hosted capacity is
-otherwise refusing work. It has THREE rungs and you take the FIRST one
-that applies. Running CI locally is the LAST rung, never the first, and
-choosing it out of order is a rule violation, not a shortcut.
+otherwise refusing work. Take the FIRST rung that applies. Running CI
+locally is the LAST rung, never the first, and choosing it out of order
+is a rule violation, not a shortcut.
 
-### Rung 0 — PROVE it is a capacity refusal, structurally
+## Rung 0 — PROVE it is a capacity refusal, structurally
 
 Duration is NOT the signal and is forbidden as one: an unresolvable
 action reference fails in ~9 seconds with an empty log archive, which
@@ -2439,7 +2408,7 @@ and classify EVERY non-successful job:
 
 | Shape | `conclusion` | runner name | labels | steps | Route |
 |---|---|---|---|---|---|
-| **(A) genuine code failure** — the DEFAULT for a red job that has a runner and steps | `failure` | non-empty | any | `> 0` | the debugging loop above. NEVER this section |
+| **(A) genuine code failure** — the DEFAULT for a red job that has a runner and steps | `failure` | non-empty | any | `> 0` | the debugging loop in `remote-ci-must-pass.md`. NEVER this ladder |
 | **(B) refused hosted job** | `failure` | **empty** | a HOSTED label | `0` | this ladder |
 | **(C) fallback job that never started** | queued or `cancelled` | **empty** | a FALLBACK-prefixed label | `0` | declare a wait budget, then triage the fallback |
 | **(D) skipped by a job gate** | `skipped` | `None`/empty | a HOSTED label | `0` | evidence of NOTHING — ignore |
@@ -2452,7 +2421,7 @@ confusion is how the recovery path becomes unreachable. Quote the
 `runner_name=… labels=… steps=N` lines verbatim. "CI won't go green" is
 never the evidence.
 
-### Rung 1 — is the CodeBuild fallback ALREADY IMPLEMENTED? Then USE it
+## Rung 1 — is the CodeBuild fallback ALREADY IMPLEMENTED? Then USE it
 
 Check, do not assume, in this order — cheapest first:
 
@@ -2469,11 +2438,11 @@ execution is FORBIDDEN.** Flip the mode variable to the fallback token,
 CONFIRM-READ it (a write helper that probes-then-creates can fail
 partially, so an exit code establishes nothing), then force a fresh
 `runs-on` evaluation by PUSHING a new commit to the branch. The result is
-a real pipeline run of the same workflow, so it DISCHARGES the Core rule
-above with no exception, no local substitution and nothing to disclose.
-Confirm the relocation landed: every job must show a fallback label WITH
-a non-empty runner name. A flip with no subsequent fallback-labelled
-assignment is an unfinished flip, not a remedy.
+a real pipeline run of the same workflow, so it DISCHARGES the core rule
+in `remote-ci-must-pass.md` with no exception, no local substitution and
+nothing to disclose. Confirm the relocation landed: every job must show a
+fallback label WITH a non-empty runner name. A flip with no subsequent
+fallback-labelled assignment is an unfinished flip, not a remedy.
 
 Two prohibitions while relocating, because both are
 infrastructure-mutation capabilities rather than retries: do NOT re-run a
@@ -2490,7 +2459,7 @@ run id (`agent-state-convention.md`), and do not flip back while another
 worker has fallback work in flight. Unwillingness to mutate shared state
 is NOT a reason to skip this rung.
 
-### Rung 2 — NOT implemented? FILE IT (once), via issue-intake
+## Rung 2 — NOT implemented? FILE IT (once), via issue-intake
 
 If Rung 1's checks show the mechanism does not exist, the durable remedy
 is to have it built, and `docs/codebuild-ci-backup-mechanism.md` is what
@@ -2544,7 +2513,7 @@ standing HUMAN-REQUEST from the project setup. Give the issue:
 Then go to Rung 3. Filing is not a substitute for verifying the change
 in front of you.
 
-### Rung 3 — run the pipeline LOCALLY, as a disclosed workaround
+## Rung 3 — run the pipeline LOCALLY, as a disclosed workaround
 
 Reachable only when Rung 1 found no implemented mechanism AND Rung 2 has
 been discharged (an issue now exists, whether you filed it or found it).
@@ -2602,7 +2571,7 @@ time, never at commit time (`ci-owns-the-test-suite.md`).
    worktree of this clone pays for a full local suite, which is the cost
    this whole rule set exists to avoid.
 
-### What is NOT this ladder
+## What is NOT this ladder
 
 - A red run WITH a runner and steps and a named failing step — shape
   (A), the debugging loop, whichever runner it ran on.
@@ -2614,47 +2583,32 @@ time, never at commit time (`ci-owns-the-test-suite.md`).
   billing scope its failure is evidence in NEITHER direction.
 - "The flip did not seem to take", "the fallback would probably have
   worked", "the hang was infrastructure, so I ran it locally." Each is a
-  `no-guessing.md` violation wearing this section's clothes.
+  `no-guessing.md` violation wearing this ladder's clothes.
 - Skipping Rung 1 because the check "would probably" show nothing, or
   skipping Rung 2 because filing feels like overhead. Both rungs are
   mandatory and both are cheap.
 
-## Evidence required to declare success
+## Cross-references
 
-State the terminal pipeline status with evidence quoted from the
-wrapper output: pipeline/run ID, status (`success`/`passed`), and the
-commit SHA it ran against. Without that evidence, the operation is not
-finished.
-
-## Integration
-
-- `use-git-wrapper-scripts.md`: all CI status/log retrieval goes
-  through the wrapper.
-- `no-output-shortening.md`: read complete CI logs.
-- `no-guessing.md`: every claim about pipeline state is backed by
-  quoted wrapper output — including each rung's determination in the
-  capacity ladder.
-- `issue-filing-discipline.md`: Rung 2's filing is pre-authorised by
-  this rule (OUT-OF-SCOPE + HUMAN-REQUEST) and still carries the
-  provenance lines the filing gate checks. It is a once-per-project
-  filing, so the duplicate check is mandatory.
+- `no-guessing.md`: every rung determination is backed by quoted wrapper
+  output.
+- `issue-filing-discipline.md`: Rung 2's filing is pre-authorised
+  (OUT-OF-SCOPE + HUMAN-REQUEST), still carries the provenance lines the
+  filing gate checks, and is once-per-project — the duplicate check is
+  mandatory.
 - `agent-state-convention.md`: the mode-variable flip is a shared-state
   mutation — take the lock and record it as a `DL-NNN` decision.
 - `continuous-work.md`: a capacity outage is NOT a hard blocker while a
   rung remains untried. Work down the ladder rather than stopping to ask.
-- `ci-owns-the-test-suite.md`: the other half of this rule. It owns WHERE
-  tests run (affected tests locally, full suite in CI), the commit-often /
-  push-once contract, the bounded local worker count, and the CI-outage
-  marker this rule declares at Rung 3. A pipeline that is scarce enough to
-  need a capacity ladder is a pipeline whose runs must not be spent on
-  one-failure-at-a-time debugging.
-- `always-test-e2e.md`: a remote change that triggers CI is part of
-  the E2E loop; the E2E test is not complete until CI is green.
-- `docs/codebuild-ci-backup-mechanism.md` is installed by PART 12 and is
-  what Rung 2's issue points an implementer at, so the mechanism never
-  has to be redesigned per project.
-- The `git-push` hook (Part 9) implements this rule operationally.
+- `docs/codebuild-ci-backup-mechanism.md` (installed by PART 12) is what
+  Rung 2's issue points an implementer at, so the mechanism never has to
+  be redesigned per project.
+- `ci-owns-the-test-suite.md`: while CI-OUTAGE MODE is declared the suite
+  runs at PUSH time, never at commit time.
 ```
+
+If the project already has a `docs/ci-capacity-ladder.md`, apply Rule 1:
+merge, keeping any genuine local evolution and recording the divergence.
 
 ### 8.27 `agent-state-convention.md` (always) — fleet convention
 
@@ -3148,26 +3102,14 @@ This rule governs WHERE tests run, WHEN you may push, and WHAT you must do
 with a red CI run. It is the companion of `remote-ci-must-pass.md`, which
 governs the CI run itself.
 
-## Why this rule exists
-
-Three measured failures of the previous arrangement, in which the full suite
-was a precondition for every commit:
-
-1. **Commits cost an hour.** On a project whose suite runs for 60 minutes, a
-   per-commit suite made each commit a 60-minute operation. Agents responded
-   rationally: they stopped committing, batched an entire feature into one
-   enormous commit, and the history became unreviewable — the exact opposite
-   of what a commit gate is for.
-2. **The machine died.** `pytest -n auto` takes one worker per vCPU. Several
-   concurrent per-issue worktrees each doing that made the host unusable and
-   got the agent process killed mid-run, losing the work.
-3. **Fail-fast turned one run into many.** A pipeline that stops at the first
-   failing stage reports ONE problem per run. The worker fixed it, pushed,
-   waited, found the next, and burned a full cycle per failure. Ten failures
-   meant ten pipeline runs.
-
-None of that bought any correctness. A local suite run and a CI suite run on
-the same SHA prove the same thing, and only one of them is free.
+Why (three MEASURED failures of the per-commit-suite arrangement, full
+accounts in the `scripts/run_tests.py` header): a 60-minute suite made
+every commit an hour, so agents batched whole features into single
+unreviewable commits; concurrent worktrees each running `pytest -n auto`
+made the host unusable and killed the agent mid-run; fail-fast CI reported
+one failure per run, so ten failures cost ten pipeline runs. None of it
+bought correctness — a local and a CI suite run on the same SHA prove the
+same thing, and only one is free.
 
 ## Where things run
 
@@ -3270,24 +3212,17 @@ down, all of them fixed, exactly one push.
 
 ## Integration
 
-- `remote-ci-must-pass.md`: the CI run itself — monitoring it, the debugging
-  loop, and the capacity ladder when it cannot run. This rule says what you
-  do with its output.
-- `tests-must-not-fail.md`: a failing test is always fixed, never skipped or
-  xfailed. That is unchanged and unconditional; this rule only changes WHERE
-  the run happens.
-- `post-activity.md`: the completion checklist runs the affected tests
-  locally and takes the suite verdict from CI.
-- `keep-git-clean.md`: commit only what belongs — a frequent-commit habit is
-  not a licence to commit generated files or `reports/`.
-- `continuous-work.md`: waiting for a CI run is not a reason to end a turn.
-  Monitor it, and work on anything that does not depend on its result.
-- `no-output-shortening.md` / `no-guessing.md`: "every failing job" means
-  every log read in full, and every claim backed by quoted output.
-- `use-venv.md`: every local run happens inside the venv.
-- `scripts/run_tests.py`, `scripts/run_checks.py`, `scripts/ci_outage_mode.py`:
-  the mechanisms (PART 2). `run_checks.py` is the same command CI runs, which
-  keeps a local pipeline execution from drifting away from the real pipeline.
+`remote-ci-must-pass.md` governs the CI run itself (monitoring, debugging
+loop, capacity ladder); `tests-must-not-fail.md` still bars every
+skip/xfail dodge unconditionally — this rule only changes WHERE the run
+happens; `post-activity.md` takes the suite verdict from CI; frequent
+commits are not a licence to commit generated files (`keep-git-clean.md`);
+waiting on CI is not a turn-end (`continuous-work.md`); "every failing
+job" means full logs and quoted evidence (`no-output-shortening.md`,
+`no-guessing.md`); every local run happens inside the venv
+(`use-venv.md`). The mechanisms are `scripts/run_tests.py`,
+`scripts/run_checks.py` (the same command CI runs, so a local pipeline
+cannot drift from the real one), and `scripts/ci_outage_mode.py` (PART 2).
 ```
 
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
@@ -3312,13 +3247,31 @@ For each `*.md` file in `.kiro/steering/`:
 3. Confirm any file references use the `#[[file:<relative_path>]]`
    syntax.
 4. Confirm the file is valid Markdown and the YAML front matter parses.
+5. Confirm the two kernel/companion splits landed — they keep the
+   always-on token footprint down without weakening either contract:
+   - `tests-must-not-fail.md` is `inclusion: always` and carries the
+     standard plus the COMPLETE forbidden-claims and forbidden-actions
+     lists; `tests-must-not-fail-procedures.md` EXISTS with
+     `inclusion: fileMatch` / `fileMatchPattern: "test/**/*.py"` and
+     carries the full diagnosis/repair procedure.
+   - `remote-ci-must-pass.md` is `inclusion: always` and carries the
+     core rule, the ONE-PASS debugging loop, and the capacity-ladder
+     summary naming Rungs 0–3 and the `ci_outage_mode.py` declare/clear
+     commands; `docs/ci-capacity-ladder.md` EXISTS and carries the FULL
+     ladder.
+   - The full ladder text must NOT survive inside any always-on steering
+     body. If a merge or an older project version left it there,
+     relocate it to `docs/ci-capacity-ladder.md` and leave only the
+     kernel's summary and pointer.
 
 If any file does not conform, FIX IT to match the format at
 https://kiro.dev/docs/steering/, preserving the file's content and
 intent. Re-run the check until every file conforms.
 
 Report the result in the migration report: number of steering files
-checked, number that needed correction, and what was corrected.
+checked, number that needed correction, and what was corrected — and
+confirm both companion files (`tests-must-not-fail-procedures.md`,
+`docs/ci-capacity-ladder.md`) are present.
 
 ---
 
@@ -4167,11 +4120,13 @@ After completing all parts:
    `.kiro/steering/`, AND every file conforms to the format at
    https://kiro.dev/docs/steering/ (per the Part 8.26 check). In particular
    `ci-owns-the-test-suite.md` (8.34) exists with `inclusion: always`, and
-   `remote-ci-must-pass.md` (8.25) carries BOTH the enumerate-group-fix-all
-   debugging loop and the `ci_outage_mode.py` declare/clear steps in Rung 3 —
-   a ported body whose debugging loop still reads "fix, re-push, repeat" means
-   the batching discipline was dropped and the project will burn one pipeline
-   run per failure.
+   `remote-ci-must-pass.md` (8.25) carries the full enumerate-group-fix-all
+   debugging loop, names the `ci_outage_mode.py declare`/`clear` commands in its
+   rung summary, and POINTS at `docs/ci-capacity-ladder.md` — which exists and
+   carries the full ladder (the ladder text must NOT survive inside the
+   always-on steering body; see 8.26 item 5). A ported body whose debugging
+   loop still reads "fix, re-push, repeat" means the batching discipline was
+   dropped and the project will burn one pipeline run per failure.
 7. **Hooks** — every hook in Part 9 exists in `.kiro/hooks/`.
 8. **Custom agents** — every agent from PART 8A exists in `.kiro/agents/`
    as `<name>.json` (filename stem equals the JSON `name`); each parses;
@@ -4194,13 +4149,16 @@ After completing all parts:
     visibly holds `jsii-kernel-*` means temp is not scoped, not that the disk is clean.
 9a. **CI capacity fallback** — `docs/codebuild-ci-backup-mechanism.md` exists (PART 12)
     and still reads as project-agnostic (its placeholder table is intact; no concrete
-    stack/account/repository name has crept in), and
-    `.kiro/steering/remote-ci-must-pass.md` carries the capacity ladder: Rung 1 (use an
-    implemented fallback; local execution forbidden), Rung 2 (file once via
-    `issue-intake-agent` after checking open AND closed issues), Rung 3 (local pipeline as
-    a disclosed workaround). Grep the steering file for all three rungs — one that stops at
-    the debugging loop means the ladder was dropped, and the project will reach for local
-    execution as its FIRST move instead of its last.
+    stack/account/repository name has crept in); `docs/ci-capacity-ladder.md` exists
+    (Part 8.25) and carries the FULL ladder — Rung 0 (structural refusal evidence),
+    Rung 1 (use an implemented fallback; local execution forbidden), Rung 2 (file once
+    via `issue-intake-agent` after checking open AND closed issues), Rung 3 (local
+    pipeline as a disclosed workaround); and `.kiro/steering/remote-ci-must-pass.md`
+    summarizes all four rungs and points at that doc. A steering body that stops at the
+    debugging loop means the ladder was dropped, and the project will reach for local
+    execution as its FIRST move instead of its last; one that still carries the full
+    ladder text means the kernel/doc split was lost in a merge — relocate, don't
+    duplicate.
 10. **Issue-filing containment** (if any tracker-capable agent was installed) —
     `.kiro/steering/issue-filing-discipline.md` exists with `inclusion: always`;
     `docs/findings-ledger.md` exists with its table header;

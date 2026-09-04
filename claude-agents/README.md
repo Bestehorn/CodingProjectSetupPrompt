@@ -10,7 +10,9 @@ prompt, preserved. Only the envelope changed: Kiro's per-agent JSON
 (`tools` + `toolsSettings` + `subagent.availableAgents`) became Claude Code
 subagent frontmatter (`name`, `description`, `tools`, `Agent(...)`), and every
 `.kiro/agent-state/<agent>/` path was rewritten to `.claude/agent-state/<agent>/`
-so the agents keep their checkpoint/resume state under the Claude tree.
+so the agents keep their checkpoint/resume state under the Claude tree. (One
+later, behaviour-neutral restructuring: four agents' drafting templates were
+extracted into sibling files read on demand from `.claude/docs/` — see below.)
 
 > The Kiro originals in `cli-agents/` are untouched. A project can carry both:
 > Kiro reads `.kiro/agents/`, Claude Code reads `.claude/agents/`.
@@ -38,6 +40,16 @@ so the agents keep their checkpoint/resume state under the Claude tree.
 The CV suite has its own run instructions in [`cv/README.md`](cv/README.md)
 (it is the one suite that needs special handling — see *The CV suite* below).
 
+Four agents keep their drafting/reference material in a SIBLING file rather than
+in the agent definition: `issue-intake/issue-draft-template.md`,
+`product-management/pm-proposal-template.md`,
+`issue-housekeeping/housekeeping-templates.md`, and `dead-code/language-matrix.md`
+(installed as `dead-code-language-matrix.md`). Each installs to the project's
+`.claude/docs/` and is read by its agent at the moment it is needed — drafting an
+issue, writing a proposal, triaging, language setup — instead of loading with the
+agent definition every session. Install the template with its agent: the agent
+bodies point at those exact `.claude/docs/` paths.
+
 ## Spec-driven + test-driven workflow (`spec-workflow/`)
 
 In addition to the translated Kiro agents above, this directory contains a
@@ -60,7 +72,8 @@ evidence-proven code in one session.
 | `devops-iac-reviewer.md` | CI/CD, IaC least-privilege, observability |
 | `spec-implementer.md` | Test-first implementer (never certifies itself) |
 | `phases/spec-phase-*.md` | Phase procedures (shared by conductor + commands) |
-| `rules/agent-state-convention.md` | Cross-agent decision-log convention (all agents) |
+| `rules/agent-state-convention.md` | State layout + plain `Name: value` field semantics + the cross-agent decision log; its §1a binds every REGISTERED run to the run-identity contract (all agents) |
+| `docs/run-identity.md` | The AUTHORITATIVE run-identity/gate-release contract (registry-derived run id, seeded fields, release vocabulary, `OWNED`/`UNREGISTERED`/`BROKEN` verdicts). Installs to `.claude/docs/` — deliberately NOT a rule, so it is read on demand by registered runs instead of loading into every session |
 | `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
 | `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
 | `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; questions must carry a recommendation; context pressure is not a stop reason (all agents + main session) |
@@ -140,7 +153,7 @@ as-is.
 
 ```bash
 # from the project root, install every agent for this project:
-mkdir -p .claude/agents
+mkdir -p .claude/agents .claude/docs
 cp claude-agents/dead-code/dead-code-removal-agent.md        .claude/agents/
 cp claude-agents/doc-review/doc-reviewer-agent.md            .claude/agents/
 cp claude-agents/ci-worker/ci-workflow-agent.md              .claude/agents/
@@ -150,6 +163,13 @@ cp claude-agents/product-management/product-management-agent.md .claude/agents/
 cp claude-agents/spec-review/spec-review-agent.md            .claude/agents/
 cp claude-agents/spec-review/spec-prompt-author-agent.md     .claude/agents/
 cp claude-agents/cv/cv-*.md                                  .claude/agents/
+
+# agent-sibling templates → .claude/docs/ (read by their agents at drafting
+# time; on demand, deliberately NOT rules/, which would always-load them):
+cp claude-agents/issue-intake/issue-draft-template.md         .claude/docs/
+cp claude-agents/product-management/pm-proposal-template.md   .claude/docs/
+cp claude-agents/issue-housekeeping/housekeeping-templates.md .claude/docs/
+cp claude-agents/dead-code/language-matrix.md                 .claude/docs/dead-code-language-matrix.md
 ```
 
 `.claude/agents/` may be flat — the subagent's `name:` (not its path) is the
@@ -160,7 +180,13 @@ immediately when created via the `/agents` command).
 
 ```bash
 cp claude-agents/**/*.md ~/.claude/agents/   # one-time, all projects
+# The glob sweeps in non-agent files — remove them, or Claude Code will list
+# each as a (broken) subagent:
+rm ~/.claude/agents/README.md ~/.claude/agents/issue-draft-template.md    ~/.claude/agents/pm-proposal-template.md ~/.claude/agents/housekeeping-templates.md    ~/.claude/agents/language-matrix.md 2>/dev/null
 ```
+
+(The `.claude/docs/` sibling templates cannot be installed user-scope — agents
+read them from the PROJECT's `.claude/docs/`, so copy them per project as above.)
 
 > The `ClaudeCodeSetupPrompt.txt` setup prompt installs these for you when you
 > ask it to (Part 8 of that prompt). This README is for installing them

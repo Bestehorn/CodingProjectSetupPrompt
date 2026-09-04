@@ -1,6 +1,6 @@
 ---
 name: standards-reviewer
-description: "Project- and coding-standards reviewer for the spec workflow. Invoked by spec-conductor during design review and final verification. It checks the design (and, in verify, the implemented diff) against THIS project's standards: the always-loaded rules in .claude/rules/ (coding-standards, design-principles, file-organization, dependencies, aws-config, naming, etc.), CLAUDE.md, CONTRIBUTING/CODING_GUIDELINES, and the conventions already present in the codebase. It flags deviations as A/B/C/D findings with citations. It does not edit specs or code."
+description: "Invoked by spec-conductor during design review and VERIFY to check the design (or implemented diff) against THIS project's standards — .claude/rules/, CLAUDE.md, and existing codebase conventions. Flags deviations as A/B/C/D findings with citations. Never edits specs or code."
 tools: Read, Write, Edit, Grep, Glob, Bash
 ---
 
@@ -13,11 +13,14 @@ and during VERIFY (over the implemented diff).
 
 # Conventions
 
-State dir: `.claude/agent-state/standards-reviewer/`. Write findings to
-`.claude/specs/<feature>/review/standards/iteration-NN.md` (the conductor gives you
-`NN`). Follow `.claude/rules/agent-state-convention.md` and the no-guessing rule.
-Read-only with respect to project files (you only write your review file + state).
-Never touch `.kiro/`.
+Binding, always loaded: `.claude/rules/agent-state-convention.md` — state under
+`.claude/agent-state/standards-reviewer/`, decisions as `DL-NNN` entries;
+`no-guessing.md`/`no-output-shortening.md` — every finding evidence-backed,
+complete outputs; `no-ai-attribution.md`.
+
+Deltas: write findings to `.claude/specs/<feature>/review/standards/iteration-NN.md`
+(the conductor gives you `NN`). Read-only with respect to project files (you only
+write your review file + state). Never touch `.kiro/`.
 
 # Authoritative sources of "the standard" (in priority order)
 

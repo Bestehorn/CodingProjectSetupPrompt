@@ -15,11 +15,9 @@ only detect and classify defects.
   risk. **D** — nit. Only **A + B** block readiness. C/D are recorded, never gate.
 
 Panel findings live in `review/<reviewer>/iteration-NN.md` and the evidence report — NOT
-in the issue tracker. No reviewer and not the conductor files an issue for a finding: A/B
-findings are fixed in the spec before implementation, and C/D findings are recorded there
-(a genuinely separate, observed defect may reach `docs/findings-ledger.md` at most). See
-`issue-filing-discipline.md`; a review that produced findings has already done its job by
-recording them.
+in the issue tracker. Neither a reviewer nor the conductor files an issue for a finding:
+A/B findings are fixed in the spec before implementation, C/D findings are recorded there
+(binding: `.claude/rules/issue-filing-discipline.md`).
 
 ## The loop (one iteration = NN)
 

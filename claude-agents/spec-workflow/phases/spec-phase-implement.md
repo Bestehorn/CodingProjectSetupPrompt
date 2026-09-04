@@ -17,8 +17,7 @@ captures evidence; the `adversarial-verifier` independently grades it. No claim 
   open findings.)
 - The venv exists and is active (create it per use-venv if missing). The test command is
   `python scripts/run_tests.py` — bounded local workers, no fail-fast. Record it. Never
-  `pytest -n auto`: one worker per vCPU across several per-issue worktrees is what makes
-  the host unusable and kills the session (`ci-owns-the-test-suite.md`).
+  `pytest -n auto` (binding: `.claude/rules/ci-owns-the-test-suite.md`).
 - Spec-drift guard: during this phase the `spec-implementer` MUST NOT edit
   `requirements.md`/`design.md`/`tasks.md`. Enforce with the TDD-gate hook and/or
   `permissions.deny` on those paths.
@@ -45,20 +44,17 @@ For each unchecked task:
    without touching unrelated tests and without suppressions.
 2. **Conductor runs the paired tests** → `evidence/green/<task>.txt` (must be green):
    `python scripts/run_tests.py <the paired test paths>`.
-3. **Commit** the task. The pre-commit hook is lint + security, about a second — commit
-   at every task boundary rather than accumulating one enormous change
-   (`ci-owns-the-test-suite.md`).
+3. **Commit** the task — at every task boundary, never accumulating one enormous
+   change (`ci-owns-the-test-suite.md`).
 4. Only when the paired capture is green: mark the task `[x]` in `tasks.md` and append a
    `DL-NNN` entry citing the design section implemented.
 5. If green cannot be reached after the implementer's attempts, leave the task
    unchecked; loop with more evidence or escalate (one batched message).
 
-**No per-task full-suite run.** That used to be step 3 here, and on a project whose
-suite takes an hour it made each task cost an hour — so the whole spec got implemented
-in one commit and the history stopped being reviewable. The regression verdict comes
-from ONE CI run over the finished batch (see below), which is both free and
-authoritative. If a change plainly reaches beyond its paired tests, run the affected
-module or package locally — still not the whole suite.
+**No per-task full-suite run** (binding: `.claude/rules/ci-owns-the-test-suite.md`).
+The regression verdict comes from ONE CI run over the finished batch (see below). If
+a change plainly reaches beyond its paired tests, run the affected module or package
+locally — still not the whole suite.
 
 When all tasks are `[x]`, transition to VERIFY.
 
@@ -67,10 +63,10 @@ When all tasks are `[x]`, transition to VERIFY.
 After the last task is `[x]` and committed:
 
 1. Push the branch ONCE. Never push per task, and never push to find out whether the
-   work is good.
-2. Monitor the CI run to a terminal state via the wrapper script. It runs the full suite
-   with no fail-fast, so its result is the regression evidence for the batch: capture it
-   to `evidence/regress/<last-task>.txt` with the run id and head SHA quoted.
+   work is good (`ci-owns-the-test-suite.md`).
+2. Monitor the CI run to a terminal state via the wrapper script. Its result is the
+   regression evidence for the batch: capture it to `evidence/regress/<last-task>.txt`
+   with the run id and head SHA quoted.
 3. If it is red, apply the debugging loop in `remote-ci-must-pass.md`: enumerate EVERY
    failing job and every failure inside it before changing anything, group by root
    cause, fix them ALL, then push once. One run in, all fixes out.
@@ -115,18 +111,15 @@ marked `[x]` has no capture, when the newest paired-test capture is red or conta
 skip/xfail dodges, or when CI-OUTAGE MODE is declared with no green full-suite capture.
 It also bans `--no-verify` on both commit and push.
 
-A commit itself needs no evidence — that is the point. The evidence requirement used to
-sit on `git commit`, which is what made a task cost a full suite run
-(`ci-owns-the-test-suite.md`). Commit freely; owe evidence at the push, where CI and
-other people start depending on the work. `remote-ci-must-pass.md` governs the run that
-follows.
+A commit itself needs no evidence — commit freely; evidence is owed at the push
+(binding: `.claude/rules/ci-owns-the-test-suite.md`). `remote-ci-must-pass.md`
+governs the run that follows.
 
 ## Defects discovered during implementation
 
 Per `issue-filing-discipline.md`: a defect that blocks the task is absorbed into it; a
-small, clear one (a few lines, no design choice) is FIXED NOW and noted in the commit
-message; one that needs extensive research, an evaluation of design options, or work
-outside this spec's scope goes to the issue-intake agent as ONE gated issue
-(`Origin: spawned-discovery`, `Spawned-from: #<N>` when a tracker issue drove this spec);
-anything else is a row in `docs/findings-ledger.md`. Completing a spec with zero new
-issues filed is the expected outcome, not a sign something was missed.
+small, clear one is FIXED NOW and noted in the commit message; one needing extensive
+research, design-option evaluation, or out-of-scope work goes to the issue-intake agent
+as ONE gated issue (`Origin: spawned-discovery`, `Spawned-from: #<N>` when a tracker
+issue drove this spec); anything else is a row in `docs/findings-ledger.md`. Zero new
+issues filed is the expected outcome.

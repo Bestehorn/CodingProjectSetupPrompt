@@ -1,93 +1,56 @@
 # Issue Tracking: Checklists, Metadata, and Live Updates (ALL agents, always loaded)
 
-This rule is shared by EVERY agent that touches the issue tracker (issue-intake,
-issue-housekeeping, product-management, the issue-work-orchestrator). It is installed at
-`.claude/rules/issue-tracking.md` (no `paths:` frontmatter → always loaded) and is
-referenced from the project's root `CLAUDE.md`. All tracker operations go through the
-project's git wrapper script (`use-git-wrapper-scripts`).
+Governs an issue that EXISTS; whether one should exist at all is
+`issue-filing-discipline.md` (observed defects only, fix-first, zero filings valid) —
+read that before creating anything. All tracker operations go through the project's git
+wrapper script (`use-git-wrapper-scripts`).
 
-Scope: this rule governs an issue that EXISTS. Whether an issue should exist at all is
-governed by `.claude/rules/issue-filing-discipline.md` — observed defects only, fix-first
-before filing, and zero filings is a valid outcome. Read that one before creating
-anything.
+The goal: **the issue is the durable, shared record of the work.** At any moment, any
+other agent or human must be able to pick it up and continue — progress, decisions,
+questions, answers, and remaining work are kept ON THE ISSUE, updated continuously.
+Trackers differ (GitHub, GitLab): use what the wrapper/host supports, skip a missing
+optional field cleanly and note it — never treat one as a blocker.
 
-The goal: the issue is the durable, shared record of the work. At any moment, ANY other
-agent or human must be able to pick up the issue and continue with minimal lost context
-— because progress, decisions, questions, answers, and remaining work are all kept ON
-THE ISSUE, updated continuously, not just at the end.
+## Checklists
 
-## Best-effort + graceful degradation (GitHub vs GitLab differ)
+- When filing decomposable work, include a task-list checklist (`- [ ]` items), one per
+  concrete step a later session would take.
+- During implementation, USE it: tick items (`- [x]`) via the wrapper as each is genuinely
+  completed (with evidence), and add newly-discovered items. The checklist must always
+  reflect reality — it is a living progress record, not decoration. (Historically agents
+  ignored these lists entirely; that is the gap this rule closes.)
 
-Issue trackers differ (GitHub, GitLab, others) and not every issue has every feature.
-Use whatever the wrapper/host supports; if a specific field or capability is absent for
-this host or this issue, skip it cleanly and note that in the agent's log — never treat
-a missing optional field as a blocker. The guidance below is the target; apply the parts
-the host supports.
+## Live updates (resume-anywhere)
 
-## Checklists / work-item lists
+Post progress to the issue continuously, not only at the end: a short status comment at
+each meaningful step (done / next / links to branch, PR, evidence), checklist updates,
+and the current branch/worktree/PR and spec/evidence locations. Bias toward
+over-documenting: if the session dies, the issue alone must carry enough context to
+continue. **Every question put to the user, and the answer, goes on the issue as a
+comment, verbatim** — a Q&A decision must never live only in transient chat.
 
-- **When filing** an issue whose work naturally decomposes, INCLUDE a structured
-  checklist of work items (e.g. GitLab task-list `- [ ] item` entries, which surface as
-  "0 of N checklist items completed"; GitHub task lists likewise). One item per concrete
-  step a later session would take.
-- **During implementation**, USE the checklist: tick items off (`- [x]`) via the wrapper
-  as each is genuinely completed (with evidence), and add newly-discovered items rather
-  than leaving the list stale. The checklist state on the issue should always reflect
-  reality. Historically agents ignored these lists entirely — that is the gap this rule
-  closes: the checklist is a living progress record, not decoration.
+## Metadata (set what the host supports)
 
-## Live updates during work (resume-anywhere)
-
-While working an issue, post progress to the issue continuously, not only at the end:
-- A short status comment at each meaningful step (what was done, what's next, links to
-  the branch/PR/evidence), so the issue alone is enough for another agent to resume.
-- Update the checklist as items complete.
-- Record the current branch/worktree/PR and the location of the spec/evidence.
-The bias is toward over-documenting the issue: if the session is interrupted, the issue
-must carry enough context to continue without re-deriving the investigation.
-
-## Questions and answers ALWAYS go on the issue
-
-Any question put to the user about an issue — and the user's answer — MUST be recorded
-on the issue (as a comment), verbatim, with enough context to be understood later. A
-decision made via a Q&A is part of the issue's history; never let it live only in a
-transient chat. (This complements the agent decision log, `DL-NNN`.)
-
-## Metadata fields (set what the host supports)
-
-- **Assignee / the in-progress claim (DETERMINISTIC — do it the safe way):** when
-  starting work, CLAIM the issue with the wrapper's single verified command — GitLab
-  `issue start <iid>` (GitHub `start-issue <n>`). It is **idempotent** and **fail-closed**:
-  it adds the in-progress label *additively*, assigns the working identity, then re-reads
-  and verifies BOTH took effect, exiting non-zero if not — so a claim is never believed
-  unless it actually landed. NEVER set the in-progress label via a full
-  `issue update --labels` replace: the host's plain `labels` field is a **full replace**
-  that silently drops other labels and has repeatedly caused the in-progress label to
-  vanish and duplicate work. Use the additive `issue label-add` / `issue label-remove`
-  (GitLab `add_labels`/`remove_labels`) primitives for any label change. If a claim's
-  verification fails or the issue was claimed by someone else, do NOT start work — release
-  your local lock and pick another issue. Release a claim you can't act on now with
-  `issue release <iid>`.
-- **Start date / "in progress" timestamp:** record when work started (a start-date
-  field if the host has one, else a dated "started" comment).
-- **Time tracking:** track the time spent fixing/completing the issue and record it in
-  the host's time-tracking field on completion (e.g. GitLab `/spend`); if the host has
-  no such field, note elapsed time in the closing comment.
-- **Parent / epic / linked issue:** if the issue has a parent (epic, parent issue,
-  linked tracking issue), set the corresponding field/link so the hierarchy is intact.
-- **State / labels:** move the issue through the host's states (in-progress → closed)
-  and apply the project's conventional labels — always via the *additive* label
-  primitives (`issue label-add` / `issue label-remove`), never a whole-set replace.
+- **Claiming (DETERMINISTIC, fail-closed):** claim with the wrapper's single verified
+  command — GitLab `issue start <iid>` / GitHub `start-issue <n>`. It is idempotent and
+  fail-closed: adds the in-progress label ADDITIVELY, assigns, re-reads and verifies
+  both, exits non-zero otherwise. **NEVER set labels via a whole-set
+  `issue update --labels` replace** — it silently drops other labels and has repeatedly
+  caused claims to vanish and duplicate work. Use the additive `issue label-add` /
+  `issue label-remove` primitives for every label change. If claim verification fails or
+  someone else holds the issue: do not start work; release your local lock and pick
+  another. Release an unactionable claim with `issue release <iid>`.
+- **Start date**: record when work started (field, else a dated comment).
+- **Time tracking**: record time spent on completion (e.g. GitLab `/spend`, else in the
+  closing comment).
+- **Parent/epic/links**: set them so the hierarchy stays intact.
+- **State/labels**: move through the host's states via the additive primitives only.
 
 ## Closing
 
-When the work is done and merged, close the issue with a final comment that links the
-merged PR/MR and the evidence, ensures the checklist is fully ticked (or remaining items
-are explicitly deferred with a reason), and records the time spent. Leave the issue as a
-complete, self-contained record of what was done and proven.
-
-A deferred checklist item is NOT an automatic follow-up issue. Route it through
-`issue-filing-discipline.md`: fix it now if it is small and clear, file ONE gated issue if
-it needs research, design options, or work outside this scope, and otherwise record it in
-`docs/findings-ledger.md`. "Deferred with a reason" means the reason names which of those
-happened.
+Close with a final comment linking the merged PR and the evidence, the checklist fully
+ticked (or remaining items explicitly deferred with a reason), and the time spent. A
+deferred item is NOT an automatic follow-up issue — route it through
+`issue-filing-discipline.md` (fix now if small and clear; ONE gated issue if it needs
+research/design/out-of-scope work; else the findings ledger), and let the deferral reason
+name which happened.

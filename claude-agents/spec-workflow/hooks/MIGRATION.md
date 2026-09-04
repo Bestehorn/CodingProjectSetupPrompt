@@ -367,3 +367,89 @@ The general lesson, worth applying beyond this file: **a test that reaches the u
 one caller measures the pair, not the unit.** The library suite therefore defines no global named
 `base`, `session`, `orch`, `declared` or `run_dir`, so a reintroduced same-statement self-reference
 reds a case here instead of waiting for an unrelated refactor to expose it.
+
+---
+
+# Incident record
+
+The measured incidents the loaded rules cite by slug. Each entry is the authoritative
+account; the loaded rules and `.claude/docs/run-identity.md` carry only one-line pointers,
+so this section is what stops a future editor "simplifying" a constraint whose reason they
+cannot see. Append new incidents here; never delete one.
+
+## Incident `invented-run-label` (the 189-session inert-gate failure)
+`session-register.sh` wrote `state_dir: "runs/<sid8>/"` into `registry.json` but created
+nothing on disk. The agent, told by its command to "derive `RUN_ID`", invented a readable
+label (`run-issue574-20260828T194800Z`) and wrote well-formed state there. Both Stop gates
+resolved state from the registry, found nothing, and exited 0 — inert from turn one.
+Across 189 registered sessions in that clone, neither Stop gate had EVER blocked a
+turn-end (provable from the absence of `.stop-gate-counters/`, which only the blocking
+path creates), and a run holding an explicit instruction never to stop without a proven
+reason ended four turns unopposed. Fixes: the hook now SEEDS `runs/<run-id>/`, and a
+registered-but-stateless session resolves `BROKEN` and fails CLOSED.
+
+## Incident `mtime-borrow` (three hand-rolled resolvers, one shared defect)
+Three hooks each hand-rolled a registry read guarded by `command -v jq` with an
+`ls -t … | head -1` fallback. jq was absent on the development host, so all three resolved
+"the most recently touched run" — which handed one session a sibling's issue number,
+branch, and worktree as its own (reproduced live), and gated one session's push on a
+stranger's task ids. Fix: `hook-state-lib.sh` is the ONE resolver, every rung
+session-keyed, no mtime rung. Add no fourth copy.
+
+## Incident `seven-synonyms` (the brake armed on one magic string)
+The loop gate armed only on the literal `IN_PROGRESS`. MEASURED on a correctly seeded,
+registered, contract-acked run recording `Phase: IMPLEMENT` and `CURRENT_ISSUE: 574`, all
+of these let the turn end: `in progress`, `In Progress`, `in-progress`, `WORKING`,
+`ACTIVE`, `RUNNING`, `IMPLEMENTING`. Fix: inverted polarity — an unrecognised `Status`
+means work in flight; only an affirmative idle/terminal value releases.
+
+## Incident `whole-value-vs-substring` (two adversarial reviews, opposite failures)
+One review measured the narrative `Status: COMPLETED (was IN_PROGRESS)` being REFUSED and
+called it an over-block. The other measured `IN_PROGRESS - tasks 1-3 completed, 4
+remaining` DISARMING the evidence gate through a prefix/substring match — phrasing that
+"is not adversarial; it is how a progress note is naturally written". Both describe the
+same value shape, so only one rule can hold, and fail direction decides: a whole-value
+match costs a spurious refusal that names its own escape; a substring match lets a
+progress note end a turn. WHOLE-VALUE won. Do not "fix" it back in either direction.
+
+## Incident `untrimmed-whitespace` (one stray space, both fail directions)
+An untrimmed `AWAITING_USER: none ` compared unequal to the placeholder `none` and so
+read as a recorded escalation — DISABLING the primary brake. An untrimmed
+`CURRENT_SPEC: x ` produced the unopenable path `x /tasks.md` and REFUSED every turn-end
+with no escape an agent could find. Fix: values are whitespace-trimmed before both the
+shape test and the word test.
+
+## Incident `placeholder-release` (the gate's own example string released it)
+The substance test on `AWAITING_USER` exists because measured releases included the
+literal `<reason>` — the placeholder the gate itself used to print, so an agent copying
+the instruction verbatim disarmed the brake with the gate's own string. Both gates now
+apply the same `hook_is_substantive_escalation` test; the evidence gate previously
+released on any non-placeholder value, a fail-open wherever it was the only Stop hook.
+
+## Incident `duty-cycle` (the block cap reset itself into a cycle)
+While reaching `HOOK_BLOCK_CAP` merely reset the counter, MEASURED over eleven
+consecutive Stop events: attempts 1-8 refused, attempt 9 released and reset, attempts
+10-11 refusing again — eight forced continuations, one exit, eight more, forever. Fix:
+reaching the cap writes a durable `.capped` marker; only a genuine release on the merits
+(or, for the loop gate, a CHANGE in the field fingerprint; for the evidence gate, new
+evidence) clears count and marker.
+
+## Incident `empty-verdict` (a `set -u` slip fell through to ALLOW)
+A single `set -u` abort inside the resolver's subshell produced an EMPTY verdict that
+matched no guard; the gate fell through to its field reads and ALLOWED — while logging a
+line that read like a decision. Fix: an unrecognised verdict is normalised to `BROKEN`.
+
+## Incident `fenced-status` (an example beat the record)
+Before fence tracking, a `Status:` line inside a fenced code block was read as the run's
+Status, and last-occurrence-wins made a late example beat the real record. Fix: fields
+inside fences are ignored.
+
+## Incidents `hour-long-commits`, `pytest-n-auto-host-death`, `fail-fast-cycles`
+The three measured failures of the per-commit-test-suite arrangement, recorded in full in
+the `scripts/run_tests.py` header (WHY THIS EXISTS) and `ci-owns-the-test-suite.md`'s
+history: a 60-minute suite made every commit an hour, so agents batched whole features
+into single unreviewable commits; several worktrees each running `pytest -n auto` (one
+worker per vCPU) made the host unusable and got the agent killed mid-run; fail-fast CI
+reported one failure per run, so a ten-failure branch cost ten pipeline runs. Fixes:
+pre-commit = lint+security only, the evidence gate moved to the PUSH, `run_tests.py`
+bounds local workers and refuses `-x`/`--maxfail`, CI runs everything with no fail-fast.

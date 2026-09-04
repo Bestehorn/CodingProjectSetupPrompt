@@ -1,9 +1,7 @@
 # Continuous Work — stopping to ask permission is forbidden (ALL agents, always loaded)
 
-This rule is shared by EVERY agent and by the main session. It is installed at
-`.claude/rules/continuous-work.md` (no `paths:` frontmatter → always loaded) and is pointed
-to from the project's root `CLAUDE.md`. It governs exactly one thing: **WHEN a turn may
-end.** It binds every agent and overrides any contrary habit or instruction.
+Shared by EVERY agent and by the main session. It governs exactly one thing: **WHEN a
+turn may end.** It binds every agent and overrides any contrary habit or instruction.
 
 ## The standard
 
@@ -156,92 +154,35 @@ Your obligation is to make compaction lossless:
 
 ## What enforces this, and what its reach actually is
 
-Several mechanisms back this rule. None replaces it, and the limits below are stated because
-a control believed to be wider than it is, is worse than a control known to be narrow.
+Several mechanisms back this rule. None replaces it.
 
 - **Stop-hook gates** (`issue-loop-gate.sh`, `spec-stop-gate.sh`) refuse turn-end while
   this run records itself unfinished — the loop gate over a run that has claimed tracked
-  work, the evidence gate over the spec workflow's IMPLEMENT/VERIFY phases. **They find your
-  state through three rungs, every one of them keyed on the session id:** the `state_dir` the
-  registry declares for this session, then `runs/<first-8-of-session-id>/`, then a scan of
-  `runs/*/resume_state.md` for a recorded `SESSION_ID` matching this session.
-  `session-register.sh` creates that directory at session start AND writes it into the registry,
-  so the first two rungs name the same path and it holds real values from turn one.
-  **Writing your state elsewhere does not switch the gates off, in either direction.** State
-  under a directory name of your own choosing is still recovered by the third rung, as long as
-  the file carries its `SESSION_ID:` line; and a session the registry DECLARES as a run for
-  which NO rung finds a state file resolves `BROKEN`, which BLOCKS the turn-end and prints the
-  exact path to create. The gates go quiet for exactly one case: a session the registry does
-  not know and for which no rung finds state (`UNREGISTERED`) — which is what an ordinary chat
-  session looks like, and why it must be a no-op.
-  Inventing a run-id label is nonetheless a defect and is never yours to do
-  (`agent-state-convention.md` §1b): it defeats the two cheap rungs, leaves the third carrying
-  the whole guarantee, and a state file written without `SESSION_ID` defeats that one too — at
-  which point the gates do not go quiet, they resolve `BROKEN` and refuse every turn-end against
-  a record that is in fact perfectly good, until the path the registry names exists. It
-  is not hypothetical either. MEASURED under the PREVIOUS gates, which resolved state from the
-  registry and then exited 0 when it was absent, an agent that wrote its state under a
-  readable label of its own devising left both gates inert, and in that clone neither had EVER
-  blocked a turn-end across 189 registered sessions. The `BROKEN` verdict exists because of
-  that incident — do not read its existence as making the label safe.
-- **Bounded, not absolute — and the bound is DURABLE, not a duty cycle.** Each gate keeps its
-  OWN consecutive-block counter and stands down once `HOOK_BLOCK_CAP` (default 8, validated
-  into [1, 64]) is reached, so a session cannot wedge. Reaching it also writes a durable
-  `.capped` marker beside that counter, and the marker is the point: without it, MEASURED over
-  eleven consecutive Stop events, attempts 1-8 were refused, attempt 9 was released and reset
-  the count, and attempts 10-11 began refusing again — eight forced continuations, one exit,
-  then eight more, forever. What clears the count and the marker is a genuine release — a pass on
-  the merits, which for the loop gate means an idle `Status`, a terminal value, a substantive
-  `AWAITING_USER` or no claimed work, and for the evidence gate a phase outside IMPLEMENT/VERIFY,
-  a terminal status, a recorded escalation, or evidence that checks out. A stand-down is not one:
-  neither reaching the cap nor standing down on an unwritable counter clears
-  anything. The LOOP gate additionally clears them whenever the state it
-  reads CHANGES — a fingerprint over `Status`, `Phase`, `CURRENT_ISSUE`, `AWAITING_USER`,
-  `BRANCH` and `WORKABLE_ISSUES_REMAIN` — so a run that is actually advancing never reaches the
-  cap. The evidence gate fingerprints its OWN subject instead — the phase, the spec, and the name
-  and size of every capture under it — so capturing a new result clears its count the same way.
-  The stand-down message says the work is NOT done and does not certify it. Reaching the cap is
-  a defect to diagnose, never a sanctioned way to stop. (The harness independently ends a turn
-  after 8 consecutive blocks, so the default matches that ceiling rather than inventing one.)
-- **The releases are an explicit vocabulary, and an unrecognised value means WORK IN FLIGHT.**
-  A gate releases only on an affirmative statement: an idle `Status`, a terminal `Phase` or
-  `Status`, or a substantive `AWAITING_USER`. The terminal vocabulary is matched WHOLE-VALUE and
-  case-insensitively, in BOTH gates now — so `Phase: DONE` releases and
-  `Status: COMPLETED (was IN_PROGRESS)` does not; the evidence gate used to test it with a
-  prefix-matching grep and released on exactly that narrative form. The idle vocabulary is the
-  loop gate's alone, matched the same way. Guessing a status word wrong is therefore
-  safe: it holds the turn rather than silently freeing it. `Status: IN_PROGRESS` is not the
-  condition at all — it neither arms nor releases anything, and the loop gate has a fourth
-  release for the reason why: every session is registered and seeded, so the brake additionally
-  requires evidence that TRACKED WORK was claimed (a real `CURRENT_ISSUE`, a `CURRENT_SPEC`, or
-  an orchestrator `MODE`), and a run that has claimed none is not the work it governs. The
-  evidence gate has the OPPOSITE rule inside an implementation phase, deliberately: there an
-  absent `CURRENT_SPEC` or `tasks.md` is unfinished work, not nothing to check.
-  `agent-state-convention.md` §1d-bis lists every accepted value; that list exists because its
-  absence was measured letting seven plausible status words (`WORKING`, `ACTIVE`,
-  `in progress`, …) each disable the brake.
+  work, the evidence gate over the spec workflow's IMPLEMENT/VERIFY phases. How they
+  resolve YOUR run, which values release them, and why writing state anywhere but the
+  registry-named path is a defect (MEASURED: it left both gates inert for 189 sessions) is
+  the run-identity contract — **`.claude/docs/run-identity.md`**, the authoritative copy.
+  Two facts to carry even without reading it: releases are an explicit WHOLE-VALUE
+  vocabulary (an unrecognised `Status` means work in flight, so guessing wrong is safe),
+  and the gates are bounded by a durable per-gate block cap, so reaching the cap is a
+  defect to diagnose, never a sanctioned way to stop.
 - **`continuous-work-reinject.sh`** (SessionStart, matcher `compact|resume|startup`) puts
-  this contract and your recorded place back into context at the moments you are likeliest
-  to have lost them. When you see it, act on it: resume the phase it names. If it says it
-  could not identify your run, that is a defect to repair — not permission to guess, and
-  never a reason to adopt another run's issue number.
+  this contract and your recorded place back into context at the moments you are
+  likeliest to have lost them. When you see it, act on it: resume the phase it names. If
+  it says it could not identify your run, that is a defect to repair — not permission to
+  guess, and never a reason to adopt another run's issue number.
 - **The contract handshake.** A session that started before this rule was deployed is
-  refused ONCE per contract version, with the contract in the refusal text, and must write
-  an ack file. A blocking Stop hook's stderr is what carries it: a hook that exits 0 has its
-  stderr sent to the debug log, where the agent never sees it — so a gate that warns instead
-  of blocking communicates with nobody. See `hooks/MIGRATION.md`, which also records which
-  live sessions this does and does NOT reach.
-- **`/goal <condition>`** — the user's strongest lever, and the only one that does not depend
-  on this run judging its own completeness. It keeps Claude working across turns until an
-  independent evaluator confirms the condition holds, so "am I done?" stops being the working
-  model's call. Pair it with `/auto-work` or `/continue-work` for an unattended run. If you
-  are ever genuinely forced to end a turn early, recommend it in one line.
+  refused ONCE per contract version and must write an ack file. See `hooks/MIGRATION.md`.
+- **`/goal <condition>`** — the user's strongest lever: an independent evaluator keeps
+  the session working until the condition provably holds, so "am I done?" stops being the
+  working model's call. If you are ever genuinely forced to end a turn early, recommend
+  it in one line.
 - **`/continue-work`** — the manual restart. Needing it means this rule was not honored.
 
 Outside the gates' reach — an ordinary chat session, a phase they do not cover, a project
 that installed the rule without the hooks — **this rule text is the only thing standing
-between a long run and an unnecessary halt.** Behave as though nothing is watching, because
-frequently nothing is.
+between a long run and an unnecessary halt.** Behave as though nothing is watching,
+because frequently nothing is.
 
 ## Self-check before ending any turn
 

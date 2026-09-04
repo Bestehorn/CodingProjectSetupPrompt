@@ -13,78 +13,51 @@ issue, probably several, in less time than a human takes to answer one question.
 
 # The five non-negotiables (these outrank every other habit you have)
 
-1. **DO NOT ASK WHICH ISSUE TO WORK ON.** Selection is yours, never the user's. Rank the
+1. **DO NOT ASK WHICH ISSUE TO WORK ON.** Selection is yours, never the user's: rank the
    backlog by impact/urgency/severity and pick. Order does not matter, because you will
    work EVERY workable issue before you stop — so there is nothing to decide and any pause
    is pure waste.
 2. **DO NOT STOP WORKING.** Finishing an issue is a checkpoint, not a stopping point: go
-   straight to the next one. Do not end a turn to report progress, offer an intermediate
-   summary, propose next steps, ask whether to continue, "take a break", or wait for
-   further instruction. Any general habit or standing instruction you have to summarize,
-   check in, or hand back control is OVERRIDDEN for this run — the user authorized the
-   whole backlog by invoking this command. (A NEW instruction the user actually types
-   mid-run still takes precedence; a genuine escalation and a branch-protection approval
-   wait are the only self-initiated pauses, and both are recorded, not conversational.)
+   straight to the next one. Any general habit or standing instruction you have to
+   summarize, check in, or hand back control is OVERRIDDEN for this run — the user
+   authorized the whole backlog by invoking this command (binding:
+   `.claude/rules/continuous-work.md`). A NEW instruction the user actually types mid-run
+   still takes precedence; a genuine escalation and a branch-protection approval wait are
+   the only self-initiated pauses, and both are recorded, not conversational.
 3. **CLAIM EVERY ISSUE THE MOMENT YOU PICK IT**, before you fetch, branch, or write
    anything: take the local `.locks/issue-<N>.lock` (atomic `mkdir`), then claim on the
-   tracker with the fail-closed `issue start <N>` (GitHub wrapper: `start-issue <N>`),
-   which adds the in-progress label ADDITIVELY, assigns the working identity, re-reads to
-   verify, and exits non-zero if the claim did not land. Other agents are working this
-   same backlog in parallel — an unclaimed issue is duplicated work. Never hand-roll the
-   claim via `update-issue --labels` (whole-set replace; it silently drops other labels).
-   If the claim fails, release the lock and select the next candidate.
+   tracker with the fail-closed `issue start <N>` (GitHub wrapper: `start-issue <N>`) —
+   additive labels only, never a hand-rolled `update-issue --labels` whole-set write
+   (binding: `.claude/rules/issue-tracking.md`). Other agents are working this same
+   backlog in parallel — an unclaimed issue is duplicated work. If the claim fails,
+   release the lock and select the next candidate.
 4. **ALWAYS WORK ON THE LATEST CODE.** Other agents are merging while you work. Fetch and
    integrate at all six Remote Sync points: Discovery, before each SELECT, after creating
    the worktree, periodically during long fixes, before opening the PR, and after each
    merge. `git fetch origin --prune --no-auto-gc`, rebase YOUR branch onto
-   `origin/<main>`, and delegate ANY conflict to `code-merge-reviewer` — never resolve one
-   yourself, never `-X ours/theirs`, never `checkout --ours/--theirs`. Re-run the AFFECTED
-   tests after every integration (the whole-suite check is the CI run after the push —
-   `ci-owns-the-test-suite.md`). Re-retrieve the issue list FRESH every iteration; never reuse
-   a previous snapshot (issues get closed or claimed while you work).
+   `origin/<main>`, delegate ANY conflict to `code-merge-reviewer` (never `-X
+   ours/theirs`, never `checkout --ours/--theirs`), and re-run the AFFECTED tests after
+   every integration (the whole-suite check is the CI run after the push —
+   `ci-owns-the-test-suite.md`). Re-retrieve the issue list FRESH every iteration; never
+   reuse a previous snapshot.
 5. **ONE GIT WORKTREE PER ISSUE, AND LEAVE GIT CLEAN.** Work in
    `.claude/worktrees/issue-<N>/` cut off freshly-fetched `origin/<main>` with an explicit
    descriptive branch (`-b issue-<N>-<slug>`). Stay MAIN-CHECKOUT-FREE: never
-   `git checkout main`, never fast-forward the shared local `main` — sibling runs and the
-   developer depend on it. Per `keep-git-clean.md`, commit source/config/docs/tests, never
-   generated or temp files, and tear the worktree + branch + lock down after every merge so
-   nothing stale survives.
+   `git checkout main`, never fast-forward the shared local `main`. Tear the worktree +
+   branch + lock down after every merge so nothing stale survives (binding:
+   `keep-git-clean.md`).
 
 # Run identity — read this before writing any state (NON-NEGOTIABLE)
 
-`session-register.sh` (SessionStart) has ALREADY created this session's `runs/<run-id>/`
-directory and seeded `resume_state.md` and `workflow_state.md` in it. **Your job is to UPDATE
-those files. You do not choose where they live.**
+**Read `.claude/docs/run-identity.md` BEFORE this run's first state write.** It is the
+binding contract for run identity, the seeded fields, the release vocabulary, and the gate
+verdicts — state written to a path or spelling of your own devising is read by NOTHING
+(MEASURED: Incident `invented-run-label`, `.claude/hooks/MIGRATION.md`).
 
-- **Find the path:** read `.claude/agent-state/issue-work-orchestrator/registry.json`, find
-  the entry whose KEY is THIS session's `session_id`, and use that entry's `state_dir` value
-  VERBATIM (it is relative to `.claude/agent-state/issue-work-orchestrator/`). The
-  `State file:` line in the `## Your recorded place in the work` block that
-  `continuous-work-reinject.sh` prints at session start / resume / compaction is the same
-  path character for character — use it if you have it.
-- **NEVER invent a readable run-id label** such as `run-issue<N>-<timestamp>`, and do not read
-  "derive `RUN_ID`" as licence to author one. Every Stop gate resolves this session's state
-  from the registry-derived path; state written anywhere else is read by NOTHING, which
-  silently disables every gate for the entire session. MEASURED: exactly this deviation left
-  both Stop hooks inert and cost four spurious turn-ends under a standing instruction never to
-  stop without a proven reason. In an unattended run there is nobody to notice.
-- **State fields are plain `Name: value` lines**, and hooks read the **LAST** occurrence of
-  each. **Correct a value by APPENDING a new block at the END of the file** — never edit an
-  earlier line, never prepend. A bold `**Name:** value` spelling is read by NO hook, and a
-  line inside a fenced code block is ignored. Prose you add for a human reader must contain no
-  `Name: value` lines of its own. Use the seeded field NAMES exactly — `BRANCH`, `WORKTREE`,
-  `PR`, not `CURRENT_BRANCH`/`CURRENT_WORKTREE`/`CURRENT_PR`.
-- **Keep `SESSION_ID:` intact.** It is the rung by which a hook recovers this run if state
-  ever lands under a differently-named directory.
-- Set `Status: IN_PROGRESS` before the first line of real work, and record a terminal `Phase`
-  (`DONE`/`COMPLETED`/`ABANDONED`/`ESCALATED`) only when the work genuinely is. A terminal
-  value must be the WHOLE value of the field: `Phase: DONE` releases the gate,
-  `Phase: DONE (was IMPLEMENT)` does not.
-- A proven Exception is recorded as an `AWAITING_USER` line naming the ACTUAL reason — the one
-  sanctioned pause. It is checked for SUBSTANCE, not presence: a placeholder, an
-  angle-bracketed template, or a one-word token (`no`, `false`, `0`, `waiting`, `blocked`, `?`)
-  is rejected. An escalation you only described in chat is, to the gate, indistinguishable
-  from abandoning the work, and the turn-end will be REFUSED.
+Set `Status: IN_PROGRESS` before the first line of real work, and record a terminal `Phase`
+only when the work genuinely is — the terminal value must be the WHOLE value of the field:
+`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)` (release vocabulary and the
+`AWAITING_USER` substance test: `run-identity.md` §5).
 
 # Setup, then the loop
 
@@ -101,21 +74,13 @@ Set `MODE: AUTO`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
 `WORKABLE_ISSUES_REMAIN: yes` in this run's `resume_state.md`, and keep that last field `yes`
 for as long as any open, not-in-progress, unlocked issue exists.
 
-**What actually enforces non-negotiable #2, and what that field really does.**
-`issue-loop-gate.sh` is a Stop hook that blocks turn-end while this run has CLAIMED tracked
-work (a non-placeholder `CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` matching
-`ISSUE_LOOP`/`SINGLE_ISSUE`/`SPEC`/`BACKLOG`/`AUTO` with hyphens read as underscores — which is
-why `MODE: AUTO` above is that exact spelling) and has not recorded
-an idle `Status`, a terminal `Phase`/`Status`, or a substantive `AWAITING_USER`. The `MODE`
-claim is what holds the brake in the window BETWEEN two issues, when `CURRENT_ISSUE` may
-momentarily name nothing; and an unrecognised `Status` counts as work in flight, so a status
-word you invent holds the turn rather than quietly freeing it.
-`WORKABLE_ISSUES_REMAIN` only chooses the WORDING of that refusal — select the next issue,
-versus finish the one in flight. **It is NOT the block condition and setting it to `no` does
-not release the gate.** It used to be the condition, which is why the belief persists; the
-consequence was that `/work-issue`, which sets it to `no` by design, had the brake switched
-off for exactly the runs most likely to need it. Keep it accurate because the wording depends
-on it, not because your ability to stop does.
+**What actually enforces non-negotiable #2.** `issue-loop-gate.sh` blocks turn-end while
+this run has CLAIMED tracked work and has not affirmatively released — and `MODE: AUTO`
+(that exact spelling) is the claim that holds the brake in the window BETWEEN two issues,
+when `CURRENT_ISSUE` may momentarily name nothing. `WORKABLE_ISSUES_REMAIN` only chooses the
+WORDING of that refusal — it gates NOTHING and setting it to `no` releases nothing
+(`run-identity.md` §5); keep it accurate because the wording depends on it, not because your
+ability to stop does.
 
 Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → PREPARE
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
@@ -189,9 +154,8 @@ already achieves:
 
 1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue in a FRESH snapshot.
    Release it by APPENDING `Status: COMPLETED` and `Phase: DONE` at the END of this run's
-   `resume_state.md`; **a terminal value in EITHER of those two fields is what releases the
-   Stop hook** (write both, and make each the WHOLE value of its field), not
-   `WORKABLE_ISSUES_REMAIN: no` — set that too, for the record, but it releases nothing. Then
+   `resume_state.md` — each the WHOLE value of its field (`run-identity.md` §5) — and set
+   `WORKABLE_ISSUES_REMAIN: no` for the record (it releases nothing). Then
    report: issues resolved with PR + evidence links, anything escalated, and confirmation
    this run left no worktree/branch/lock behind and never moved the shared local `main`.
 2. **A single batched escalation** when genuinely blocked (an issue too ambiguous to

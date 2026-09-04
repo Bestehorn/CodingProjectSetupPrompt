@@ -20,31 +20,10 @@ issue to bound the blast radius), so the reason applies to it most, not least. K
 
 ## Run identity — read this before writing any state (NON-NEGOTIABLE)
 
-`session-register.sh` (SessionStart) has ALREADY created this session's `runs/<run-id>/`
-directory and seeded `resume_state.md` and `workflow_state.md` in it. **Your job is to UPDATE
-those files. You do not choose where they live.**
-
-- **Find the path:** read `.claude/agent-state/issue-work-orchestrator/registry.json`, find
-  the entry whose KEY is THIS session's `session_id`, and use that entry's `state_dir` value
-  VERBATIM (it is relative to `.claude/agent-state/issue-work-orchestrator/`). If the entry
-  carries no `state_dir`, the path is `runs/<run_id>/` from the same entry. The `State file:`
-  line in the `## Your recorded place in the work` block that `continuous-work-reinject.sh`
-  prints at session start / resume / compaction is the same path character for character — use
-  it if you have it. If the directory is missing, create the registry-derived path and nothing
-  else — never a second run directory beside it.
-- **NEVER invent a readable run-id label** such as `run-issue<N>-<timestamp>`. Every Stop gate
-  resolves this session's state from the registry-derived path; state written anywhere else is
-  read by NOTHING, which silently disables every gate for the entire session. MEASURED: an
-  agent told to "derive RUN_ID" wrote its state under a label of its own, both Stop hooks were
-  consequently silent no-ops for the whole session — neither had ever blocked a turn-end in
-  that clone across 189 registered sessions — and the run ended FOUR spurious turns under a
-  standing instruction never to stop without a proven reason.
-- **State fields are plain `Name: value` lines**, and hooks read the **LAST** occurrence of
-  each. **Correct a value by APPENDING a new block at the END of the file** — never edit an
-  earlier line, never prepend. A bold `**Name:** value` spelling is read by NO hook. Prose you
-  add for a human reader must contain no `Name: value` lines.
-- **Keep `SESSION_ID:` intact.** It is the rung by which a hook recovers this run if state
-  ever lands under a differently-named directory.
+**Read `.claude/docs/run-identity.md` BEFORE this run's first state write.** It is the
+binding contract for run identity, the seeded fields, the release vocabulary, and the gate
+verdicts — state written to a path or spelling of your own devising is read by NOTHING
+(MEASURED: Incident `invented-run-label`, `.claude/hooks/MIGRATION.md`).
 
 ## Resume check
 
@@ -57,35 +36,15 @@ it holds only the seeded `Status: NOT_STARTED`, start fresh by appending to that
 
 If $ARGUMENTS names a specific issue number, prioritize that issue first; otherwise work the
 whole backlog by impact/urgency/severity. Either way, `issue-loop-gate.sh` blocks turn-end
-while this run has CLAIMED tracked work and has not AFFIRMATIVELY released. A claim is a
-non-placeholder `CURRENT_ISSUE`, or a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an
-orchestrator mode (`ISSUE_LOOP`, `SINGLE_ISSUE`, `SPEC`, `BACKLOG`, `AUTO`; a hyphen reads as
-an underscore). Record `MODE: ISSUE_LOOP` alongside `Status` at the start of the run, so the
-claim holds across the window between two issues as well as during one.
+while this run has CLAIMED tracked work and has not AFFIRMATIVELY released. Record
+`MODE: ISSUE_LOOP` alongside `Status` at the start of the run, so the claim holds across the
+window between two issues as well as during one.
 
-**`Status: IN_PROGRESS` is not what arms the gate, and no single status word is.** The polarity
-is INVERTED: any `Status` the gate does not recognise as explicitly idle counts as work in
-flight, so guessing a status word wrong HOLDS the turn instead of quietly freeing it. There are
-exactly four releases:
-
-  * an explicitly idle `Status` — `NOT_STARTED`, `NOT_YET_STARTED`, `UNSTARTED`,
-    `NOT_IN_PROGRESS`, `NOT_WORKING`, `IDLE`, `PENDING`, `NEW`, `NONE`, `UNSET`;
-  * a terminal `Phase` **or** a terminal `Status` — `DONE`/`COMPLETE`/`COMPLETED`/`FINISHED`/
-    `CLOSED`/`ABANDONED`/`ESCALATED`/`CANCELLED`/`CANCELED` — matched as the WHOLE value of the
-    field, so
-    `Phase: DONE` releases and `Status: COMPLETED (was IN_PROGRESS)` does not;
-  * a substantive `AWAITING_USER` line naming the actual reason (the literal `<reason>`, any
-    other angle-bracketed template are rejected as placeholders, and a one-word token such as
-    `no`/`false`/`0`/`waiting` is rejected by the substance test's own deny-list — the effect is
-    the same, the mechanism differs);
-  * no tracked work claimed at all — which is how an ordinary chat session stays unblocked, and
-    never a way out of an issue you have already claimed.
-
-`WORKABLE_ISSUES_REMAIN` only selects the WORDING of that refusal (finish the
-issue in flight vs. select the next one); **it does NOT decide whether the gate blocks.** It
-used to BE the block condition, so a single-issue run that set it to `no` switched the gate off
-for itself — that is fixed, and the belief that `no` releases you is precisely what the old
-gate rewarded.
+The releases the gate recognises are the vocabulary in `.claude/docs/run-identity.md` §5 — a
+terminal value must be the WHOLE value of its field (`Phase: DONE` releases;
+`Status: COMPLETED (was IN_PROGRESS)` does not), `WORKABLE_ISSUES_REMAIN` gates NOTHING,
+and the no-claim release is never a way out of an issue you have already claimed
+(blanking `CURRENT_ISSUE`/`MODE` mid-issue is a false record, §5).
 
 ## The lifecycle to run
 
