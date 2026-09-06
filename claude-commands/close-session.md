@@ -108,7 +108,9 @@ complete output; report the conclusion).
       reports as skipped or failed gets one line; do not expand on it.
    3. If `tmp/os-temp` is not configured as this tree's `TMPDIR`/`TEMP`/`TMP`, say so in one
       line — the reaper then falls back to pattern matching in the shared temp dir, which is
-      best-effort. Wiring it is a setup step, not something to fix here.
+      best-effort. `scoped-temp-init.sh` self-writes the env block at session start (effective
+      the NEXT session), so persistent absence means the hook is not wired or the settings
+      file does not parse — name which in that one line.
 
 **Step 5 — Your worktree, branch, lock AND claim markers are gone**
    Confirm the worktree and branch this session created were removed after merge. Tear down a

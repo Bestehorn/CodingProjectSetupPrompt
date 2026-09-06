@@ -97,7 +97,7 @@ locally with bounded workers.
 | `spec-tdd-gate.sh` | PreToolUse(Bash) | Bans `git commit --no-verify`/`-n` and `git push --no-verify` outright, and blocks a PUSH during IMPLEMENT/VERIFY when a checked task has no evidence capture, the newest green capture is red or skip-ridden, or CI-OUTAGE MODE is declared with no green full-suite capture. Commits carry no evidence requirement — commit early, commit often (`rules/ci-owns-the-test-suite.md`). Resolves identity through `hook-state-lib.sh`. Its internal ORDER is load-bearing: the bypass bans and the non-push exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a PUSH but never a commit or an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
 | `red-for-right-reason.sh` | — | Helper for the RED-phase audit (a test must fail for the reason the task predicts). |
 | `MIGRATION.md` | — (docs) | How to deploy all of this to a project whose agents are ALREADY RUNNING: what a live session can and cannot pick up, why the delivery channel is a blocking Stop hook's stderr rather than the tidier JSON `decision` form, and which live sessions the contract handshake does NOT reach. |
-| `tests/` | — (suites) | SEVEN self-contained suites, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.sh` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.sh` is the counterpart of `test_stop_gates.sh`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.sh` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
+| `tests/` | — (suites) | EIGHT self-contained suites, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.sh` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.sh` is the counterpart of `test_stop_gates.sh`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.sh` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
 
 Neither Stop gate reads the harness's `stop_hook_active` field any more: honouring it made a
 POLICY gate block at most ONCE per continuation chain, so the agent was nudged once and then
@@ -193,9 +193,10 @@ bash claude-agents/spec-workflow/hooks/tests/test_reinject.sh        # 23 passed
 bash claude-agents/spec-workflow/hooks/tests/test_stop_gates.sh      # 24 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_gate_overblock.sh  # 50 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_unpinned_fixes.sh  # 32 passed, 0 failed
+bash claude-agents/spec-workflow/hooks/tests/test_scoped_temp.sh     # 26 passed, 0 failed
 ```
 
-246 assertions in total. Take each number from the `TOTAL:` line the suite itself prints rather
+272 assertions in total. Take each number from the `TOTAL:` line the suite itself prints rather
 than from this file — a count quoted in prose and never re-measured is how the library suite came
 to be described as "30 cases" in one paragraph while the runnable block above said 64.
 
@@ -279,7 +280,7 @@ Then register the hooks in `.claude/settings.json`:
 | Event | Hook | Note |
 |---|---|---|
 | SessionStart | `session-register.sh` | must run — it seeds the state the gates read |
-| SessionStart | `scoped-temp-init.sh` | creates `tmp/os-temp` so the scoped `TMPDIR` is usable |
+| SessionStart | `scoped-temp-init.sh` | creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing (effective next session) |
 | SessionStart (`compact\|resume\|startup`) | `continuous-work-reinject.sh` | |
 | Stop | `issue-loop-gate.sh` | the primary brake |
 | Stop | `spec-stop-gate.sh` | the evidence gate |

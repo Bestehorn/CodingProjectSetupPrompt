@@ -688,8 +688,11 @@ value overrides the shell's, so this reaches the Bash tool and everything it spa
 path must be ABSOLUTE (a relative `TMPDIR` breaks tools that chdir) and the directory must
 EXIST — Python and Node do not create a missing `TMPDIR`; they fail or silently fall back
 to the global temp dir, which is the leak returning unnoticed. `scoped-temp-init.sh`
-(SessionStart, Part 12.2) guarantees it exists on every session and warns if the env block
-is missing. `tmp/` is already gitignored (Part 3), so `tmp/os-temp` needs no new entry.
+(SessionStart, Part 12.2) guarantees it exists on every session AND self-writes this env
+block into `settings.local.json` when none is configured (merged, atomic, effective from
+the next session) — so a fresh clone or worktree needs NO manual step; write the block at
+setup time anyway so the FIRST session already runs scoped. `tmp/` is already gitignored
+(Part 3), so `tmp/os-temp` needs no new entry.
 
 **This is explicitly permitted by `no-environment-vars.md`, and required by its purpose.**
 That rule's second clarification carves out the scoped temp directory: a settings-file
@@ -1609,7 +1612,9 @@ this prompt (leave any existing one alone).
 11b. Temp-leak containment (Part 5.4) — `scripts/reap_agent_temp.py` exists;
     `.claude/settings.local.json` sets `TMPDIR`/`TEMP`/`TMP` to this tree's ABSOLUTE
     `tmp/os-temp`; `.claude/hooks/scoped-temp-init.sh` is wired as a SessionStart hook
-    and the directory exists. Prove the reaper is safe before trusting it with `--apply`:
+    and the directory exists. (The hook self-writes that env block wherever it is
+    missing — fresh clones and worktrees need no manual step — so a missing block here
+    means the hook is not wired, not that a setup step was skipped.) Prove the reaper is safe before trusting it with `--apply`:
     ```bash
     python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp
     ```
@@ -1829,7 +1834,7 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   - `MIGRATION.md` — the reference for deploying all of this to a project whose agents are
     already running, and the only place that records which live sessions the handshake reaches.
     Documentation, not a hook.
-  - `tests/` — SEVEN self-contained suites, 246 assertions, asserting the gates' EXIT CODES
+  - `tests/` — EIGHT self-contained suites, 272 assertions, asserting the gates' EXIT CODES
     (and, where an exit code cannot distinguish two causes, the REFUSAL TEXT). The acceptance
     criterion for this Part.
 
@@ -1858,7 +1863,7 @@ cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claud
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.sh .claude/hooks/tests/   # all SEVEN suites
+cp claude-agents/spec-workflow/hooks/tests/*.sh .claude/hooks/tests/   # all EIGHT suites
 ```
 NOTE: `CONTRACT_VERSION` has no `.sh` suffix, so the glob above does NOT pick it up — copy
 it explicitly. When it is absent the hooks fall back to the version string `unversioned`,
@@ -1866,7 +1871,7 @@ which still works but keys every run's acknowledgement on that one name, so a la
 contract bump can no longer be distinguished from the original.
 NOTE: the `tests/` subdirectory is not optional decoration — it is the only way to prove the
 gates are ARMED rather than merely installed, which is the exact failure this whole part
-exists to prevent. Run all SEVEN after installing, from the project root:
+exists to prevent. Run all EIGHT after installing, from the project root:
 ```bash
 bash .claude/hooks/tests/test_crlf_hygiene.sh     # a CR smuggled through a line protocol
 bash .claude/hooks/tests/test_hook_state_lib.sh   # identity, parsing, counters, cap validation
@@ -1875,8 +1880,9 @@ bash .claude/hooks/tests/test_gate_overblock.sh   # refusals that should have be
 bash .claude/hooks/tests/test_tdd_gate.sh         # push gate, both directions
 bash .claude/hooks/tests/test_reinject.sh         # no cross-run adoption + delivery invariants
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # fixes that were real but guarded by nothing
+bash .claude/hooks/tests/test_scoped_temp.sh      # the self-writing settings.local.json env block
 ```
-246 assertions in total (11 + 64 + 24 + 50 + 42 + 23 + 32, in the order above).
+272 assertions in total (11 + 64 + 24 + 50 + 42 + 23 + 32 + 26, in the order above).
 `test_unpinned_fixes.sh` is the youngest and explains why a green suite is not the same as a
 guarded one: an adversarial pass MUTATED the shipped hooks and re-ran all 193 assertions the
 other six then held, and THREE mutations survived every one of them — the contract handshake's
@@ -1903,10 +1909,10 @@ hook scripts, and asserts EXIT CODES. `test_hook_state_lib.sh` is separate from 
 on purpose — it calls the library functions directly, with no caller globals in scope, because a
 measured fail-open hid in precisely that gap and all 24 of `test_stop_gates.sh`'s end-to-end
 assertions passed over it.
-ALL SEVEN reporting `0 failed` is the acceptance criterion for this Part — `test_stop_gates.sh`
+ALL EIGHT reporting `0 failed` is the acceptance criterion for this Part — `test_stop_gates.sh`
 at `24 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
-`test_reinject.sh` at `23`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `42`, and
-`test_crlf_hygiene.sh` at `11`. A gate that is installed but exits 0 on a registered run with no
+`test_reinject.sh` at `23`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `42`,
+`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11`. A gate that is installed but exits 0 on a registered run with no
 state file is INERT, and inert is indistinguishable from satisfied without these suites. If a
 count comes back LOWER than the figure above, a suite is not running all of its cases — check
 that before reading the `0 failed` as a pass.
@@ -1993,13 +1999,16 @@ What each entry does:
   `registry.json` AND creates `runs/<run-id>/` with seeded state files. Both halves matter:
   the mapping is what makes concurrent orchestrator runs in one clone unambiguous, and the
   seeding is what makes the Stop gates reachable at all (Part 12.2a).
-- `scoped-temp-init.sh` (SessionStart, no matcher) guarantees `tmp/os-temp` exists so the
-  `TMPDIR`/`TEMP`/`TMP` values from `.claude/settings.local.json` are usable — Python and
-  Node do NOT create a missing `TMPDIR`, they fail or silently fall back to the global temp
-  dir, which is the disk leak returning unnoticed (Part 5.4). Idempotent and silent on
-  success, since SessionStart stdout is injected as context and a chatty hook spends tokens
-  every session; it speaks only when the directory cannot be created or the env block is
-  absent, which are the two actionable cases.
+- `scoped-temp-init.sh` (SessionStart, no matcher) guarantees `tmp/os-temp` exists AND
+  self-writes the `TMPDIR`/`TEMP`/`TMP` env block into `.claude/settings.local.json` when
+  none is configured — MERGED atomically (other keys and env vars survive), effective from
+  the NEXT session, so no clone or worktree carries a manual setup step (MEASURED: the
+  first rollout project ran without the block; nothing fails without it, so a notice alone
+  was never acted on). Python and Node do NOT create a missing `TMPDIR` — they fail or
+  silently fall back to the global temp dir, which is the disk leak returning unnoticed
+  (Part 5.4). It never fights a custom TMPDIR (any configured value = silent no-op) and
+  never touches a settings file that does not parse — it says so instead. Idempotent and
+  silent when everything is right; it speaks only when it wrote the block or could not.
 - `continuous-work-reinject.sh` (SessionStart, matcher `compact|resume|startup`) injects the
   continuous-work contract plus THIS run's recorded place in the work — phase, current issue,
   branch, worktree, PR, `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's

@@ -137,7 +137,7 @@ same turn (create one file, carry on), never to send the agent looking for docum
        tests/
 2. Copy rules/continuous-work.md into <project>/.claude/rules/ and reference it from CLAUDE.md.
 3. Register the hooks in <project>/.claude/settings.json (see ClaudeCodeSetupPrompt.txt).
-4. Run the seven suites in tests/ (§7). Do NOTHING to the running sessions.
+4. Run the eight suites in tests/ (§7). Do NOTHING to the running sessions.
 ```
 
 **Steps 1–3 are safe to perform while agents are working.** Every file is read at invocation time,
@@ -323,8 +323,8 @@ printf '{"session_id":"probe","cwd":"%s","hook_event_name":"Stop"}' "$PWD" \
 mkdir -p /tmp/gp/hooks && cp .claude/hooks/issue-loop-gate.sh /tmp/gp/hooks/
 ( cd /tmp/gp && printf '{"session_id":"x","cwd":"."}' | bash hooks/issue-loop-gate.sh ); echo "exit $?"
 
-# 3. The seven suites. A registered run with NO state file must BLOCK; if it exits 0 the
-#    deployment is inert. All seven must be green. Read each suite's own TOTAL line rather
+# 3. The eight suites. A registered run with NO state file must BLOCK; if it exits 0 the
+#    deployment is inert. All eight must be green. Read each suite's own TOTAL line rather
 #    than trusting the counts below.
 bash .claude/hooks/tests/test_crlf_hygiene.sh     # 11 — a CR smuggled through a line protocol
 bash .claude/hooks/tests/test_hook_state_lib.sh   # 64 — identity, parsing, counters, cap validation
@@ -333,6 +333,7 @@ bash .claude/hooks/tests/test_tdd_gate.sh         # 42 — push gate, both direc
 bash .claude/hooks/tests/test_reinject.sh         # 23 — no cross-run adoption + delivery invariants
 bash .claude/hooks/tests/test_gate_overblock.sh   # 50 — the OVER-block direction: turns that must be ALLOWED
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # 32 — handshake BLOCK by text, evidence, mtime, cross-gate
+bash .claude/hooks/tests/test_scoped_temp.sh      # 26 — the self-writing settings.local.json env block
 
 # 4. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
 #    blocking path, so its absence across many sessions means never-blocked.
