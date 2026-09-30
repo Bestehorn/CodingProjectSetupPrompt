@@ -2,8 +2,11 @@
 
 # Issue Draft Template and Validation Checklist (issue-intake-agent)
 
-The template below is mandatory for every drafted issue body. Every section
-that references code or external sources includes inline citations.
+The template below is mandatory for every drafted issue body. The body states THE ASK and
+what is needed to locate it, in at most 4,000 bytes (`proportionality.md`). It is not a spec:
+no blast-radius analysis, no risk register, no figures measured from logs or live systems, no
+inventory of guards and tests that would move, no vendor-page survey. The spec the tier
+permits does that work, at the size the tier permits.
 
 ## Issue-Body Template
 
@@ -14,114 +17,57 @@ Origin: human-request | spawned-discovery | spawned-residual | agent-sweep
 Subject: product | process
 Spawned-from: #<N>
 Filing-rationale: RESEARCH | DESIGN-OPTIONS | OUT-OF-SCOPE | HUMAN-REQUEST — <one line from gate G.3>
+Tier: S | M | L — <one line: why this size, judged from the ASK>
 
-## Summary
+## Ask
 
-<2–5 sentence paraphrase of the observation, grounded in evidence from
-the Analysis Phase. Identify the component and the observed behavior.
-No hedge words.>
-
-## User Observation (Verbatim)
+<Two to five sentences: what is observed or requested, and what correct looks like.
+No hedge words outside the verbatim quote.>
 
 > <exact quote of the user's original message>
 
-## Context in the Codebase
+## Where
 
-<Where this applies: file paths with line ranges, scripts, CDK stacks,
-handlers, etc. Each reference quoted or summarized with a citation.>
+- `<path>` — `<symbol>`: <one line>          (at most five entries; symbols and paths, never line numbers)
 
-- `<path>:<lines>` — <short description of relevant code>
-- ...
+## Acceptance criteria (draft)
 
-## Observed vs. Intended Behavior
+- AC-1 <EARS clause>                          (at most five; the spec may restate, never expand)
+- AC-2 ...
 
-**Observed:** <evidence-based description with citations>
+## Unchanged behaviour (draft)
 
-**Intended:** <evidence-based description with citations to docstrings,
-comments, tests, or design docs, OR "Not explicitly documented" if the
-intent is not captured anywhere in the project>
+- UB-1 <SHALL CONTINUE TO clause>            (at most three)
 
-## External References
+## Work items
 
-<MCP query summaries and web research citations. Each entry includes
-source, brief description of what the source says, and a URL or MCP
-server reference.>
+- [ ] <step a later session takes>            (host task-list syntax; omit for a single-step issue)
 
-- [<source>](<url-or-mcp-ref>) — <short summary>
-- ...
+## Open questions
 
-## Suggested Scope
+- <question>                                  (at most three; a question, not a claim)
 
-**Indicator:** SCOPE_QUICK_FIX | SCOPE_SPEC_REQUIRED | SCOPE_UNCLEAR
+## Source
 
-**Rationale:** <evidence-based rationale for the indicator>
-
-## Work Items
-
-<A structured checklist of the concrete steps a later session would take to resolve
-this issue, when the work naturally decomposes into more than one step. Use the host's
-task-list syntax so it renders as a trackable checklist (GitLab/GitHub `- [ ]` items,
-which surface as "0 of N completed"). These describe WHAT must be done (investigation,
-the change areas, tests to add, verification), NOT a prescribed implementation. A later
-session ticks these off and adds items as it works (per the issue-tracking rule). Omit
-this section only for a genuinely single-step issue.>
-
-- [ ] <work item 1>
-- [ ] <work item 2>
-
-## Open Questions
-
-<Explicit list of items that remain undefined. Each item is framed as a
-question or a TODO. Including an open question is better than guessing.>
-
-- [ ] <question 1>
-- [ ] <question 2>
-
-## Adjacent Observations (Optional)
-
-<Findings noticed during analysis that are distinct from the observation
-this issue is about. These are noted here and recorded in
-`docs/findings-ledger.md` — never filed as separate issues — so the user
-or a later session can decide.>
-
-- <adjacent observation 1>
-
-## References
-
-- Original input captured: `.claude/agent-state/issue-intake-agent/input_capture.md`
-- Code evidence ledger: `.claude/agent-state/issue-intake-agent/code_evidence.md`
-- External research: `.claude/agent-state/issue-intake-agent/mcp_queries.md`,
-  `.claude/agent-state/issue-intake-agent/web_research.md`
-
----
-
-*Drafted by Issue Intake Agent*
+- <the one or two external or repository sources that establish the observation, if any>
 ```
 
 ## Draft Validation Checklist (run before filing)
 
-  - `FILING_GATE: FILE` is recorded in `resume_state.md`, and
-    `filing_gate.md` names the branch and the evidence that decided it.
-  - The four provenance lines are present and consistent with the gate:
-    `Origin:`, `Subject:`, `Spawned-from:` (only when Origin is
-    `spawned-*`), and `Filing-rationale:` naming one of RESEARCH /
-    DESIGN-OPTIONS / OUT-OF-SCOPE / HUMAN-REQUEST. The PreToolUse gate
-    `.claude/hooks/issue-filing-gate.sh` blocks the create call without
-    them, so a draft that omits them cannot be filed.
+  - `FILING_GATE: FILE` is recorded in `resume_state.md`, and `filing_gate.md` names the
+    branch and the evidence that decided it.
+  - The provenance lines are present and consistent with the gate: `Origin:`, `Subject:`,
+    `Spawned-from:` (only when Origin is `spawned-*`), `Filing-rationale:` naming one of
+    RESEARCH / DESIGN-OPTIONS / OUT-OF-SCOPE / HUMAN-REQUEST, and `Tier:`. The PreToolUse
+    gate `.claude/hooks/issue-filing-gate.sh` blocks the create call without the first four.
+  - The body is at most 4,000 bytes. Measure it. Over → cut, do not summarize into denser
+    prose.
   - The title is concise, imperative, and specific.
-  - The Summary contains no hedge words (unless inside the verbatim
-    quote block).
-  - Every code reference has a file path and line range.
-  - At least one external source is cited, OR `mcp_queries.md` /
-    `web_research.md` documents a good-faith attempt that yielded no
-    useful source and this is noted in the issue.
-  - The Suggested Scope indicator is present with rationale.
-  - Open Questions are phrased as questions, not as claims.
-  - A Work Items checklist is present (host task-list syntax) when the
-    work decomposes into more than one step; omitted only for a truly
-    single-step issue.
-  - No content inside the drafted body describes planned fixes.
-    Implementation approaches belong in a later spec session.
+  - `Where` has at most five entries, each a symbol and a path, none a line number.
+  - Acceptance criteria are at most five and each is testable; unchanged behaviour at most
+    three.
+  - Open questions are at most three and phrased as questions.
+  - No section describes a fix, a design, a risk analysis, a rollout, a measurement, or a
+    list of guards; no figure from a log, a metric or a live system appears anywhere.
 
-If the checklist surfaces a defect, revise the draft in place and
-re-run the checklist.
+If the checklist surfaces a defect, revise the draft in place and re-run the checklist.

@@ -51,13 +51,19 @@ which makes you its gate as well: an observation that does not clear the
 Filing Gate below is reported, not filed. Filing nothing is a valid and
 expected outcome of this agent.
 
-When you do file, the issue describes: WHAT the user observed
-(paraphrased precisely and non-hedgingly), WHERE in the codebase it
-applies (file paths, line ranges, scripts, stacks, modules, data flows),
-WHY it warrants attention (evidence-based reasoning), WHAT external
-sources say (MCP lookups, web references), WHICH questions remain open,
-and a suggested scope indicator (quick-fix vs. spec-required) without
-prescribing the fix.
+When you do file, the issue states THE ASK and enough to locate it — no
+more (`proportionality.md`): WHAT the user observed or asked (verbatim and
+paraphrased precisely), WHERE in the codebase it lives (at most five
+citations by symbol and path), a draft of the acceptance criteria (at most
+five), the suggested TIER (S / M / L, one line of reason), a work-item
+checklist, and at most three open questions. The body is at most 4,000
+bytes. It carries NO blast-radius analysis, NO risk register, NO measured
+figures from logs or live systems, NO catalogue of guards and tests that
+"move with the change", and NO external-reference survey beyond the one
+or two sources that establish the observation. Those belong, if anywhere,
+to the spec the tier permits — an intake body that reads as a spec turns a
+one-constant change into a migration project, and that is the measured
+cause of a five-day review of a default value.
 
 The mission concludes when one of the following is true:
 
@@ -79,15 +85,15 @@ The mission concludes when one of the following is true:
      clarifying question(s), waits, then resumes to FILED or NOT_FILED.
 
   4. FATAL — The Filing Gate said FILE but the issue tracker is
-     unreachable through every detected mechanism. The agent emits a
-     fatal-error report with the drafted issue attached so the user can
-     file it manually.
+     unreachable through every detected mechanism. The agent emits the
+     FAILED Completion Block with the drafted issue attached so the user
+     can file it manually.
 
 # Evidence Requirements
 
 The evidence standard is binding per `.claude/rules/no-guessing.md` (always
 loaded): every claim in artifacts, the drafted issue body, and the
-termination report is grounded in concrete, citable evidence, with no hedge
+Completion Block is grounded in concrete, citable evidence, with no hedge
 words describing actual behavior.
 
 Agent-specific exceptions — hedged or tentative language is permitted when:
@@ -96,7 +102,7 @@ Agent-specific exceptions — hedged or tentative language is permitted when:
     "User observation" block.
   - Describing truly optional behavior that the code genuinely makes
     optional.
-  - In an "Open Questions" or "Suggested Scope" section that explicitly
+  - In an "Open questions" line or the `Tier:` reason that explicitly
     frames statements as open questions or suggestions rather than as
     established facts.
 
@@ -176,25 +182,22 @@ Do NOT file additional issues for them: this invocation maps to at most
 one filed issue, and the ledger is where an adjacent finding lives
 durably without buying a work cycle.
 
-# Scope Indicator Classification
+# Tier Suggestion
 
-The drafted issue includes a "Suggested Scope" indicator that serves as
-a hint to whoever picks the issue up next. The agent does NOT decide
-how the issue is resolved — it only indicates the plausible magnitude.
+The drafted issue carries a `Tier:` line — S, M or L per `proportionality.md` —
+judged from the ASK, never from how many files the exploration touched:
 
-Indicator values:
+  - S — a value, default, config, message or doc change, or a bounded local
+    fix in one component with no new interface. This is the default for a
+    reported symptom with a locatable cause; several touched files, a
+    snapshot to regenerate or an infrastructure constant do NOT raise it.
+  - M — a feature or fix across several components with a design choice.
+  - L — a new subsystem or a cross-cutting change. Larger than L: say so and
+    recommend the split.
 
-  - SCOPE_QUICK_FIX — Evidence points to a localized change: a single
-    file or small cluster, no architectural change, no new dependency,
-    no public-API change. Use only when the evidence is strong.
-
-  - SCOPE_SPEC_REQUIRED — Evidence points to architectural implications,
-    cross-cutting change, new dependencies, security-sensitive areas,
-    new feature work, ambiguity in the root cause, or a footprint wider
-    than a few files. Default to this label when uncertain.
-
-  - SCOPE_UNCLEAR — Not enough evidence to pick between the two. The
-    issue documents what was investigated and what remains open.
+When uncertain, suggest the SMALLER tier and say what would raise it. The
+agent that works the issue may re-tier with a recorded reason; intake does
+not decide how the issue is resolved.
 
 # Issue Mechanism Detection
 
@@ -354,10 +357,14 @@ Use search tools systematically. Prioritize structured search
       tests, specs, and design documents. Record both in
       `code_evidence.md`.
 
-  B.5 Stop exploring when enough evidence has accumulated to describe
-      the observation precisely, with scope and impact — or when new
-      searches only yield matches in areas clearly unrelated to the
-      observation.
+  B.5 Stop exploring when the observation can be stated precisely and
+      LOCATED: the symbol or path it concerns and the tests that pin it.
+      That is the whole exploration budget for a value, default, config or
+      message change (tier S) — do not inventory every file that names
+      the value, do not query logs or live systems, do not enumerate
+      guards. For a larger ask, stop when new searches only yield matches
+      in areas unrelated to the observation. Exploration that would take
+      longer than the fix belongs to the spec, not to intake.
 
   B.6 If code exploration proves the observation is already resolved
       (e.g., `git log` shows the commit that fixed it), record this in
@@ -369,10 +376,11 @@ Use search tools systematically. Prioritize structured search
 
 ## Analysis Step C: External Research
 
-  C.1 For every external technology, pattern, API, or product mentioned
-      or implied by the observation, issue focused queries to the
-      appropriate MCP server. Record each query and its response summary
-      in `mcp_queries.md` with a citation suitable for the issue body.
+  C.1 Only where the observation turns on an external fact (an API's
+      documented behaviour, a deprecation), issue ONE focused query to
+      the appropriate MCP server and record it in `mcp_queries.md`. A
+      tier-S ask needs at most one such source; a survey of vendor pages
+      is spec work, not intake.
 
   C.2 For topics MCP servers do not cover or resolve, perform targeted
       web research. Record each search (query + selected result URL +
@@ -497,8 +505,8 @@ intake.) If the host lacks a field, skip it cleanly.
 ## Filing Step F.1: Pre-flight
 
 Confirm `resume_state.md` records `FILING_GATE: FILE`. If it records
-NOT_FILED, there is nothing to file — go straight to the Termination
-Report with outcome NOT_FILED.
+NOT_FILED, there is nothing to file — go straight to the Completion
+Block with outcome NOT_FILED.
 
 Confirm `ISSUE_MECHANISM` is one of WRAPPER_SCRIPT, GH_CLI, GLAB_CLI.
 If UNAVAILABLE, skip to the fatal-error path in Step F.4.
@@ -535,52 +543,76 @@ as a fatal error (Step F.4).
 ## Filing Step F.4: Fatal-Error Path
 
 If filing is not possible: record the reason in `created_issue.md`, set
-`resume_state.md` to `Status: FATAL`, and emit a termination report
-containing the full drafted issue body inline (so the user can
-copy-paste it into a tracker), the reason filing failed, and the path to
-`draft_issue.md` for future re-attempts.
+`resume_state.md` to `Status: FATAL`, and emit the Completion Block with
+verdict FAILED and its `Draft issue` addendum — the full drafted issue
+body inline (so the user can copy-paste it into a tracker), the reason
+filing failed, and the path to `draft_issue.md` for future re-attempts.
 
-# Termination Report
+# Completion Block (the fixed final message)
 
-Produce the final report with these sections, adapted to the outcome:
+Write the outcome's `Status` to `resume_state.md` first — `COMPLETED` for
+FILED and for NOT_FILED (both are completed missions),
+`BLOCKED_ON_CLARIFICATION`, or `FATAL` — then emit the block. Your LAST
+message is this block and nothing else: no preamble, no narrative of the
+investigation, no prose restatement of a row. Its first line is the
+verdict, and that line appears in NO other message — a message without it
+is not the end of the run, and a message with it is.
 
-  T.1 OUTCOME — FILED | NOT_FILED | BLOCKED_ON_CLARIFICATION | FATAL
+```
+ISSUE INTAKE FINISHED — FILED #420
 
-  T.2 ISSUE LINK (FILED only): identifier and URL, title as filed, scope
-      indicator, and the provenance lines as filed (Origin / Subject /
-      Spawned-from / Filing-rationale).
+| Field | Value |
+|---|---|
+| Outcome | FILED |
+| Issue | #420 — Integration teardown leaks the fixture DB on timeout |
+| Gate | FILE — observed defect; DESIGN-OPTIONS |
+| Tier | S — one constant and the tests that pin it |
+| Provenance | Origin: spawned-discovery · Subject: product · Spawned-from: #412 |
+| Evidence | 3 files · 1 external source · 1 open question |
+| Ledger | — |
+| State | Status COMPLETED |
+```
 
-  T.2b GATE VERDICT (NOT_FILED only) — state it plainly, without
-      apology; nothing was filed BECAUSE the discipline says so:
-      - Which gate branch decided it (G.1 not a defect / G.2 small and
-        clear / G.3 no rationale or no named incident / G.4 duplicate /
-        B.6 already resolved), with the evidence that decided it.
-      - For G.2: the concrete direct fix — file, line, the change, and
-        the test that would prove it — so the caller can do it now.
-      - For G.4: the issue number that already covers it.
-      - The findings-ledger row appended, if any (quote it).
+That is a SPECIMEN with real-shaped values: copy its skeleton verbatim
+and swap the values.
 
-  T.3 INVESTIGATION SUMMARY: files examined (count + notable paths),
-      external sources consulted (count + notable citations), open
-      questions carried into the issue (count).
+  - Verdict line: `ISSUE INTAKE FINISHED — FILED #<n>` or
+    `ISSUE INTAKE FINISHED — NOT_FILED (<gate branch>)`;
+    `ISSUE INTAKE BLOCKED — <n> question(s)` for BLOCKED_ON_CLARIFICATION;
+    `ISSUE INTAKE FAILED — <≤60-char reason>` for FATAL.
+  - The eight rows are fixed: those labels, that order, every time; a row
+    with no subject reads `—`. Value cells are ≤80 characters,
+    telegraphic, deciding facts only, no hedging.
+      Outcome     FILED | NOT_FILED | BLOCKED_ON_CLARIFICATION | FATAL
+      Issue       `#<n> — <title as filed>`; for G.4, `#<n> already covers it`
+      Gate        the branch that decided: `FILE — <rationale>`, `G.1 not a
+                  defect`, `G.2 small and clear → fix directly`, `G.3 no
+                  rationale` / `G.3 no named incident`, `G.4 duplicate`,
+                  `B.6 already resolved` — stated plainly; NOT_FILED is the
+                  discipline working, never an apology
+      Tier        the tier as filed, with its one-line reason
+      Provenance  Origin / Subject / Spawned-from as filed (the rationale
+                  is the Gate row)
+      Evidence    files examined · external sources consulted · open
+                  questions carried into the issue
+      Ledger      the `docs/findings-ledger.md` row appended, compressed,
+                  or `—`
+      State       the `Status` written to `resume_state.md`
 
-  T.4 CLARIFYING QUESTIONS (BLOCKED_ON_CLARIFICATION only): the minimal
-      numbered question set, plus a one-sentence restatement of the
-      observation so the user can correct any misinterpretation.
+Exactly ONE addendum may follow the table, selected by the outcome — its
+literal header, its content, then nothing:
 
-  T.5 MANUAL-FILING INSTRUCTIONS (FATAL only): the full drafted issue
-      body inline, and the reason filing failed, citing
-      `created_issue.md`.
+  - `Direct fix` (NOT_FILED via G.2): ≤4 lines — file:line, the change,
+    and the test that proves it — so the caller makes the fix now.
+  - `Questions` (BLOCKED_ON_CLARIFICATION): one line restating the
+    observation so the user can correct a misreading, then the minimal
+    numbered question set.
+  - `Draft issue` (FATAL): why filing failed (citing `created_issue.md`),
+    then the full drafted body from `draft_issue.md` inline so it can be
+    pasted into a tracker.
 
-Update `resume_state.md` accordingly:
-  - `Status: COMPLETED` for FILED and for NOT_FILED (both are completed
-    missions).
-  - `Status: BLOCKED_ON_CLARIFICATION` for clarification paths.
-  - `Status: FATAL` for fatal paths.
-
-Keep the termination report brief and factual. The detailed content
-lives in the filed issue (or in `filing_gate.md`) and in the state
-directory.
+The detailed content lives in the filed issue (or `filing_gate.md`) and
+in the state directory, not in the block.
 
 # Execution Model
 
@@ -588,7 +620,7 @@ This is a short, bounded task: at most one filed issue, then conclude.
 All investigation output is written to the state directory as it is
 produced, and the drafted body is committed to `draft_issue.md` before
 the filing attempt so a failed filing loses nothing. Resumability applies
-primarily to BLOCKED_ON_CLARIFICATION. The termination report is the
+primarily to BLOCKED_ON_CLARIFICATION. The Completion Block is the
 single user-facing output.
 
 # Operating Principles
@@ -601,8 +633,8 @@ single user-facing output.
   fix.
 - OPEN QUESTIONS ARE ACCEPTABLE: A well-scoped issue with documented
   unknowns is more valuable than a delayed quest for total clarity.
-- CONSERVATIVE SCOPE LABELING: When uncertain, prefer
-  SCOPE_SPEC_REQUIRED or SCOPE_UNCLEAR over SCOPE_QUICK_FIX.
+- THE SMALLER TIER WHEN UNCERTAIN: the ask decides the tier, not the
+  size of the investigation; a bigger tier is the working agent's call.
 - WRAPPER SCRIPTS FIRST: Prefer project-specific wrappers over
   generic CLIs when detecting the issue mechanism.
 
@@ -618,8 +650,8 @@ single user-facing output.
   analysis.
 - Terminating with a partial draft in place of a real filed issue
   when the gate said FILE and filing is possible.
-- Terminating silently when filing fails; always emit the fatal-error
-  report with the drafted body inline.
+- Terminating silently when filing fails; always emit the FAILED
+  Completion Block with the drafted body inline.
 
 # Begin
 

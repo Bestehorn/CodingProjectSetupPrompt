@@ -1,52 +1,71 @@
-# Phase Fragment: REQUIREMENTS + DESIGN
+# Phase Fragment: REQUIREMENTS + DESIGN (by tier)
 
-Followed by `spec-conductor`. Generates the requirements and design artifacts by
-delegating to `spec-author`. Installed at
+Followed by `spec-conductor` and by the orchestrator's FIX phase. Generates the artefacts
+by delegating to `spec-author`. Installed at
 `.claude/specs/_workflow/phases/spec-phase-design.md`.
 
-## REQUIREMENTS
+The tier (`proportionality.md`) is fixed before this phase starts and is written to
+`prompt.md` as `Tier: S|M|L` with one line of reason. The conductor passes the tier and
+its byte caps in every delegate brief.
 
-Invoke `spec-author` (Agent tool) with: the spec directory, `prompt.md` as input, and
-the feature kind.
-- FEATURE → it writes `requirements.md`: a Feature Overview, a Glossary, and numbered
-  Requirements, each a User Story plus EARS acceptance criteria (every criterion uses
-  exactly one EARS pattern: ubiquitous / `WHILE` / `WHEN` / `WHERE` / `IF…THEN`, with
-  `SHALL`). Criteria are concrete and testable; no hedge words.
-- BUGFIX → it writes `bugfix.md`: Introduction; `### Current Behavior (Defect)`,
-  `### Expected Behavior (Correct)`, `### Unchanged Behavior (Regression Prevention)`
-  — all numbered EARS statements, the defect and regression clauses citing code at
-  file:line.
+## Tier S — one artefact: `change.md` (≤ 8,000 bytes)
 
-After it returns, append a `DL-NNN` entry (requirements generated) and transition to
-DESIGN.
+Invoke `spec-author` to write `change.md`:
 
-## DESIGN
+- **Ask** — one paragraph, the operator's words where available.
+- **Acceptance criteria** — numbered `AC-n`, EARS form, at most eight, each testable.
+- **Unchanged behaviour** — numbered `UB-n` SHALL CONTINUE TO clauses; these drive the
+  regression tests.
+- **Files** — the files to be changed, by path, with one line each.
+- **Tests** — one line per AC and UB naming the test (kind: example, property-based only
+  where the AC quantifies over an input domain, integration) and, where runtime behaviour
+  changes, the automated end-to-end check: the script under `test/e2e/` and the CI job
+  that runs it after deploy (`always-test-e2e.md`).
+- **Tasks** — one wave: the TEST tasks, then the IMPL tasks, each with its `Files:`.
+- **Residuals** (optional, ≤ 10 lines) — what the investigation found that the ask does
+  not cover, and where each was routed.
 
-Invoke `spec-author` to write `design.md` from the requirements. The design MUST
-contain these sections (the conductor rejects a design missing any and re-delegates):
-- **Overview**, **Architecture**, **Component Design** (each component cites the
-  existing codebase pattern it follows at file:line; deviations flagged).
-- **## Testing Strategy** — the layers that apply (unit / integration /
-  property-based via Hypothesis / IaC-CDK), and where each lives under `test/`.
-- **## Correctness Properties** — one `### Property N: <name>` per property,
-  annotated `**Validates: <requirement IDs>**`, stated in prose then as a Hypothesis
-  `@given(...)` sketch with a real assertion. EVERY requirement is covered by ≥1
-  property.
-- **## Security Considerations** — trust boundaries, inputs to validate, secrets
-  handling, least-privilege IAM (for CDK), explicit out-of-scope.
-- **## DevOps & Operability** — deployment mechanism, observability (logs/metrics/
-  alarms), rollback/failure behavior.
-- **## Acceptance Criteria Mapping** — a table mapping every acceptance criterion (or
-  bugfix EARS statement, including each regression clause) → design component → how
-  it is validated (test/property).
+No design.md, no threat model, no operability section. If writing `change.md` shows the
+ask needs a design choice between alternatives, re-tier to M with a recorded reason.
 
-After it returns, append a `DL-NNN` entry (design generated) and transition to
-DESIGN_REVIEW_LOOP (see `spec-phase-review.md`).
+## Tier M and L — `requirements.md` then `design.md`
+
+### REQUIREMENTS (≤ 20,000 bytes M / ≤ 40,000 bytes L)
+
+FEATURE → `requirements.md`: a short overview, a glossary only for terms the criteria use,
+numbered requirements each with a user story and EARS acceptance criteria (`AC-n.m`), an
+`## Unchanged behaviour` section, and `## Residuals`. BUGFIX → `bugfix.md` with
+`### Current Behavior (Defect)`, `### Expected Behavior (Correct)`, `### Unchanged
+Behavior (Regression Prevention)`, all EARS, defect and regression clauses citing the code
+by symbol. Criteria are concrete and testable, carry no measurements, and are FROZEN once
+the design review opens.
+
+### DESIGN (≤ 60,000 bytes M / ≤ 120,000 bytes L)
+
+Mandatory sections; each section is as short as the ask allows, and a section that does
+not apply says `Not applicable — <one line>` rather than inventing content:
+
+- **Overview** and **Design** — components, data flow, the existing patterns followed
+  (cited by symbol or path; deviations flagged).
+- **## Testing Strategy** — the layers that apply and where each lives; the automated
+  end-to-end check (script + CI job) where runtime behaviour changes; `Not applicable` for
+  a change that alters no runtime behaviour.
+- **## Correctness Properties** — one entry per acceptance criterion and per unchanged
+  behaviour clause: the test kind and its oracle in one or two sentences. A Hypothesis
+  sketch only where the criterion quantifies over an input domain.
+- **## Security Considerations** — only where a trust boundary, credential, IAM grant or
+  external input is touched; else `Not applicable`.
+- **## Operability** — only where deployment or runtime behaviour changes: how it deploys,
+  what it logs, how it is rolled back; else `Not applicable`.
+- **## Acceptance Criteria Mapping** — the table: criterion → component → test.
+- **## Residuals**.
+
+After each artefact returns, the conductor measures it against the cap (over → "cut, do
+not add") and transitions: REQUIREMENTS → DESIGN → DESIGN_REVIEW_LOOP
+(`spec-phase-review.md`). No `DL-NNN` entry is owed for these transitions.
 
 ## Notes
 
-- The conductor never writes these files itself; `spec-author` does. The conductor
-  only verifies the mandatory sections are present before moving on.
-- All codebase claims in the design are evidence-cited; external-technology choices
-  are MCP/web-cited (the author consults them, the best-practice-reviewer audits them
-  in the next phase).
+- The conductor never writes these files itself; `spec-author` does.
+- Codebase claims are cited by symbol and path, never by line number; external-technology
+  choices cite MCP or web sources. Figures belong in evidence.

@@ -293,12 +293,16 @@ THE CONTRACT, in force from now on for this run:
   * Substituting easier adjacent work for the hard task and ending on a polished report is a DISGUISED
     check-in and is the single most common form of this failure. An accurate report does not make a stop
     legitimate — the accuracy is what disguises it.
-  * If a Proven Exception genuinely applies: keep it to a few lines, give a recommendation, record it on the
-    issue or in the spec's qa_log.md, and record it MECHANICALLY as an \`AWAITING_USER\` line in this run's
-    resume_state.md naming the ACTUAL reason — for example
-    \`AWAITING_USER: waiting on the production credential for the smoke test\`. A placeholder or a one-word
-    token is rejected; the reason has to be a reason. Then continue with every part of the task that does not
-    depend on the answer.
+  * If a Proven Exception genuinely applies, the question has ONE shape: at most five lines — one line of
+    context, two to four options each with its one-line consequence, the recommended option FIRST and marked
+    (Recommended), in plain words with no ids or references the reader must look up. Reversible decisions are
+    never asked: decide, record, continue. Record the question on the issue or in the spec's qa_log.md, and
+    MECHANICALLY as an \`AWAITING_USER\` line in this run's resume_state.md naming the ACTUAL reason — for
+    example \`AWAITING_USER: waiting on the production credential for the smoke test\`. A placeholder or a
+    one-word token is rejected. Then continue with every part of the task that does not depend on the answer.
+  * Independent work runs in PARALLEL — review lanes, research bursts and the tasks of a wave go out in one
+    message — and a pipeline is awaited with the wrapper's blocking wait as a BACKGROUND task, never with
+    sleep. The operator's time is the scarce resource.
 
 ACKNOWLEDGE AND CONTINUE — two steps, then carry on with the work:
 

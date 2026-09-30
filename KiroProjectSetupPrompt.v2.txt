@@ -126,6 +126,25 @@
 #     becomes one batched Questions block with a recommendation per question,
 #     never a paragraph. A clean single-issue close-out is 16 lines. The table's
 #     shape is identical to the Claude Code twin's on purpose.
+#   - PROPORTIONALITY, PARALLELISM AND COMPILED MEMORY (2026-09-30). A measured
+#     root-cause analysis over three production projects (629 billion tokens in
+#     ten weeks; a one-constant change reviewed sixteen times into a 1.5 MB design;
+#     zero parallel subagent dispatches in 4,999; 1,847 hours of `sleep` polling;
+#     a 428 KB always-loaded corpus plus 1.7 MB of mandatory pre-work reading)
+#     produced: new steering 8.35 proportionality (the ASK fixes a tier S/M/L,
+#     the tier fixes hard byte caps on every spec artefact, the review panel and
+#     its iteration cap; scope frozen once review opens; no measurements in
+#     specs) and 8.36 parallel-by-default (panels, research and implementation
+#     waves dispatch as one batch; CI awaited with the wrapper's blocking wait,
+#     never `sleep`); the review contract (`.kiro/docs/review-contract.md`: an
+#     A/B finding names the criterion it protects and carries its own edit, delta
+#     review from iteration 2, C/D fixed without a round, "no findings" expected);
+#     8.22 rewritten so the end-to-end check is an automated script CI runs after
+#     deploy with no human step; 8.33 shortened to a kernel with the five-line
+#     question shape; 8.2/8.18/8.21 rewritten so no session reads the memory docs
+#     whole and no rule carries a violation log; PART 12 caps the memory docs and
+#     installs `test/test_instruction_corpus_budget.py` + `scripts/memory_compile.py`;
+#     new `@compile-memory` prompt (8A.5); the Kiro gates accept WAVE captures.
 
 ---
 
@@ -1354,12 +1373,14 @@ inclusion: always
 # Pre-Work Requirements
 
 Before any task:
-1. Read project context:
-   - #[[file:docs/forLLMConsumption.md]]
-   - #[[file:docs/ProjectDesign.md]]
-   - #[[file:docs/lessons-learned.md]]
-2. Review existing code in the directories you will touch.
-3. Flag any conflicts with documentation or design before coding.
+1. Read the project MAP, `docs/forLLMConsumption.md` (≤ 40,000 bytes: purpose,
+   architecture in brief, where things are, the invariants a change must respect,
+   how to run/test/deploy, pointers to topic docs). Follow its pointers ONLY for the
+   areas you touch.
+2. Grep `docs/lessons-learned.md` and `docs/findings-ledger.md` for the component
+   you touch. Never read them whole, and never read `docs/archive/` unless a pointer
+   sends you there.
+3. Read the code you will change; flag conflicts with the design before coding.
 
 <!-- MIGRATION: add project-specific pre-work below -->
 ```
@@ -1877,18 +1898,22 @@ modification of infrastructure causes drift and is not tracked.
 ---
 inclusion: always
 ---
-# Lessons Learned
+# Lessons Learned → mechanical memory
 
-When the user interrupts or corrects you:
-1. Identify the lesson — what went wrong or could improve.
-2. Append to `docs/lessons-learned.md`:
-   - Date
-   - Context (what you were doing)
-   - Lesson (what you learned)
-   - Action (what you'll do differently)
-3. Apply the lesson immediately to the current task.
-4. Read `docs/lessons-learned.md` at the start of every new task
-   (also enforced by `pre-work.md`).
+When the user corrects you, or a run hits a failure worth remembering:
+1. Prefer a MECHANISM over prose: a test, a hook check, a lint rule, a one-line rule
+   statement. A lesson a test enforces cannot recur; a lesson in prose recurs the day the
+   prose is not read.
+2. If prose is still needed, append ONE entry of at most five lines to
+   `docs/lessons-learned.md`:
+   `## <YYYY-MM-DD> — <one-line lesson>`, then `- Lesson: <one sentence>`,
+   `- Enforced-by: <test path | hook | rule file | none>`, `- Scope: <component>`.
+   An incident narrative goes to `docs/archive/incidents/<date>-<slug>.md`, never here.
+3. Apply the lesson to the current task immediately.
+4. An entry older than six weeks with `Enforced-by: none` is compiled by
+   `@compile-memory`: enforced, or archived to `docs/archive/`. The file is capped at
+   40,000 bytes (`test/test_instruction_corpus_budget.py`). Grep it for the component
+   you touch; never read it whole.
 ```
 
 ### 8.19 `use-doc-mcp-servers.md` (always) — replaces 4 separate files
@@ -2001,14 +2026,12 @@ types. I'll add a None check and verify with a unit test."
 
 ## When you violate this rule
 
-Acknowledge it, gather the evidence, restate the claim with evidence
-or retract it. Add an entry to the violation log below so future
-sessions can learn.
-
-## Violation log
-
-<!-- Append entries: date, statement, what should have been done,
-     corrective action -->
+Acknowledge it, gather the evidence, restate the claim with evidence or
+retract it. If the class of error can be caught mechanically, add the
+check; otherwise record ONE five-line lesson in `docs/lessons-learned.md`
+(`use-lessons-learned.md`). This rule carries NO violation log: an
+append-only ledger inside an always-loaded file was measured growing one
+rule to 85,000 bytes, read into every model call of every session.
 ```
 
 ### 8.22 `always-test-e2e.md` (always)
@@ -2016,57 +2039,45 @@ sessions can learn.
 ---
 inclusion: always
 ---
-# End-to-End Test on Every Spec / Bug Fix (MANDATORY)
+# End-to-End Tests Are Automated, or They Are Not Tests (MANDATORY)
 
-Every spec session, bug fix session, or task list MUST end with an
-end-to-end (E2E) test as the final task. The list is incomplete
-without it.
+Every change that alters runtime behaviour ships an automated end-to-end check
+that exercises the deployed or running system through its real interfaces
+(API, CLI, queue, event), committed under `test/e2e/` (or the project's
+equivalent) and named in the spec's test plan together with the job that runs it.
 
-## What the E2E test must do
+## Where it runs
 
-1. **Deploy/run** the modified code through the project's standard
-   mechanism (deploy script, CI pipeline, local run, etc.).
-2. **Wait** for completion. Don't assume success — actively monitor.
-3. **Verify** results match expectations. Use logs, API responses,
-   test output. Cite evidence (per `no-guessing.md`).
-4. **Debugging loop** if anything fails:
-   a. Investigate root cause (logs, errors).
-   b. Consult MCP doc servers and `docs/` for guidance.
-   c. Fix.
-   d. Repeat from step 1.
-5. **Exit** only when execution succeeded AND results are as expected.
-   This is the only way out of the loop.
+- A project that deploys: the pipeline's post-deploy stage runs the script
+  after the merge (`deploy-<env>` → `e2e`/`smoke`). Its verdict on the merged
+  SHA is the end-to-end evidence, read through the wrapper. The agent never
+  deploys a branch to a shared environment, never takes a deploy lock or asks
+  for a merge freeze, and never runs the check by hand as a substitute for the
+  job.
+- A local-only project: `python scripts/run_checks.py --group e2e`.
+- A red post-merge end-to-end run is a defect fixed in an immediate follow-up
+  on a fresh worktree, or reverted when the fix is not immediate.
 
-## Adapt to the project type
+## No human step is ever part of a test
 
-| Project type | Deploy/run | Verify |
-|---|---|---|
-| AWS Lambda / CDK | `python cdk/deploy.py dev` | CloudWatch logs, Step Functions console |
-| Web app | deploy to dev/staging | smoke tests, health endpoints |
-| CLI tool / library | run with test inputs | compare stdout to expected |
-| Data pipeline | trigger pipeline run | compare output data to expected |
-| Local-only | `python scripts/run_tests.py` / scripts | verify results match |
+No sign-in by hand, no copying a response from a console, no visual check, no
+"the operator confirms". A check only a person can perform is not reproducible
+and does not scale, so it is recorded as a residual, never as a gate. Where the
+system has no machine path for the feature (a browser-only SSO flow), the
+design adds one — a test principal, client credentials, a pre-provisioned
+token — as in-scope product work, or the check stops at the API boundary.
 
-The project's TEST SUITE is run by CI, not by this loop
-(`ci-owns-the-test-suite.md`): the CI run on the pushed SHA is the
-suite's verdict, and this E2E test is the additional thing CI cannot do —
-exercise the deployed, running system. So the E2E loop is not complete
-until BOTH the CI run is green and the deployed behaviour verifies. Run
-the affected tests locally while you build the E2E test; do not re-run
-the whole suite here.
+## What needs no end-to-end check
 
-## Pre-deployment data snapshot (when applicable)
-
-For changes that affect a running system with live data, capture the
-data state before deploying so you can compare after. Skip for purely
-additive or UI-only changes.
+A change that alters no runtime behaviour — docs, tests, tooling, a comment —
+says `E2E: not applicable` in its spec and is done when CI is green.
 
 ## Integration
 
-- Follows `no-guessing.md` (every success/failure claim has evidence).
-- Follows `no-environment-vars.md` (no AWS_PROFILE, etc.).
-- Follows `use-venv.md` (commands run inside the venv).
-- Follows `cdk-deployment-only.md` (infra changes through CDK only).
+The test SUITE is CI's (`ci-owns-the-test-suite.md`); the end-to-end check is
+the one thing the suite cannot do — exercise the deployed system — and it is
+still CI's. Follows `no-guessing.md` (a verdict is a quoted run),
+`no-environment-vars.md`, `use-venv.md`, `cdk-deployment-only.md`.
 ```
 
 ### 8.23 `tests-must-not-fail.md` (always)
@@ -2834,7 +2845,7 @@ issue-housekeeping, product-management, issue-work-orchestrator). All tracker
 operations go through the project's git wrapper script (`use-git-wrapper-scripts`).
 The goal: the issue is the durable, shared record — at any moment any other agent or
 human can pick it up and continue, because progress, decisions, Q&A, and remaining
-work are kept ON THE ISSUE, updated continuously.
+work are kept ON THE ISSUE, updated at every phase transition.
 
 **Best-effort + graceful degradation:** trackers differ (GitHub, GitLab, …); use
 whatever the wrapper/host supports and skip absent optional fields cleanly (note it in
@@ -2846,9 +2857,12 @@ the log) — never treat a missing optional field as a blocker.
   is a living progress record, not decoration. A tick is a claim like any other
   (`no-guessing`): write it when the item is DONE, never ahead of the work — a tick that
   runs ahead of reality is worse than no checklist at all.
-- **Live updates (resume-anywhere):** post a short status comment at each meaningful
-  step (what was done, what's next, links to branch/PR/evidence); update the checklist;
-  record the current branch/worktree/PR and the spec/evidence location.
+- **Live updates at PHASE TRANSITIONS (resume-anywhere):** ONE short note when the issue
+  is claimed (branch, worktree, tier), when the spec is approved (spec path), when the
+  implementation is pushed (PR link, evidence path), and when it is merged and closed (time
+  spent, evidence) — plus the checklist ticks as items genuinely complete. Step-level
+  progress lives in the run's `resume_state.md`, not on the issue; four to six agent notes
+  per issue is typical, twenty is a defect.
 - **Q&A always on the issue:** any question put to the user about an issue and the
   user's answer MUST be recorded on the issue as a comment, verbatim, with context.
 - **Metadata (set what the host supports):** assignee (the in-progress claim), start
@@ -2995,13 +3009,17 @@ then produce the same body.
 `Subject` is `product` if the change can alter behavior a user of the delivered system
 experiences (the tie-break for deploy/build tooling), else `process`.
 
-**The findings ledger** `docs/findings-ledger.md` is the durable home for everything NOT
-filed: sub-threshold findings, theoretical hardening gaps, adjacent observations,
-deferred checklist items. Append-only, same evidence standard as an issue, no obligation
-of work — this is what makes "nothing may be dropped" compatible with "do not file it".
-Columns: Date | Subject | Finding | Evidence | Why not filed | Status
-(`open` / `promoted #N` / `stale`). Never delete a row; mark it `stale` after six
-untouched weeks.
+**The findings ledger** `docs/findings-ledger.md` is the home for everything NOT filed:
+sub-threshold findings, theoretical hardening gaps, adjacent observations, deferred
+checklist items. Same evidence standard as an issue, no obligation of work — this is what
+makes "nothing may be dropped" compatible with "do not file it". Columns: Date | Subject |
+Finding | Evidence | Why not filed | Status (`open` / `promoted #N` / `enforced <path>` /
+`archived`). **The ledger is compiled, not accumulated:** it holds ACTIVE rows only, capped
+at 60,000 bytes. A row older than six weeks is resolved by `@compile-memory` — promoted to
+an issue (it recurred or caused measured damage), enforced by a test, hook or one-line rule,
+or moved verbatim to `docs/archive/findings-ledger-<YYYY-MM>.md`, which stays in git and is
+grepped when a finding looks familiar but is never loaded into a session. Nothing is
+deleted; what changes is what every session pays to read.
 
 **Anti-patterns:** filing something you could have fixed in the time the issue body took;
 filing "for the record"; filing a hardening idea for machinery that never failed; turning
@@ -3025,119 +3043,73 @@ inclusion: always
 
 # Continuous Work — stopping to ask permission is forbidden
 
-Binds every agent and every chat session. Overrides any contrary habit or instruction.
+Binds every agent and every chat session. Governs exactly one thing: **when a turn may
+end.** It overrides any contrary habit or instruction.
 
 ## The standard
 
 **Work continues until the work is finished.** A turn ends for exactly two reasons: the
-task is genuinely complete, or one of the four Proven Exceptions below applies AND has
-been proven. Nothing else.
+task is complete against its definition of done, or one of the four Proven Exceptions
+below applies AND has been proven. Nothing else.
 
-**Stopping in order to obtain permission to continue is a forbidden behavior.** Any
-instruction you hold — from a habit, a general convention, an older steering file, a prior
-session, or a phase description — that tells you to pause periodically, check back after a
-while, report at intervals, or seek approval before carrying on is **VOID for the duration
-of the task**. Ignore it. This includes `post-activity.md`: it defines what to do at the
-end of an activity, NOT permission to treat each activity as a place to stop.
+Forbidden as turn-ending acts: "shall I continue?"; an unrequested summary, status report
+or progress recap (report when the work is DONE — the operator does not read interim
+reports); proposing next steps instead of performing them; ending on a plan or an offer;
+waiting for a human to run something you can run; waiting on background work you
+dispatched (do the unblocked work meanwhile); stopping because the context window is
+filling (compaction is automatic and not yours to invoke). Any instruction from a habit,
+an older steering file, a prior session or a phase description that tells you to pause,
+check in or report at intervals is VOID for the duration of the task.
 
-Specifically forbidden as turn-ending acts:
-
-- "Shall I continue?" / "Should I proceed?" / "Let me know if you want me to go on."
-- An unrequested intermediate summary, status report, or progress recap. Report when the
-  work is done, not partway.
-- Proposing the next steps instead of performing them.
-- Ending on a plan, an offer, or a question the codebase itself could answer.
-- **Substituting easier adjacent work for the hard task.** If the next real step is large
-  and atomic (a wide refactor, a cross-cutting rename, a migration with no clean
-  intermediate commit), do THAT. Doing tidy side-work and ending on a polished report is a
-  disguised check-in and is the most common form of this failure.
-- Stopping, warning, or asking because the context window is filling up (see § Context).
-- Waiting for a human to run something you can run yourself.
-
-If you catch yourself about to end a turn, run this check first: *Is the task finished? If
-not, is a Proven Exception in play and proven? If neither is true, do not stop — take the
-next step.* When in doubt, continue working.
+**The disguised check-in** is the failure that actually happens: accurate, evidence-backed
+sub-work, ended at a natural seam with a polished report while the top-level task is
+unfinished. A completed sub-deliverable is not a turn boundary. If your next action is
+"write up what I did", do the next real step instead.
 
 ## The four Proven Exceptions
 
-The ONLY legitimate reasons to stop before the work is done. Each carries a burden of
-proof: show the exception genuinely applies AND that you exhausted the alternatives. An
-unproven exception is a forbidden stop.
+1. **An irreversible or destructive action** — deleting or overwriting data, history or
+   infrastructure; force-pushes; anything outward-facing. *Proof:* the exact command and
+   why no reversible path exists. If a reversible path exists, take it and do not ask.
+2. **Sensitive information** — credentials, secrets, personal or production data.
+   *Proof:* exactly what is needed and why a fixture, mock or dev environment cannot do.
+3. **A genuine product decision** — two defensible designs, a materially different
+   deliverable, and nothing in the spec, the issue, the codebase, the docs or the decision
+   log settles it. *Not this:* implementation detail, naming, anything precedent answers.
+   Those you decide and record.
+4. **A hard blocker** — a missing credential or access, an unavailable service, a missing
+   capability. *Proof:* the failing command with complete output and the alternatives
+   tried. A red test or a red pipeline is work to do, not a blocker.
 
-**1. An irreversible or destructive action.** Deleting or overwriting data, configuration,
-history, or infrastructure; `push --force`; rewriting a shared branch; dropping or
-replacing deployed resources; anything outward-facing or published.
-*Proof:* the exact command and target, and why no reversible path exists.
-*Exhaust first:* a backup, a copy, an additive change, a new branch, a dry-run, a
-non-production target. **If a reversible path exists, take it and do not ask.**
+## How to ask (the only acceptable shape)
 
-**2. Sensitive information.** Using, exposing, or transmitting credentials, secrets,
-tokens, personal data, or production data.
-*Proof:* exactly what is needed and why.
-*Exhaust first:* a test fixture, a mock, synthetic data, a local or dev environment, an
-already-authorized wrapper script.
+- **Five lines at most:** one line of context, two to four options each with its one-line
+  consequence, the recommended option first and marked `(Recommended)`. Plain words: no
+  abbreviations, finding ids, decision-log ids or file references the reader must look up.
+  The operator must be able to answer in under a minute.
+- **Reversible decisions are never asked.** Decide, record the decision, continue.
+- **Batch.** One message with every open question; never drip-feed.
+- **Record it where the work lives** (the issue, or the spec's `qa_log.md`) AND
+  mechanically: append `AWAITING_USER: <the actual reason, as you would say it to a
+  person>` to this run's `resume_state.md` — `kiro-loop-gate.sh` and
+  `kiro-continuous-work-reinject.sh` read that field; a placeholder or a one-word token
+  releases nothing.
+- **Keep working** on everything that does not depend on the answer.
 
-**3. Genuine design guidance.** Two or more defensible designs exist, the choice materially
-changes the deliverable, and the project cannot settle it.
-*Proof:* the options, plus what you actually consulted that failed to decide it — the spec,
-the issue, existing patterns, project docs, the decision log.
-*Not this exception:* minor implementation details, naming, or anything existing code
-already answers by precedent. Decide those yourself and record them (`DL-NNN`).
+## Context pressure
 
-**4. A hard blocker.** Missing credential or authentication material, missing access, an
-unavailable external service, or a missing required capability (e.g. a wrapper subcommand
-that does not exist).
-*Proof:* the exact failing command with COMPLETE output (`no-output-shortening`), plus the
-alternatives tried.
-*Not this exception:* a failure you have not yet diagnosed. Diagnose it first — a red test
-or a red pipeline is work to do, not a blocker to report.
-
-Before invoking any exception you must have researched the project's docs and code, the
-relevant MCP documentation servers, the spec/issue, and git history. "I am not sure" is not
-proof — it is an instruction to go find out (`no-guessing`).
-
-## How to ask, when an exception is proven
-
-- **Be short.** Two sentences of context, the options, the recommendation. Five lines is
-  plenty. No preamble, no recap of what you already did.
-- **Always give a recommendation.** Never present a bare choice; state which option you
-  would take and the one reason why. A question without a recommendation is incomplete.
-- **Batch.** One message with every open question. Never drip-feed.
-- **Record it durably.** Put the question and its answer where the work lives — a comment
-  on the issue (`issue-tracking`) or the spec's `qa_log.md` — not only in chat, which does
-  not survive compaction.
-- **Keep working.** After asking, continue with every part of the task that does not depend
-  on the answer. Asking is never a reason to idle.
-
-## Context-window pressure is never a reason to stop
-
-Compaction is automatic: older history is replaced by a structured summary of goals,
-decisions, progress and next steps while recent messages stay verbatim, and the session
-continues with no interruption. **You cannot trigger it yourself** — manual `/compact`
-exists only as a user command in the CLI, and the IDE has no manual trigger at all. So
-never stop, never warn, never ask about context. Just keep working.
-
-Your obligation is to make compaction lossless:
-
-- **Externalize state continuously.** Write progress, decisions, the current phase, and the
-  next step to the durable state files (`agent-state-convention`) after EVERY step — never
-  hold your place only in the conversation. On-disk state is what survives.
-- Keep the issue or spec updated as the live record, so the work is reconstructible from it
-  alone.
-- **Delegate large reads** to a subagent so file contents land in its context, not yours.
-- **After a compaction, re-read before acting:** your state file, the active spec's decision
-  log, and any file you still need. `inclusion: always` steering (including this file)
-  stays in effect; `fileMatch` steering returns when you next touch a matching file.
-  Compacted history is unrecoverable within the session, so anything that must outlive it
-  belongs on disk or on the issue. Then resume the recorded step; do not restart the task.
+Compaction is automatic; you cannot trigger it. Make it lossless: externalize progress,
+decisions and the next step to the run's state file after every step; after a compaction,
+re-read the state and the active spec before acting, then resume the recorded step.
+`inclusion: always` steering stays in effect; `fileMatch` steering returns when you next
+touch a matching file.
 
 ## Enforcement
 
-`kiro-loop-gate.sh` (the CLI `stop` hook) mechanically blocks turn-end while an
-orchestrator run has workable issues remaining, and the user can restart a stalled run with
-`@continue-work`. Neither substitutes for this rule: the gate covers only the orchestrator
-loop and yields after `LOOP_BLOCK_CAP` consecutive blocks, so everywhere else this rule is
-the only thing standing between a long run and an unnecessary halt.
+`kiro-loop-gate.sh` (the CLI `stop` hook) blocks turn-end while an orchestrator run has
+work in flight and yields after `LOOP_BLOCK_CAP` consecutive blocks; `@continue-work`
+restarts a stalled run. Neither substitutes for this rule: everywhere else this text is
+the only brake. Behave as though nothing is watching.
 ```
 
 ### 8.34 `ci-owns-the-test-suite.md` (always) — fleet convention — NEW
@@ -3257,11 +3229,26 @@ every concurrent worktree in the clone, and the `pre-push` hook picks it up
 with no further configuration. Clearing it is not housekeeping: while it is
 set, every push in every worktree pays for a full local suite.
 
+## Waiting for a run — never sleep-poll
+
+A pipeline takes as long as it takes; what is yours to decide is what happens
+meanwhile. Start the wrapper's blocking wait (`pipeline wait <id>` on GitLab,
+`wait-run <id>` on GitHub; both poll internally and exit with the terminal
+verdict) in the background and continue with work that does not depend on the
+verdict — the next wave, the docs, the issue note, another issue in another
+worktree. A `sleep N` in a shell call, repeated, is the measured shape of a
+thousand hours of nothing (`parallel-by-default.md`), and each wake-up re-reads
+the whole context. If the push transport's credential lapses mid-run (an
+expired SSH certificate), the push is queued, not the work: keep implementing
+locally and ask ONCE in the five-line shape of `continuous-work.md`, naming the
+exact command the operator must run.
+
 ## Self-check
 
 Before pushing, confirm: paired tests green and captured; the batch is
 complete rather than a probe; no `--no-verify` anywhere; no local full-suite
-run was performed to satisfy a gate. After a red CI run, confirm: every
+run was performed to satisfy a gate; no `sleep` polling anywhere in the
+session. After a red CI run, confirm: every
 failing job read, every failure enumerated, root causes grouped and written
 down, all of them fixed, exactly one push.
 
@@ -3278,6 +3265,107 @@ job" means full logs and quoted evidence (`no-output-shortening.md`,
 (`use-venv.md`). The mechanisms are `scripts/run_tests.py`,
 `scripts/run_checks.py` (the same command CI runs, so a local pipeline
 cannot drift from the real one), and `scripts/ci_outage_mode.py` (PART 2).
+```
+
+### 8.35 `proportionality.md` (always) — fleet convention — NEW
+
+The Kiro twin of `claude-agents/spec-workflow/rules/proportionality.md`. It is what stops a
+one-constant change from becoming a five-day, 1.5 MB specification: the ASK decides the tier,
+never the analysis.
+
+```markdown
+---
+inclusion: always
+---
+# Proportionality — size the work to the ask (ALL agents)
+
+The ask decides how much specification, review and ceremony a change receives; the
+analysis never does. A one-constant change stays a one-constant change however many files,
+guards or risks the investigation turns up. Discoveries that are not the ask become
+residuals, ledger rows, or their own issue.
+
+## Tiers (decided from the ASK, at classification, recorded once)
+
+| Tier | The ask is | Artefacts and hard byte caps | Review | Implementation |
+|---|---|---|---|---|
+| **S** | a value, default, config, message or doc change; a bounded local fix; one component; no new interface | `change.md` ≤ 8,000 B (ask, acceptance criteria in EARS, unchanged behaviour, files, tests incl. the E2E check) | ONE combined pass (`spec-review-agent`, all lenses; security lens mandatory when auth, IAM, secrets or input handling is touched); max 2 iterations | one wave |
+| **M** | a feature or fix across several components with a design choice | `requirements.md` ≤ 20,000 B, `design.md` ≤ 60,000 B, `tasks.md` ≤ 15,000 B | full panel, dispatched in batches of four (the Kiro cap); max 4 design iterations, 2 tasks iterations | waves |
+| **L** | a new subsystem or a cross-cutting change | double the M caps | full panel; max 6 design iterations, 3 tasks iterations | waves |
+
+Anything larger than L is split into issues before any spec is written. An infrastructure
+file in the diff, a snapshot that must be regenerated, a docs edit, or a count of touched
+files does NOT raise the tier; only a bigger ASK does. When in doubt, choose the smaller
+tier and re-tier UP later with a recorded reason that names what in the ask was missed.
+
+## The caps are hard
+
+The conductor measures every artefact before dispatching a review or an implementation
+wave. Over cap → back to the author with "cut, do not add". Re-tier only when the ask
+itself is bigger than the tier. Every review file is ≤ 8,000 B; an issue body filed by
+intake is ≤ 4,000 B.
+
+## Scope freeze
+
+Once the design review opens, the acceptance criteria are frozen. A finding is fixed by
+restating or removing text, never by adding a requirement, a property, a mechanism or a
+protocol. Something the review finds that the ask does not cover is recorded in
+`## Residuals` (≤ 10 lines), routed per `issue-filing-discipline.md`, and left out of this
+change. The ask changes only when the person who asked changes it.
+
+## Specs state behaviour, not measurements
+
+A spec cites symbols, paths and acceptance-criteria ids. It never carries line numbers,
+byte counts, durations, record counts, or any figure a later commit invalidates.
+Measurements are evidence, under `evidence/` or in test assertions. A reviewer may not
+demand a figure be added to a spec, and no spec edit is ever required to keep line
+numbers stable.
+
+## Time tripwires
+
+S: 3 hours. M: 24 hours. L: 72 hours from claim to merge. Crossing one is not a stop and
+not a question: record it, re-tier or split (both reversible), and continue.
+
+## Evidence is test output
+
+`evidence/` holds captured test runs (red, green, CI verdict, verifier report) — nothing
+else. Probes and measurement scripts are either tests under `test/` or discarded.
+```
+
+### 8.36 `parallel-by-default.md` (always) — fleet convention — NEW
+
+```markdown
+---
+inclusion: always
+---
+# Parallel by Default (ALL agents)
+
+Independent work runs concurrently. The operator's time is the scarce resource; tokens
+are not. A sequential dispatch of independent work is a defect, not a style choice.
+
+## What must run in parallel
+
+- **Review lanes.** Every reviewer of a panel is dispatched together — in batches of four,
+  Kiro's concurrency cap, back to back, never one lane at a time. Each lane writes only its
+  own file; the conductor consolidates (`agent-state-convention.md`).
+- **Research bursts.** Independent questions to `spec-researcher` go out together.
+- **Implementation waves.** `tasks.md` groups tasks into waves; tasks in a wave own
+  disjoint files and depend only on earlier waves. All TEST tasks of a wave are dispatched
+  together, the wave's tests run once (red), then all IMPL tasks are dispatched together
+  and the wave's tests run once (green). One commit per wave. The gates accept a wave
+  capture whose `# tasks:` header names the tasks it proves.
+- **Independent issues.** Separate issues run in separate worktrees and sessions.
+
+## What waits, and how
+
+Never `sleep`-poll in a shell call. A CI run, a deploy or a merge is waited on with the
+wrapper's blocking `wait` subcommand run in the background while you do every piece of
+work that does not depend on the verdict. Idling on a pipeline is a stop in disguise
+(`continuous-work.md`).
+
+## Self-check before any dispatch
+
+Could this call run alongside the previous one? If yes, they belong in the same batch. Is
+the next step blocked on a run? Start the wait and pick up the next unblocked step.
 ```
 
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
@@ -3410,6 +3498,29 @@ After copying, verify each installed file: the JSON parses, its `name` equals th
 filename stem, and for every `prompt: "file://<x>.md"` the named `<x>.md` is present
 alongside it in `.kiro/agents/`.
 
+**Also install the phase fragments and the review contract the fleet reads on demand.**
+The conductor and the orchestrator reference them by these exact paths; a missing fragment
+is a blocker they report, never a procedure they improvise:
+
+```bash
+mkdir -p .kiro/specs/_workflow/phases .kiro/docs
+for f in claude-agents/spec-workflow/phases/*.md; do
+  sed 's#\.claude/rules/#.kiro/steering/#g; s#\.claude/hooks/#.kiro/hooks-bin/#g; s#\.claude/#.kiro/#g' "$f" \
+    > ".kiro/specs/_workflow/phases/$(basename "$f")"
+done
+sed 's#\.claude/rules/#.kiro/steering/#g; s#\.claude/#.kiro/#g' \
+  claude-agents/spec-workflow/docs/review-contract.md > .kiro/docs/review-contract.md
+```
+
+The fragments carry the discipline the whole fleet depends on (2026-09-30): tiers and byte
+caps (`spec-phase-design.md`), the parallel panel with the materiality gate, delta review
+and the per-tier cap (`spec-phase-review.md`), waves with file ownership
+(`spec-phase-tasks.md`), wave-parallel implementation with `# tasks:` capture headers and
+CI awaited in the background (`spec-phase-implement.md`). Kiro runs at most four subagents
+concurrently, so "one message" in the fragments means one batch of four.
+`kiro-stop-gate.sh` and `kiro-tdd-gate.sh` accept a task's own capture or a wave capture
+whose `# tasks:` header names it; ids match as whole tokens (`1.1` never covers `1.10`).
+
 ### 8A.2 Install and wire the enforced gate hooks
 
 The advanced fleet's TDD/loop discipline is enforced by gate scripts (referenced from
@@ -3523,6 +3634,10 @@ wiring is needed beyond the copy):
   feature/bugfix, or to any utility agent (`dead-code-removal-agent`,
   `doc-reviewer-agent`, `ci-workflow-agent`, `issue-intake-agent`, etc.) for a focused
   task.
+- **How a run ends:** every `issue-work-orchestrator` run — and every `issue-intake-agent`
+  run — closes with its fixed Completion Block (`ISSUE WORK FINISHED | BLOCKED | FAILED`,
+  respectively `ISSUE INTAKE …`, over a fixed table), never a free-form summary. That
+  verdict line appears nowhere else in the run, so it marks the end unambiguously.
 - **Headless (provisional):**
   `kiro-cli chat --no-interactive --agent issue-work-orchestrator --trust-tools=read,grep,write "work the open-issue backlog"`,
   authenticated by `KIRO_API_KEY`. NOTE: the `--agent` flag for headless mode is NOT
@@ -3556,7 +3671,15 @@ mkdir -p .kiro/prompts
 cp kiro-prompts/auto-work.md      .kiro/prompts/
 cp kiro-prompts/continue-work.md  .kiro/prompts/
 cp kiro-prompts/close-session.md  .kiro/prompts/
+cp kiro-prompts/compile-memory.md .kiro/prompts/
 ```
+
+`@compile-memory` is the maintenance pass that keeps the always-loaded corpus and the memory
+docs under the PART 12 caps: it moves incident narratives out of steering files, archives
+findings-ledger rows and lessons older than six weeks to `docs/archive/` (verbatim, still in
+git), turns recurring ones into tests or rules, and ends when
+`test/test_instruction_corpus_budget.py` passes. Run it when that test goes red and once per
+framework update; the mechanical half is `scripts/memory_compile.py` (PART 12).
 
 `@close-session` is the end-of-session close-out, the counterpart of Claude Code's
 `/close-session` (`ClaudeCodeSetupPrompt.txt` Part 6.1). It answers "can we close this
@@ -4120,7 +4243,31 @@ not a shell env var (Rule 2 clarification).
 
 Apply Rule 1. Preserve existing content; add missing sections.
 
+**The memory docs are CAPPED, and the caps are enforced by a test, because prose caps were
+measured not to hold:** on three production projects `forLLMConsumption.md` reached 600–770
+KB, `lessons-learned.md` 640–960 KB and `findings-ledger.md` 890–940 KB in ten weeks, and
+steering 8.2 made two of them mandatory reading before every task. Install the guard and the
+compile tool with the other check scripts:
+
+```bash
+cp templates/test_instruction_corpus_budget.py.template test/test_instruction_corpus_budget.py
+cp templates/memory_compile.py.template               scripts/memory_compile.py
+mkdir -p docs/archive
+```
+
+The caps (framework defaults; a project may lower them, and raises one only by its measured
+cost with the reason in the commit): the always-loaded corpus — every `inclusion: always`
+steering file — 100,000 bytes and no single file over 12,000; `docs/forLLMConsumption.md`
+40,000; `docs/lessons-learned.md` 40,000; the active `docs/findings-ledger.md` 60,000. The
+test also fails on a steering file carrying two or more dated headings — an incident ledger
+living inside the corpus. **On an EXISTING project, run `@compile-memory` once as part of
+setup** and report the before/after sizes.
+
 ### `docs/forLLMConsumption.md`
+
+A MAP of the project, ≤ 40,000 bytes: purpose, architecture in brief, where things are, the
+invariants a change must respect, how to run/test/deploy, pointers to the topic docs. Detail
+lives in topic docs under `docs/`, read on demand.
 
 Required sections (add only those that are missing):
 - Project overview and purpose
@@ -4151,37 +4298,34 @@ Required sections:
 - Component interactions
 
 ### `docs/lessons-learned.md`
-If missing, create:
+Holds COMPILED lessons (steering 8.18). If missing, create; an existing narrative file is
+converted by archiving it (`@compile-memory`):
 ```markdown
 # Lessons Learned
 
-This file documents lessons learned during development. The AI
-assistant reads this before starting any new task to avoid repeating
-past mistakes.
+Each lesson is at most five lines. A lesson older than six weeks with `Enforced-by: none`
+is enforced by a test, hook or rule line, or archived to docs/archive/ by @compile-memory.
+Incident narratives belong in docs/archive/incidents/<date>-<slug>.md, never here.
 
-## Format
-
-- **Date**: when the lesson was learned
-- **Context**: what was being worked on
-- **Lesson**: what was learned
-- **Action**: what to do differently going forward
-
-## Lessons
-
-<!-- Add entries below -->
+## <YYYY-MM-DD> — <one-line lesson>
+- Lesson: <one sentence>
+- Enforced-by: <test path | hook | rule file: line | none>
+- Scope: <component>
 ```
 
 ### `docs/findings-ledger.md`
 Create if the project installs steering 8.32 (`issue-filing-discipline.md`). It is the
-append-only home for findings the fix-first evaluation deliberately did NOT file — the
-pressure valve that lets "nothing may be dropped" coexist with "do not file it":
+home for findings the fix-first evaluation deliberately did NOT file — the pressure valve
+that lets "nothing may be dropped" coexist with "do not file it" — and it holds ACTIVE rows
+only:
 ```markdown
 # Findings Ledger
 
 Findings recorded but deliberately NOT filed as issues, per
-`.kiro/steering/issue-filing-discipline.md`. Append-only: never delete a row; mark it
-`stale` instead. Promote a row to an issue when it recurs or causes measured damage, and
-record the issue number here.
+`.kiro/steering/issue-filing-discipline.md`. Active rows only: a row older than six weeks
+is promoted to an issue, enforced by a test or rule (`enforced <path>`), or archived
+verbatim to docs/archive/findings-ledger-<YYYY-MM>.md by @compile-memory. Nothing is
+deleted from git; what changes is what a session loads.
 
 | Date | Subject | Finding | Evidence | Why not filed | Status |
 |---|---|---|---|---|---|
@@ -4340,6 +4484,17 @@ After completing all parts:
     printf '%s' '{"cwd":".","tool_input":{"command":"python scripts/gitlab_wrapper.py issue list"}}' \
       | bash .kiro/hooks-bin/kiro-issue-filing-gate.sh; echo "expect 0, got $?"
     ```
+11. **Memory budget and proportionality** (PART 12, 8.35, 8.36, 8A) —
+    `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes in full and
+    `python scripts/memory_compile.py report` exits 0; `.kiro/steering/proportionality.md`
+    and `.kiro/steering/parallel-by-default.md` exist with `inclusion: always`;
+    `.kiro/docs/review-contract.md` and the five fragments under
+    `.kiro/specs/_workflow/phases/` exist with `.kiro/` paths; `@compile-memory` is
+    installed; the wrapper implements the blocking wait (`pipeline wait` / `wait-run` — a
+    `NotImplementedError` means agents will fall back to `sleep` polling); and where the
+    project deploys, the pipeline has a post-deploy job that runs the committed end-to-end
+    script (8.22). Grep `.kiro/agents/` and `.kiro/prompts/` for `Type1`/`Type2`: a survivor
+    means an old copy was preserved over the tiered version.
 
 ### Migration report
 
@@ -4551,6 +4706,8 @@ All under `templates/` in the prompt repository:
 - `gitlab.json.template`
 - `gitlab_wrapper.py.template`
 - `github_wrapper.py.template`
+- `test_instruction_corpus_budget.py.template` (the memory-budget guard, PART 12)
+- `memory_compile.py.template` (the mechanical half of `@compile-memory`, PART 12)
 
 ### Custom-agent sources referenced by PART 8A
 All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
@@ -4580,6 +4737,9 @@ global overrides MCP. Managed with `/prompts list|edit|details`.
   instruction declared void (Claude Code counterpart: `/continue-work`). IDE hook: Part 9.4b.
   The behavioral fix that should make it unnecessary is the `continuous-work` steering rule
   (Part 8.33).
+- `compile-memory.md` → `@compile-memory`: the memory maintenance pass — archive or enforce
+  aged ledger rows and lessons, move incident text out of steering, bring the corpus and
+  the memory docs back under their caps (PART 12).
 - `close-session.md` → `@close-session`: the end-of-session close-out — nine steps that
   FINISH what is unfinished, then verify, then emit ONE fixed nine-row verdict table with a
   ✅/❌/➖ per step, ≤60-character details, and an Issues block below it; a blocker that needs

@@ -3,6 +3,10 @@
 Usage:
     python scripts/gitlab_wrapper.py pipeline status
     python scripts/gitlab_wrapper.py pipeline log
+    python scripts/gitlab_wrapper.py pipeline wait <pipeline_id> [--timeout-seconds 3600]
+        # BLOCKS until the pipeline is terminal, polling internally; exit 0 on success,
+        # 1 on failed/canceled, 2 on timeout. Agents run it as a BACKGROUND task and keep
+        # working (parallel-by-default.md) — never `sleep` in a tool call.
     python scripts/gitlab_wrapper.py issue list
     python scripts/gitlab_wrapper.py issue list --state opened --assignee "*" --labels in-progress
     python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
@@ -106,9 +110,42 @@ def _api_request(
         ) from exc
 
 
+PIPELINE_TERMINAL_STATUSES = frozenset({"success", "failed", "canceled", "skipped", "manual"})
+
+
+def pipeline_wait(
+    *,
+    config: dict[str, Any],
+    pipeline_id: int,
+    timeout_seconds: int = 3600,
+    interval_seconds: int = 30,
+) -> int:
+    """Block until the pipeline is terminal. Exit-code semantics: 0 success, 1 failed/canceled, 2 timeout.
+
+    This is the ONE sanctioned way for an agent to wait on CI. The agent starts it as a background task
+    and continues with unblocked work; the harness re-invokes the agent when it exits. A `sleep N` in a
+    tool call, repeated, was measured at over a thousand hours of idle across three projects, each
+    wake-up re-reading a 400,000-token context.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    status = ""
+    while time.monotonic() < deadline:
+        data = _api_request(method="GET", path=f"/projects/{config[FIELD_PROJECT_ID]}/pipelines/{pipeline_id}", config=config)
+        status = str(data.get(FIELD_STATUS, ""))
+        if status in PIPELINE_TERMINAL_STATUSES:
+            print(json.dumps({FIELD_ID: pipeline_id, FIELD_STATUS: status, "web_url": data.get("web_url", "")}))
+            return 0 if status == "success" else 1
+        time.sleep(interval_seconds)
+    print(json.dumps({FIELD_ID: pipeline_id, FIELD_STATUS: status or "unknown", "timeout_seconds": timeout_seconds}))
+    return 2
+
+
 # Implement subcommand functions per the module docstring:
-# pipeline_status, pipeline_log, issue_create, issue_list, issue_show,
-# label_list, label_create. Each takes named parameters and prints JSON
+# pipeline_status, pipeline_log, pipeline_wait (above — a REQUIRED subcommand,
+# wired as `pipeline wait <id> [--timeout-seconds N]`), issue_create, issue_list,
+# issue_show, label_list, label_create. Each takes named parameters and prints JSON
 # or human-readable output.
 #
 # Merge-request / CI lifecycle subcommands (required by the

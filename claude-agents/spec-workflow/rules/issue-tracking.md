@@ -23,14 +23,16 @@ optional field cleanly and note it — never treat one as a blocker.
   ahead of the work — the list is what a later session reads to know where things stand, so
   a tick that runs ahead of reality is worse than no checklist at all.
 
-## Live updates (resume-anywhere)
+## Live updates (resume-anywhere, at phase transitions)
 
-Post progress to the issue continuously, not only at the end: a short status comment at
-each meaningful step (done / next / links to branch, PR, evidence), checklist updates,
-and the current branch/worktree/PR and spec/evidence locations. Bias toward
-over-documenting: if the session dies, the issue alone must carry enough context to
-continue. **Every question put to the user, and the answer, goes on the issue as a
-comment, verbatim** — a Q&A decision must never live only in transient chat.
+The issue carries enough to resume from, not a step-by-step diary. Post ONE short note at
+each phase transition — claimed (branch, worktree, tier); spec approved (spec path);
+implementation pushed (PR link, evidence path); merged and closed (time spent, evidence)
+— plus the checklist ticks as items genuinely complete. Step-level progress lives in the
+run's `resume_state.md`, not on the issue. A typical issue carries four to six notes from
+an agent; twenty is a defect. **Every question put to the user, and the answer, goes on
+the issue as a comment, verbatim** — a Q&A decision must never live only in transient
+chat.
 
 ## Metadata (set what the host supports)
 

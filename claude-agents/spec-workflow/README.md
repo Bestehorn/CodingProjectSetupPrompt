@@ -16,32 +16,40 @@ itself). Subagents cannot nest, so **every delegation originates from the conduc
 
 ```
 claude --agent spec-conductor
-  SETUP → PROMPT_AUTHORING (interview)
-        → REQUIREMENTS (EARS) → DESIGN (Correctness Properties, Testing Strategy,
-                                        threat model, DevOps, AC→validation map)
-        → DESIGN_REVIEW_LOOP  (6-reviewer panel ↔ author; exit: 0 A+B + full coverage)
-        → TASKS (test-first)  → TASKS_REVIEW_LOOP (light panel; exit: 0 A+B)
-        → IMPLEMENT_LOOP (per task: RED → GREEN → commit, paired tests only, conductor
-                           captures evidence; no-regress = ONE CI run after the batch's
-                           single push)
-        → VERIFY (adversarial-verifier verifies & refutes — whole-suite verdict from the
-                   CI run; panel re-checks the diff)
-        → EVIDENCE_REPORT (property → test → quoted output)
+  SETUP → PROMPT_AUTHORING (interview; fixes the TIER from the ask — proportionality.md)
+        → tier S:   CHANGE (change.md ≤ 8,000 B) → CHANGE_REVIEW (one combined pass, cap 2)
+        → tier M/L: REQUIREMENTS → DESIGN (byte-capped; sections that do not apply say so)
+                    → DESIGN_REVIEW_LOOP (whole panel in ONE message; findings gated for
+                       materiality; delta review from iteration 2; scope frozen; exit 0 A+B
+                       + full coverage; C/D fixed in one pass without a round; cap 4/6 →
+                       approve-as-reviewed with residuals)
+                    → TASKS (waves with file ownership) → TASKS_REVIEW_LOOP (light)
+        → IMPLEMENT (per wave: all TEST tasks in one dispatch → red capture → all IMPL
+                      tasks in one dispatch → green capture → one commit; ONE push; CI
+                      awaited in the BACKGROUND)
+        → VERIFY (one verifier pass; one delta review of the diff)
+        → EVIDENCE_REPORT (criterion → test → capture; ≤ 8,000 B)
 ```
 
-You stay out of the loop except: the interview (one question at a time), a single
-batched escalation if a review loop hits its cap/oscillates, and the final report.
+You stay out of the loop except: the interview (one five-line question at a time), one
+question if a review loop reaches its tier cap (recommended answer first: approve as
+reviewed and record residuals), and the final table.
 
-### The readiness gate (maximally autonomous)
-A spec is ready to implement when **both** hold, after ≥1 review cycle:
-- **Negative:** combined **A+B findings == 0** across the whole panel, computed
-  against the *current* artifact (stale verdicts are rejected). A = execution
-  blockers, B = intent deviations/gaps. C (clarifications) and D (nits) never block.
-- **Positive:** `test-architect` confirms ≥1 Correctness Property per requirement and
-  100% of acceptance criteria map to a test.
+### The readiness gate (zero material defects, structurally convergent)
+A spec is ready to implement when **both** hold against the *current* artefacts:
+- **Negative:** combined **A+B findings == 0** across the panel, where an A or B must
+  name the acceptance criterion it protects or one of five failure classes and carry its
+  own proposed edit (`docs/review-contract.md`); anything else is C. C and D are fixed in
+  the same author pass but never gate, never open a round, and are never re-reviewed.
+- **Positive:** `test-architect` maps every acceptance criterion and unchanged-behaviour
+  clause to a test that can fail (property-based only where the criterion quantifies over
+  an input domain).
 
-This is your "zero defects after at least one adversarial cycle" rule, hardened with a
-positive proof-coverage gate so silence ≠ approval.
+Convergence is structural: artefacts are size-capped so every lane reads them whole; a
+fix may restate or remove but never add scope; from iteration 2 only the delta and the
+fix sites are reviewed. The cap is per tier and its escalation recommends shipping the
+reviewed spec, because "keep running rounds until the gate passes" is the measured cause
+of a sixteen-round review of a one-constant change.
 
 ### Proof with evidence (hard requirement)
 The `spec-implementer` writes tests and code but **never certifies its own work**. The
@@ -57,7 +65,7 @@ The final `evidence/REPORT.md` quotes real command output for every passing clai
 | Agent | Role | Gate phase |
 |---|---|---|
 | `spec-conductor` | Main-session orchestrator; owns the loop, delegation, gates, state. | all |
-| `spec-author` | Writes/edits requirements, design, tasks. Never grades itself. | gen + revise |
+| `spec-author` | Writes change.md or requirements/design/tasks under the tier's byte caps; fixes findings by restating or removing, never adding. | gen + revise |
 | `spec-researcher` | Read-only codebase/MCP research bursts for the interview. | prompt |
 | `test-architect` ★ | Properties + coverage map + AC→test mapping (positive gate). | design, tasks, verify |
 | `adversarial-verifier` ★ | Verifies & refutes every claim with evidence (whole-suite verdict from CI). | verify |
@@ -65,17 +73,23 @@ The final `evidence/REPORT.md` quotes real command output for every passing clai
 | `best-practice-reviewer` | Alignment with external best practices (MCP/web). | design, verify |
 | `security-reviewer` | Threat model + vuln/secret/least-privilege review. | design, verify |
 | `devops-iac-reviewer` | CI/CD, IaC least-privilege, observability, rollback. | design, verify |
-| `spec-implementer` | Writes tests then code per task, test-first. Never certifies. | implement |
+| `spec-implementer` | One task per call, several calls per wave in parallel; stays inside its declared Files. Never certifies. | implement |
 
 ★ = core. Reused from `claude-agents/spec-review/`: `spec-review-agent` (the A/B/C/D
-adversarial reviewer; runs in report-only mode under the conductor) and
-`spec-prompt-author-agent` (the interview protocol; also backs `/spec-new`).
+adversarial reviewer; report-only under the conductor, COMBINED mode — all six lenses in
+one pass — for tier S) and `spec-prompt-author-agent` (the interview protocol; also backs
+`/spec-new`). Every reviewer reads `docs/review-contract.md` (installed to `.claude/docs/`)
+before writing a finding: the finding shape, the forbidden findings, and "no findings is a
+normal result".
 
 Phase procedures are authored once in `phases/spec-phase-*.md` and followed by both
 the conductor and the slash commands (single source of truth). The shared decision-log
 convention is `rules/agent-state-convention.md`. The gates are in `hooks/`.
 
-**Where tests run.** Per task the conductor runs only the PAIRED tests and commits;
+**Where tests run.** Per WAVE the conductor runs only the wave's tests and commits once;
+a wave capture's `# tasks:` header names every task it proves, and both gates resolve a
+task's evidence through `hook_capture_for_task`, so a per-task file and a wave capture are
+equivalent. Per task, in the older per-task shape, the conductor runs only the PAIRED tests;
 commits are cheap (the pre-commit hook is lint + security) and are meant to be frequent.
 The whole-suite regression verdict comes from ONE CI run over the finished batch after a
 single push. `spec-tdd-gate.sh` therefore gates the PUSH, not the commit — the evidence
@@ -245,8 +259,12 @@ cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # age
                                                                          # issue-tracking, per-worktree-venv,
                                                                          # issue-filing-discipline,
                                                                          # continuous-work,
-                                                                         # ci-owns-the-test-suite
+                                                                         # ci-owns-the-test-suite,
+                                                                         # proportionality,
+                                                                         # parallel-by-default
+cp claude-commands/compile-memory.md                      .claude/commands/
 mkdir -p .claude/docs
+cp claude-agents/spec-workflow/docs/review-contract.md    .claude/docs/  # ON-DEMAND: every reviewer reads it
 cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DEMAND, deliberately NOT in
                                                                          # rules/: the authoritative
                                                                          # run-identity/gate-release contract,

@@ -79,9 +79,14 @@ header and this table; append one row per finding:
 | Date | Subject | Finding | Evidence | Why not filed | Status |
 ```
 
-`Status` is `open`, `promoted #N`, or `stale` (a row untouched for six weeks may be
-marked stale — retained, never deleted; promote a row when it recurs or causes measured
-damage).
+`Status` is `open`, `promoted #N`, `enforced <path>` (turned into a test, hook or rule
+line), or `archived`. **The ledger is compiled, not accumulated.** Only active rows live
+in it, and it is capped at 60,000 bytes. A row older than six weeks is resolved by
+`/compile-memory` in one of three ways: promoted to an issue (it recurred or caused
+measured damage); enforced by a mechanism (a test, a hook, a one-line rule statement);
+or moved verbatim to `docs/archive/findings-ledger-<YYYY-MM>.md`, which stays in git and
+is grepped when a finding looks familiar, but is never loaded into a session. Nothing is
+deleted; what changes is what every session pays to read.
 
 Anti-patterns: filing what you could fix in the time the body took; filing "for the
 record"; hardening ideas for machinery that never failed; splitting one root cause into

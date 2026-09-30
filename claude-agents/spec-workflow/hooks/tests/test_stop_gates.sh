@@ -176,6 +176,29 @@ printf -- '- [x] 0 parent heading\n- [x] 0.1 subtask\n' > "$ARENA/.claude/specs/
 printf '5 passed\n' > "$ARENA/.claude/specs/demo/evidence/green/0.1.txt"
 check "parent heading needs no capture of its own -> allow" 0 "$(run_hook spec-stop-gate.sh "$PAYLOAD")"
 
+# WAVE captures: concurrently implemented tasks share ONE test run, so one capture proves several tasks. The
+# `# tasks:` header names them; a task no capture names is still unproven.
+reset_arena; register "runs/$RUN8/"; seed_state "$RUN8" IN_PROGRESS FIX none no
+seed_workflow "$RUN8" "IMPLEMENT" ".claude/specs/demo"
+mkdir -p "$ARENA/.claude/specs/demo/evidence/green"
+printf -- '- [x] 1.1 TEST: parser\n- [x] 1.2 IMPL: parser\n' > "$ARENA/.claude/specs/demo/tasks.md"
+printf '# tasks: 1.1 1.2\n7 passed in 1.3s\n' > "$ARENA/.claude/specs/demo/evidence/green/wave-1.txt"
+check "wave capture naming both checked tasks -> allow" 0 "$(run_hook spec-stop-gate.sh "$PAYLOAD")"
+
+reset_arena; register "runs/$RUN8/"; seed_state "$RUN8" IN_PROGRESS FIX none no
+seed_workflow "$RUN8" "IMPLEMENT" ".claude/specs/demo"
+mkdir -p "$ARENA/.claude/specs/demo/evidence/green"
+printf -- '- [x] 1.1 TEST: parser\n- [x] 1.2 IMPL: parser\n- [x] 2.1 IMPL: writer\n' > "$ARENA/.claude/specs/demo/tasks.md"
+printf '# tasks: 1.1 1.2\n7 passed in 1.3s\n' > "$ARENA/.claude/specs/demo/evidence/green/wave-1.txt"
+check "checked task no wave capture names -> BLOCK" 2 "$(run_hook spec-stop-gate.sh "$PAYLOAD")"
+
+reset_arena; register "runs/$RUN8/"; seed_state "$RUN8" IN_PROGRESS FIX none no
+seed_workflow "$RUN8" "IMPLEMENT" ".claude/specs/demo"
+mkdir -p "$ARENA/.claude/specs/demo/evidence/green"
+printf -- '- [x] 1.10 IMPL: tenth\n' > "$ARENA/.claude/specs/demo/tasks.md"
+printf '# tasks: 1.1\n7 passed in 1.3s\n' > "$ARENA/.claude/specs/demo/evidence/green/wave-1.txt"
+check "wave header '1.1' does NOT cover task '1.10' -> BLOCK" 2 "$(run_hook spec-stop-gate.sh "$PAYLOAD")"
+
 echo ""
 echo "=============================================================================================="
 echo "FAIL-CLOSED on a broken library (both gates)"

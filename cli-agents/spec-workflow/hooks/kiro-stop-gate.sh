@@ -91,13 +91,31 @@ tasks="$spec_dir/tasks.md"
 
 problems=""
 
-# 1. Every completed task ([x]) must have an evidence capture (green for impl, red for
-#    test-writing). Task IDs are the leading number of a checked task line.
+# capture_for_task <kind> <id> -> 0 when a per-task capture `evidence/<kind>/<id>.txt` exists OR a WAVE
+# capture (`evidence/<kind>/*.txt` whose first lines carry `# tasks: <id> ...`) names the task. Waves exist
+# because independent tasks are implemented concurrently and their tests run once (parallel-by-default).
+# Ids match as whole tokens (`1.1` does not cover `1.10`); commas are separators. Mirrors the Claude twin.
+capture_for_task() {
+  local kind="$1" id="$2" f header pattern
+  [[ -f "$spec_dir/evidence/$kind/$id.txt" ]] && return 0
+  pattern="[[:space:]]$(printf '%s' "$id" | sed 's/\./\\./g')[[:space:]]"
+  for f in "$spec_dir"/evidence/"$kind"/*.txt; do
+    [[ -f "$f" ]] || continue
+    header="$(head -n 5 "$f" 2>/dev/null | tr -d '\r' | grep -iE '^[[:space:]]*#[[:space:]]*tasks[[:space:]]*:' | head -1)"
+    [[ -n "$header" ]] || continue
+    printf ' %s ' "${header#*:}" | tr ',' ' ' | grep -qE "$pattern" && return 0
+  done
+  return 1
+}
+
+# 1. Every completed task ([x]) must be covered by an evidence capture (green for impl, red for
+#    test-writing) — its own, or a wave capture that names it. Task IDs are the leading number of a
+#    checked task line.
 while IFS= read -r line; do
   id="$(sed -E 's/^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/' <<<"$line")"
   [[ "$id" == "$line" ]] && continue           # no numeric id parsed
-  if [[ ! -f "$spec_dir/evidence/green/${id}.txt" && ! -f "$spec_dir/evidence/red/${id}.txt" ]]; then
-    problems+="  - task ${id} is marked complete but has no evidence capture (evidence/green/${id}.txt or evidence/red/${id}.txt)."$'\n'
+  if ! capture_for_task green "$id" && ! capture_for_task red "$id"; then
+    problems+="  - task ${id} is marked complete but no capture covers it (evidence/green/${id}.txt, evidence/red/${id}.txt, or a wave capture whose '# tasks:' line names ${id})."$'\n'
   fi
 done < <(grep -E '^[[:space:]]*-[[:space:]]*\[[xX]\]' "$tasks")
 

@@ -21,11 +21,11 @@ SELECT       – discard in-progress issues; pick the highest impact/urgency/sev
                issue left → DONE.
 PREPARE      – Remote Sync main; git worktree add .claude/worktrees/issue-<X> -b <branch>
                origin/main (the issue is already claimed in SELECT)
-CLASSIFY     – Type1 (quick fix) vs Type2 (full spec) — issue-housekeeping's criteria
+CLASSIFY     – the tier (S / M / L) from the ASK — `proportionality.md`
 FIX          – the embedded spec/TDD engine, run IN the worktree:
-                 Type2: REQUIREMENTS → DESIGN → 6-reviewer design loop → TASKS →
+                 M/L: REQUIREMENTS → DESIGN (byte-capped) → parallel panel, delta review → TASKS (waves) →
                         tasks loop → IMPLEMENT (TDD) → VERIFY (adversarial)
-                 Type1: bugfix.md → failing reproduction test → fix → regress →
+                 S: change.md (one page) → one combined review → one wave: red → green →
                         adversarial verify
                (the interactive interview is skipped; the prompt is derived from the issue)
 PROOF_GATE   – the orchestrator accepts the proof only if a test reproducing the issue's
@@ -43,8 +43,9 @@ RESOLVE      – close the issue with links to the merged PR + evidence
 
 You stay out of the loop entirely except for a **single batched escalation** if the agent
 is genuinely blocked (an ambiguous issue, an unsatisfiable proof, a genuinely ambiguous
-merge conflict, an undiagnosable CI failure, or a missing wrapper subcommand), and a final
-report when the backlog is clear. In particular, the agent **never pauses between issues
+merge conflict, an undiagnosable CI failure, or a missing wrapper subcommand), and the
+fixed Completion Block when the run ends (see "How a run ends" below). In particular, the
+agent **never pauses between issues
 to ask which one to tackle next or whether to continue** — it selects the next issue by
 its own ranking and keeps going. Order does not matter because every workable issue gets
 fixed before it stops, so there is nothing to decide; pausing would just waste time the
@@ -65,12 +66,40 @@ agent could spend fixing the next issue.
   PR), and after each merge — so the agent never builds on a stale base or overwrites
   others' changes.
 
+### How a run ends: the Completion Block
+
+Every run — whole-backlog, single-issue, blocked, or failed — ends with ONE fixed message,
+so "is it finished?" is answered by the first line rather than by reading a summary:
+
+```
+ISSUE WORK FINISHED — 2 closed · 0 blocked · 1 filed
+
+| Issue | Result | Tasks | PR | Detail |
+|---|---|---|---|---|
+| #412 | closed | 9/9 | #77 merged | tier M; evidence specs/fix-timeout/evidence/ |
+| #415 | closed | 4/4 | #79 merged | tier S; 2 CI runs; flaky test fixed in passing |
+| #420 | filed | — | — | flaky teardown, needs design; Spawned-from #412 |
+
+Cleanup: worktree/branch/lock released · local main untouched
+State: Status COMPLETED / Phase DONE
+Backlog: clear
+```
+
+The verdict word is arithmetic — `FINISHED` when no row is `blocked`, `BLOCKED` when one
+is (a `Questions` block then follows), `FAILED` for a fatal environment failure — and that
+line appears in no other message of the run, so anything without it is not the end. One
+row per issue the run claimed (`closed` / `blocked` / `skipped`) and one per follow-up issue
+it filed through `issue-intake` (`filed`); `0 filed` is the expected count. `Tasks` is the
+checklist arithmetic from a fresh re-read of the issue. The `issue-intake-agent` ends the
+same way (`ISSUE INTAKE FINISHED — FILED #420` over an eight-row field/value table), so a
+filing delegated from a run is as quick to read as the run itself.
+
 ## How it relates to the other issue agents
 
 | Agent | Scope | Remote? | Output |
 |---|---|---|---|
 | `issue-intake` | Turn ONE observation into AT MOST ONE well-formed issue; it is also the filing GATE | files the issue when the gate passes | a new issue — or NOT_FILED with the direct fix to make |
-| `issue-housekeeping` | Batch-triage ALL issues; local Type1 quick-fixes; draft specs for Type2 | **no push** (local ephemeral branch) | issues closed / triaged in place; never new issues |
+| `issue-housekeeping` | Batch-triage ALL issues; local tier-S quick-fixes; draft specs for M/L | **no push** (local ephemeral branch) | issues closed / triaged in place; never new issues |
 | **`issue-work-orchestrator`** | **Deliver issues** one at a time, full lifecycle | **pushes, PRs, merges, monitors CI** | merged + closed issues with proof |
 
 Use `issue-intake` to capture work, `issue-housekeeping` to triage and clear easy debt,

@@ -328,20 +328,22 @@ while IFS= read -r id; do
     if grep -qE "^${id}\." <<<"$checked_ids"; then
         continue
     fi
-    green_capture="$spec_dir/evidence/green/${id}.txt"
-    red_capture="$spec_dir/evidence/red/${id}.txt"
-    if [[ ! -f "$green_capture" && ! -f "$red_capture" ]]; then
-        problems+="  - task ${id} is marked complete but has no evidence capture (evidence/green/${id}.txt or evidence/red/${id}.txt)."$'\n'
+    # A task is covered by its own capture OR by a wave capture whose `# tasks:` header names it
+    # (`hook_capture_for_task`; the wave shape is how concurrently implemented tasks share one test run).
+    green_capture="$(hook_capture_for_task "$spec_dir" green "$id")" || green_capture=""
+    red_capture="$(hook_capture_for_task "$spec_dir" red "$id")" || red_capture=""
+    if [[ -z "$green_capture" && -z "$red_capture" ]]; then
+        problems+="  - task ${id} is marked complete but no capture covers it: neither evidence/green/${id}.txt nor evidence/red/${id}.txt exists, and no wave capture's '# tasks:' line names ${id}."$'\n'
         continue
     fi
     # EXISTENCE IS NOT PROOF. The check used to stop at `-f`, so ABSENCE of a failure string was treated as
     # PRESENCE of a passing result: MEASURED, two ZERO-BYTE files at `evidence/green/1.1.txt` and `1.2.txt`
     # produced exit 0 and the log line `ALLOW proven at phase 'IMPLEMENT'`. A capture must AFFIRMATIVELY show a
     # passing run. Only GREEN captures are held to this — a `red/` capture is supposed to show a failure.
-    if [[ -f "$green_capture" ]]; then
+    if [[ -n "$green_capture" ]]; then
         task_capture="$(grep -vE '^[[:space:]]*#' "$green_capture" 2>/dev/null)"
         if ! grep -qiE '[1-9][0-9]* passed|passed in |^OK$|all tests passed|[1-9][0-9]* tests? ok' <<<"$task_capture"; then
-            problems+="  - task ${id}'s green capture exists but shows NO passing result (evidence/green/${id}.txt): an empty or prose-only capture is not proof."$'\n'
+            problems+="  - task ${id}'s green capture exists but shows NO passing result ($green_capture): an empty or prose-only capture is not proof."$'\n'
         fi
         # EVERY task's OWN capture is scanned for failures, not just the most recently touched one.
         #
@@ -355,10 +357,10 @@ while IFS= read -r id; do
         # An affirmative pass marker was never sufficient on its own either: `3 failed, 5 passed` satisfies it.
         # Absence of a failure counter has to be checked per task, on that task's own proof.
         if grep -qiE '[1-9][0-9]* (failed|failure|failures|error|errors)\b' <<<"$task_capture"; then
-            problems+="  - task ${id}'s green capture reports failures/errors (evidence/green/${id}.txt) — it is not a passing result."$'\n'
+            problems+="  - task ${id}'s green capture reports failures/errors ($green_capture) — it is not a passing result."$'\n'
         fi
         if grep -qiE '[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b' <<<"$task_capture"; then
-            problems+="  - task ${id}'s green capture reports skipped/xfail tests (evidence/green/${id}.txt) — resolve them rather than stopping."$'\n'
+            problems+="  - task ${id}'s green capture reports skipped/xfail tests ($green_capture) — resolve them rather than stopping."$'\n'
         fi
     fi
 done <<<"$checked_ids"

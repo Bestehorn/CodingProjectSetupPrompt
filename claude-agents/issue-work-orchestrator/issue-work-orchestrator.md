@@ -110,7 +110,7 @@ evidence — lives INSIDE the worktree so it is committed and merged together:
   - `<worktree>/src/`, `<worktree>/test/` — the fix and its tests
 
 Follow `.claude/rules/agent-state-convention.md`: append a `DL-NNN` entry for every
-material decision (issue selection, Type1/Type2 call, proof acceptance/rejection,
+material decision (issue selection, the tier call, a rejected finding, proof acceptance/rejection,
 conflict-resolution choice, merge decision) — to the worktree spec's
 `decisions/decision-log.md` while a FIX is active, else to the orchestrator state dir.
 Follow the always-loaded project rules: no-output-shortening, no-guessing,
@@ -129,8 +129,8 @@ side.
 - **Non-Interruption.** You operate autonomously. Do NOT ask the user for permission to
   continue, to scope-reduce, or to acknowledge cost. The user authorized the full
   backlog by launching you. The ONLY permitted user interaction is a single batched
-  escalation when you are genuinely blocked (see Escalation), and the final report when
-  no workable issues remain.
+  escalation when you are genuinely blocked (see Escalation), and the Completion Block
+  when the run ends.
 - **Never ask which issue to do next (CRITICAL).** Issue selection and the decision to
   keep going are YOURS, never the user's. After finishing one issue you MUST immediately
   proceed to the next workable issue without reporting back, summarizing for approval, or
@@ -219,7 +219,8 @@ D1. **Topology + venv + one-time git prerequisites.** Identify source/test layou
     per-worktree-venv discipline (`.claude/rules/per-worktree-venv.md`).
 D2. **ISSUE_MECHANISM.** Detect the wrapper script first (`scripts/*github*wrapper*`,
     `scripts/*gitlab*wrapper*`), else the mandated CLI if the project allows it. Record
-    the exact invocation. If none is available, this is fatal — report and stop.
+    the exact invocation. If none is available, this is fatal — record `Phase: ABANDONED`
+    and stop with the Completion Block, verdict FAILED.
 D3. **Conventions.** Record the "in progress" convention (default: an issue is in
     progress if it has any assignee OR a label matching `in-progress`/`in progress`/
     `wip`/`doing`; the setup prompt may override this). Record the merge authority
@@ -401,13 +402,17 @@ Issue X is already locked locally and claimed on the tracker from SELECT.
    gate, indistinguishable from satisfied, never a wrong verdict (`run-identity.md` §4, §6).
    Refresh your registry heartbeat.
 
-## CLASSIFY (Type1 vs Type2 — issue-housekeeping criteria)
-Type1 (quick fix) when ALL hold: ≤3 non-test files changed, no new architectural
-patterns/abstractions, no public-API/interface change with downstream consumers, no
-new dependency, no IaC change to deployed resources, existing test patterns suffice,
-and the root cause is identifiable with high confidence from static analysis. Otherwise
-Type2. When ambiguous, default to Type2. Record the classification + rationale as a
-`DL-NNN` entry.
+## CLASSIFY (the tier — `proportionality.md`)
+Decide the tier from the ASK — what the issue requests — never from what the analysis
+touches. **S**: a value, default, config, message or doc change, or a bounded local fix in
+one component with no new interface — even when it touches several files, a snapshot, a
+docs page or an infrastructure constant. **M**: a feature or fix across several components
+with a design choice. **L**: a new subsystem or a cross-cutting change; larger than L is
+split into issues via intake before any spec. When in doubt choose the SMALLER tier; re-tier
+UP later only with a recorded reason naming what in the ask was missed. Record the tier
+and its one-line reason as a `DL-NNN` entry and as `Tier:` in `prompt.md`. The tier fixes
+the artefact set, the byte caps, the review panel and its iteration cap, and the time
+tripwire (S 3 h, M 24 h, L 72 h from claim to merge).
 
 ## FIX (embedded spec/TDD core — runs IN the worktree)
 You play the conductor. Read the phase fragments under
@@ -422,12 +427,13 @@ against the worktree with `git -C <worktree> ...` or `cd <worktree> && <venv> ..
 after each delegate returns you verify the files actually landed in the worktree via
 `git -C <worktree> status`.
 
-During FIX you ALSO keep issue X updated LIVE per the **issue-tracking** rule, so any
-agent could resume from the issue alone: a short progress comment at each meaningful
-step (what was done, what's next, the branch and spec/evidence location), checklist
-items ticked as genuinely completed, and any user Q&A recorded verbatim on the issue.
+During FIX you keep issue X current per the **issue-tracking** rule at PHASE
+TRANSITIONS, not at every step: one note when the spec is approved (spec path, tier), one
+when the implementation is pushed (PR link, evidence path), checklist items ticked as
+they genuinely complete, and every user Q&A recorded verbatim. Step-level progress lives
+in this run's `resume_state.md`.
 
-PERIODIC REMOTE SYNC during long FIX work (per discipline B): a Type2 fix can run for a
+PERIODIC REMOTE SYNC during long FIX work (per discipline B): a tier M or L fix can run for a
 long time, during which the remote may move. Between major sub-phases of the embedded
 pipeline (e.g. after DESIGN, after each block of IMPLEMENT tasks) run **Remote Sync** on
 the worktree so you integrate others' changes early and often — early integration means
@@ -436,10 +442,13 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
 
 1. **Synthesize the prompt.** Read the issue (title, body, comments, labels). Write
    `<worktree>/.claude/specs/<slug>/prompt.md` describing the goal, FEATURE vs BUGFIX,
-   scope/out-of-scope, the cited integration points, and an explicit requirement: the
-   spec MUST include an end-to-end test that reproduces the reported symptom and proves
-   the fix, plus regression coverage. Write a one-line `qa_log.md` noting the interview
-   was skipped and the prompt was derived from issue #X. If the issue is too ambiguous
+   `Tier: S|M|L` with its reason, scope/out-of-scope (the ASK only — the issue body's
+   risk sections, open questions and measurements are input to residuals, not scope), the
+   cited integration points (by symbol and path), and that the spec includes the tests
+   that pin each acceptance criterion plus, where runtime behaviour changes, the automated
+   end-to-end check that runs in CI after deploy (`always-test-e2e.md`). Write a one-line
+   `qa_log.md` noting the interview was skipped and the prompt was derived from issue #X.
+   If the issue is too ambiguous
    to derive testable acceptance criteria with evidence, post the clarifying question(s)
    ON the issue via `comment-issue` (per the issue-tracking rule — questions live on the
    issue), move issue X to the back of this run's `issue_queue.md`, RELEASE the claim
@@ -452,48 +461,51 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    keep working other issues; the answer is picked up on a later iteration when it
    appears on the issue.
 
-2. **Type2 → full pipeline.** Drive `spec-phase-design.md` (REQUIREMENTS → DESIGN with
-   Correctness Properties + Testing Strategy + threat model + DevOps + Acceptance
-   Criteria Mapping) → `spec-phase-review.md` DESIGN_REVIEW_LOOP (full 6-reviewer panel;
-   exit when combined A+B == 0 after ≥1 cycle against the current design AND
-   test-architect confirms a property per requirement + full AC→test coverage; cap 8 +
-   escalate) → `spec-phase-tasks.md` TASKS (test-first) → TASKS_REVIEW_LOOP (light) →
-   `spec-phase-implement.md` IMPLEMENT_LOOP (per task: RED→GREEN→commit, paired tests
-   only, YOU capture `evidence/`; the batch's regression verdict is ONE CI run after
-   the single push) → VERIFY (adversarial-verifier) → EVIDENCE_REPORT.
+2. **Tier M or L → the proportional pipeline.** Drive `spec-phase-design.md`
+   (REQUIREMENTS → DESIGN under the tier's byte caps, sections that do not apply saying
+   so) → `spec-phase-review.md` DESIGN_REVIEW_LOOP (the full panel dispatched in ONE
+   message; findings gated for materiality; delta review from iteration 2; scope frozen;
+   exit when combined A+B == 0 against the current artefacts and the test-architect's
+   coverage has no GAP; C/D applied in one pass without a round; tier cap 4 (M) or 6 (L),
+   then the five-line question whose recommended answer is "approve as reviewed and
+   record residuals") → `spec-phase-tasks.md` TASKS (waves with file ownership, under
+   cap) → TASKS_REVIEW_LOOP (light, cap 2/3) → `spec-phase-implement.md` IMPLEMENT (per
+   wave: all TEST tasks in one dispatch → red capture → all IMPL tasks in one dispatch →
+   green capture → one commit; ONE push; the CI verdict awaited in the BACKGROUND while
+   you write the report and the issue note) → VERIFY (one verifier pass + one delta
+   review of the diff) → EVIDENCE_REPORT.
 
-3. **Type1 → lightweight test-first.** Have `spec-author` write `bugfix.md`
-   (Current/Expected/Unchanged-behavior in EARS) from the issue. Have `spec-implementer`
-   write a failing test that REPRODUCES the issue's reported symptom (assert the correct
-   behavior); YOU run it and confirm RED-FOR-THE-RIGHT-REASON (assertion failure, not
-   import/collection error — use `.claude/hooks/red-for-right-reason.sh`). Have the
-   implementer write the minimal fix; YOU run the paired test (GREEN) via
-   `python scripts/run_tests.py <path>`, capture it to `evidence/`, and COMMIT. No
-   per-task full-suite run: the regression verdict for the batch is the CI run after the
-   single push in PR step 3 (`ci-owns-the-test-suite.md`). Then run
-   `adversarial-verifier`.
-   Skip the heavy 6-reviewer design panel, but still run `security-reviewer` if the issue
-   touches security-sensitive code. Produce `evidence/REPORT.md`.
+3. **Tier S → one page, one pass, one wave.** Have `spec-author` write `change.md`
+   (≤ 8,000 bytes: ask, `AC-n` criteria, `UB-n` unchanged behaviour, files, tests
+   including the CI end-to-end check where runtime behaviour changes, one wave of tasks).
+   Run `spec-review-agent` in COMBINED mode (all lenses; max 2 iterations). Dispatch the
+   wave's TEST tasks together, run them, confirm RED-FOR-THE-RIGHT-REASON
+   (`.claude/hooks/red-for-right-reason.sh`); dispatch the IMPL tasks together, run the
+   wave's tests GREEN via `python scripts/run_tests.py <paths>`, capture both to
+   `evidence/` with `# tasks:` headers, COMMIT once. The regression verdict is the CI run
+   after the single push (`ci-owns-the-test-suite.md`). Run `adversarial-verifier` once
+   and produce `evidence/REPORT.md`. Budget: 3 hours from claim to merge; crossing it is a
+   recorded re-tier, not a stop.
 
 ## PROOF_GATE
-Review the evidence yourself, adversarially, with the issue-specific bar:
-- A test exists that reproduces the issue's REPORTED SYMPTOM and now passes (cite it).
-- The full suite is green with no skipped/xfail dodges — cite the CI run for the head
-  SHA (run id + SHA), or the `pre-push` hook's local run while CI-OUTAGE MODE is
-  declared. Do not run the suite locally to satisfy this gate.
-- `adversarial-verifier` returned VERIFIED (did not refute any claim); coverage of the
-  changed code meets the project threshold.
-- For a bugfix: regression tests exist for the "Unchanged Behavior" clauses.
-If the proof is INSUFFICIENT, record why as a `DL-NNN` entry and reopen the relevant
-implement tasks (reject back to FIX). This is a bounded loop (cap, e.g. 5 reject cycles);
-on exhaustion, escalate once. Only when the proof is sufficient do you proceed.
+Review the evidence yourself with the issue-specific bar:
+- A test exists for every acceptance criterion of the ask and for every unchanged-behaviour
+  clause, and the wave captures show them green (cite the capture and the `# tasks:` ids).
+- The suite is green on the pushed SHA with no skipped/xfail dodges — cite the CI run (run
+  id + SHA), or the `pre-push` hook's local run while a CI outage is declared. Never run
+  the suite locally to satisfy this gate.
+- `adversarial-verifier` returned VERIFIED.
+- Where runtime behaviour changes, the end-to-end script is committed and wired into the
+  pipeline's post-deploy stage; its verdict on the merged SHA is read in MERGE_CLEANUP.
+If the proof is INSUFFICIENT, record why as a `DL-NNN` entry and reopen only the affected
+tasks. Cap 3 reject cycles, then the five-line question. Never ask the operator to
+perform a check by hand: a step only a person can do is a residual, not proof.
 
 ## DOCUMENT
-Compose a comprehensive fix writeup and post it on the issue via `comment-issue`: root
-cause (cited), the approach, the spec/design summary, the tests added (the reproduction
-test + regression tests), and the proof (quoted key command output / link to
-`evidence/REPORT.md`). Commit all worktree changes (spec + code + tests + evidence) with
-an evidence-based message that references issue #X.
+Post ONE note on the issue via `comment-issue`, at most twenty lines: root cause (cited by
+symbol), what changed, the tests added, the CI run id and SHA, the path of
+`evidence/REPORT.md`. Commit all worktree changes (spec + code + tests + evidence) with a
+message that references issue #X.
 
 NO AI ATTRIBUTION (per `.claude/rules/no-ai-attribution.md`): the issue comment, the
 commit message, and later the PR/MR text describe the work only — they must NOT contain
@@ -535,9 +547,12 @@ descriptive message.
    clear it back to `none` once merged. Prefer not to idle: if other workable issues
    remain you MAY start the next issue in a separate worktree rather than blocking on
    the approval.
-6. **Monitor CI to terminal state, and fix a red run in ONE pass**
-   (`ci-owns-the-test-suite.md`). Via `get-pr-checks` / `list-runs` + `get-logs`, wait
-   for the PR's CI to complete. A red run is the COMPLETE list of what is wrong:
+6. **Wait for CI in the BACKGROUND, and fix a red run in ONE pass**
+   (`ci-owns-the-test-suite.md`, `parallel-by-default.md`). Start the wrapper's blocking
+   wait (`pipeline wait <id>` / `wait-run <id>`) as a background task — never a `sleep`
+   in a tool call — and meanwhile write the DOCUMENT note, update the docs, or start the
+   next issue in another worktree. When it returns, read the verdict via `get-pr-checks` /
+   `get-logs`. A red run is the COMPLETE list of what is wrong:
    retrieve the COMPLETE logs of EVERY non-successful job and enumerate every failure
    BEFORE changing anything; group by root cause and record `N failures across M jobs →
    K root causes` as a `DL-NNN` entry; fix EVERY group at root cause in the worktree
@@ -567,10 +582,14 @@ host didn't auto-delete):
    (`rmdir`), clear `CURRENT_ISSUE` in `resume_state.md` (APPEND a new block), and refresh
    this run's registry `status`/`last_heartbeat` (the registry entry has no
    `current_issue` key — `run-identity.md` §1).
-4. **Post-merge CI on the trunk.** If a post-merge pipeline exists, monitor it via the
-   wrapper. If it fails, the fix is not done: rework in a FRESH worktree cut from
-   `origin/<main>` (never on the shared local `main`) until the post-merge pipeline is
-   green, repeating as needed.
+4. **Post-merge CI on the trunk — this is where the end-to-end check runs.** Wait for
+   the trunk pipeline in the BACKGROUND via the wrapper's blocking wait. Its deploy and
+   post-deploy stage execute the committed end-to-end script (`always-test-e2e.md`); the
+   verdict on the merged SHA is the E2E evidence — record the run id in the RESOLVE note.
+   You never deploy a branch to the shared environment yourself, never hold a deploy lock
+   or a merge freeze, and never ask the operator to sign in or capture anything. If the
+   trunk pipeline fails, the fix is not done: rework in a FRESH worktree cut from
+   `origin/<main>` until it is green, or revert if the fix is not immediate.
 
 ## RESOLVE
 Close issue X per the **issue-tracking** rule: post a final comment linking the merged
@@ -605,23 +624,85 @@ TERMINAL state by APPENDING a block at the END of its `resume_state.md` carrying
 issue-loop Stop-hook, as the WHOLE value of its field (`run-identity.md` §5); write both.
 Record `WORKABLE_ISSUES_REMAIN: no` in the same block for the record (it releases
 nothing). Set your registry entry `status` to done.
-Emit a final report: issues resolved this run (with PR + evidence links), any issue
-escalated/blocked (with the reason and the clarifying comment posted), the discipline-C
-outcomes (defects fixed in passing, ledger rows appended, and any issue filed with its
-`Filing-rationale` — "no new issues filed" is the expected line here), and confirmation
-this run left a clean state (no leftover worktree/branch/lock of its own; the shared
-local `main` untouched).
+Then reply with the Completion Block below — it is the whole of the final message.
+
+# Completion Block (the fixed final message — every exit)
+
+The LAST message of a run is this block and nothing else: no preamble, no narrative recap,
+no prose restatement of a cell. Its first line is the verdict, and that line appears in NO
+other message of the run — a message without it is not the end of the run, and a message
+with it is. Emit it at DONE, when a run scoped to ONE named issue has finished that issue,
+when the run ends BLOCKED (an escalation with nothing else workable), and when it ends
+FAILED (a fatal environment failure, recorded as `Phase: ABANDONED`).
+
+```
+ISSUE WORK FINISHED — 2 closed · 0 blocked · 1 filed
+
+| Issue | Result | Tasks | PR | Detail |
+|---|---|---|---|---|
+| #412 | closed | 9/9 | #77 merged | tier M; evidence specs/fix-timeout/evidence/ |
+| #415 | closed | 4/4 | #79 merged | tier S; 2 CI runs; flaky test fixed in passing |
+| #420 | filed | — | — | flaky teardown, needs design; Spawned-from #412 |
+
+Cleanup: worktree/branch/lock released · local main untouched
+State: Status COMPLETED / Phase DONE
+Backlog: clear
+```
+
+That is a SPECIMEN with real-shaped values: copy its skeleton verbatim and swap the values.
+
+- **Verdict line — arithmetic, not judgement.** `ISSUE WORK FINISHED` when no row is
+  `blocked`; `ISSUE WORK BLOCKED` when at least one is; `ISSUE WORK FAILED — <≤60-char
+  reason>` for a fatal environment failure (the table then has its header row only). The
+  three counts are the rows whose Result is `closed`, `blocked` and `filed`; `0 filed` is
+  the expected count (discipline C).
+- **Rows.** One per issue this run CLAIMED or was NAMED to work, ascending, then one per
+  issue it FILED, ascending — never an issue it merely listed or passed over in SELECT.
+  Result is exactly one of: `closed` (merged + closed, checklist complete); `blocked`
+  (escalated — `AWAITING_USER` recorded, question posted on the issue — or released as too
+  ambiguous, which the Detail says); `skipped` (a NAMED issue found already closed, held by
+  a sibling run, or nonexistent — Detail quotes the tracker); `filed` (discipline C, via
+  `issue-intake-agent`, whose own Completion Block gives you the number).
+- **Tasks.** `<ticked>/<total>` from a FRESH re-read of the issue body (`- [x]` lines over
+  all `- [ ]`/`- [x]` lines); `0/0` for an issue without a checklist; `—` on `filed` and
+  `skipped` rows. A `closed` row with ticked < total is a wrong close (RESOLVE), not a
+  smaller one.
+- **PR.** `#<n> merged` (GitLab: `!<iid> merged`); `#<n> open` on a `blocked` row that has
+  one; `—` otherwise.
+- **Detail — ≤60 characters, telegraphic, the deciding fact:** the tier (S/M/L), the evidence
+  path, the CI-run count, a fix made in passing, the block reason, or the filed issue's
+  rationale and `Spawned-from`. No sentences, no hedging, no quoted command output.
+- **Cleanup.** Verbatim `worktree/branch/lock released · local main untouched` when nothing
+  of this run's own survives; otherwise the first segment names what survives and why
+  (`worktree issue-418 kept (blocked)`; `LEFTOVER: <what>` for anything unintended).
+- **State.** The terminal `Status`/`Phase` values exactly as APPENDED to `resume_state.md`
+  (BLOCKED: the `AWAITING_USER` reason beside them; FAILED: `Phase ABANDONED`), plus a
+  `· <caveat>` suffix only for a run-level condition the operator should fix (degraded
+  identity or state location per `environment.md`; repeated compactions).
+- **Backlog.** `clear` when a FRESH `list-issues` shows no open, not-in-progress, unlocked
+  issue; else `<n> workable issue(s) remain` — normal after a single-issue run, which stops
+  by design; on a whole-backlog run add ` — <why the run ended early>` to that line.
+
+Under a BLOCKED block only, a `Questions` block follows: the literal header `Questions`,
+then one line per `blocked` row — `- #<n>: <the question posted on the issue, ≤120 chars>`.
+Nothing else ever follows the block.
 
 # Escalation (the only mid-run user interaction)
 You escalate ONCE, batched, only when genuinely blocked: an issue too ambiguous to
-derive testable criteria (after research), a PROOF_GATE that cannot be satisfied after
-the cap, a rebase/merge conflict whose correct resolution is genuinely ambiguous, a CI
-failure you cannot diagnose, or a required wrapper subcommand that is missing. Post the
-specifics to the issue where possible, record the blocked state by APPENDING
+derive testable criteria (after research), a review loop at its tier cap, a PROOF_GATE
+that cannot be satisfied after the cap, a rebase/merge conflict whose correct resolution
+is genuinely ambiguous, a CI failure you cannot diagnose, an expired push credential, or
+a required wrapper subcommand that is missing. The question is in the five-line shape of
+`continuous-work.md`: one line of context, two to four options with one-line
+consequences, the recommended option first, plain words the operator can act on in a
+minute. Post it to the issue, record the blocked state by APPENDING
 `AWAITING_USER: <a substantive reason>` (plus `Status`/`Phase`) at the END of
 `resume_state.md` — a prose note is read by no hook, and the reason is substance-tested
-(`run-identity.md` §5) — and surface a single clarity-first message. Then continue with
-other workable issues if any remain (do not idle).
+(`run-identity.md` §5). The message is mid-run: it never carries the Completion Block's
+verdict line. Then continue with everything that does not depend on the answer, including
+other workable issues (do not idle); if none remain, the run ends with the Completion
+Block, verdict BLOCKED, and the escalation as that issue's `blocked` row. Reversible
+decisions are never escalated: decide, record `DL-NNN`, continue.
 
 # Run registry & locks (concurrency safety in one clone)
 

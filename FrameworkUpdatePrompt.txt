@@ -1,0 +1,105 @@
+# Update this project to the current engineering framework
+
+The framework is the CodingProjectSetupPrompt repository you have been given access to
+alongside this project. It is read-only reference material: its setup prompt is the
+specification, and its claude-agents/, claude-commands/, kiro-prompts/, cli-agents/ and
+templates/ directories are the canonical sources of every asset the prompt installs.
+
+## Task
+
+Bring this project's setup (Claude Code and/or Kiro configuration, git hooks, check/test
+scripts, CI, rules, agents, commands, docs) up to the framework's current state, AND
+compile the project's accumulated memory so that a session pays only for what it needs.
+
+1. Read the applicable setup prompt completely: ClaudeCodeSetupPrompt.txt for a Claude Code
+   project, KiroProjectSetupPrompt.v2.txt for a Kiro project, both for a dual project. Its
+   global execution rules and its final verification-and-report part govern this task. The
+   framework repository's recent git log tells you what changed; record the framework
+   commit you update from.
+2. Isolate. Fetch the latest remote state and work in a git worktree on a new branch named
+   framework-update-<YYYYMMDD>, based on the remote default branch. Other workers share this
+   clone and this machine; nothing you do may disturb them. Two things are clone-wide and
+   therefore off-limits from the worktree: `pip install -e .` (it re-points the shared
+   editable install at a worktree that will be removed; add missing tools by name instead)
+   and git config changes such as core.hooksPath (list them as post-merge steps instead).
+3. Diff before changing anything. Inventory every framework asset in this project and
+   classify it against its canonical source: up-to-date, missing, outdated, locally
+   customized, relocated (the framework moved it), or obsolete (the framework no longer has
+   it). Keep the table; it goes into the PR.
+4. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
+   the update procedure: project-specific values and content are preserved, conflicts are
+   flagged, relocated assets are installed at the new location before the old copy is
+   removed, obsolete assets are removed only when nothing references them.
+5. Run the memory compile (next section) so the update leaves the project under its
+   budgets, not merely equipped with the tools to get there.
+6. Verify per the setup prompt's checklist, push, open a PR against the default branch, fix
+   every CI failure until CI is green, then merge the PR yourself.
+
+## The memory compile (mandatory on every existing project)
+
+The 2026-09-30 framework revision exists because measured projects had grown a 428 KB
+always-loaded rule corpus, a 1.7 MB mandatory pre-work reading list, an 890 KB findings
+ledger and a 960 KB lessons file — every one loaded into every model call. Installing the
+new caps without compiling the existing corpus produces a red build and no relief. Do all
+of this in the same PR, in this order, and record the before/after sizes:
+
+1. **Rules become normative again.** For every `.claude/rules/*.md` (and `inclusion: always`
+   steering file) that the framework provides canonically, install the canonical kernel and
+   MERGE the project's own NORMATIVE additions into it — statements of what to do or not do
+   that the project needs and the kernel lacks. Every dated incident narrative
+   ("MEASURED on 2026-08-26 …", "issue #NNN found that …", violation logs) moves VERBATIM to
+   `docs/archive/rule-incidents/<rule>.md` (`python scripts/memory_compile.py
+   extract-rule-incidents --apply` does the mechanical move; then read what remains and cut
+   by hand what the tool could not classify), leaving one pointer line. A rule over 12,000
+   bytes after this pass still carries history: keep cutting. Project-specific rules the
+   framework does not know (deployment guards, wrapper conventions) get the same treatment:
+   the rule states the rule; the incident that produced it lives in the archive.
+2. **The root instruction file is a summary, not a runbook.** `CLAUDE.md` restates the
+   universal rules in a few lines each and points at the rule files; every paragraph that
+   narrates a measurement, an incident or a gate's internals moves to the rule's archive
+   file or to a topic doc. Target: under 8,000 bytes.
+3. **The ledger and the lessons are compiled.** `python scripts/memory_compile.py report`,
+   then the `/compile-memory` (Kiro: `@compile-memory`) procedure: every ledger row and
+   lesson older than six weeks is promoted (recurrence or measured damage → ONE issue via
+   intake), enforced (a test, a hook check or a one-line rule now catches the class — write
+   it and cite its path), or archived verbatim to `docs/archive/`. Convert
+   `docs/lessons-learned.md` to the five-line `Date/Lesson/Enforced-by/Scope` format,
+   archiving the narrative file whole as `docs/archive/lessons-learned-<YYYY-MM>.md`
+   before rewriting. Nothing is deleted from git.
+4. **The map is a map.** Rewrite `docs/forLLMConsumption.md` to ≤ 40,000 bytes: purpose,
+   architecture in brief, where things are, the invariants a change must respect, how to
+   run/test/deploy, pointers. Move every section of detail into a topic doc under `docs/`
+   (create `docs/<topic>.md` files as needed) and archive the previous file as
+   `docs/archive/forLLMConsumption-<YYYY-MM>.md`.
+5. **Retire machinery that exists only to keep prose stable.** Any check that requires spec
+   text to preserve line numbers or byte counts (a citation checker over `.claude/specs/`,
+   a "line-count-neutral edit" rule, a corpus size pinned to an exact figure) is removed
+   with its rule, because `proportionality.md` forbids measurements in specs and the
+   citation form is now symbol-and-path. Record each retirement in the PR.
+6. **Wrapper and CI.** Implement the blocking wait in the project's wrapper (`pipeline
+   wait` / `wait-run`, per the template) if absent. Where the project deploys, confirm the
+   pipeline has a post-deploy job that runs the committed end-to-end script; add the job
+   if the project has end-to-end scripts that only an agent used to run by hand.
+7. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes
+   in full; `python scripts/memory_compile.py report` exits 0; the eight hook suites pass;
+   grep `.claude/` and `.kiro/` for `Type1`/`Type2` and for `sleep` — a survivor is an old
+   copy preserved over the new one.
+
+Spec directories already committed under `.claude/specs/` stay where they are: they are
+history, they are not loaded, and moving them would break the citations in merged work.
+Exclude them from any repository-wide scan that reads their contents.
+
+## Deliverable
+
+A merged PR with green CI. The PR body carries the setup report in the setup prompt's
+format, the delta table, the framework commit, every flagged conflict, the memory-compile
+table (each capped file: before, after, cap; rows and lessons archived/enforced/promoted;
+rule incidents moved; retired machinery), and the steps the main checkout still needs after
+pulling (clone-wide config, venv additions). Then remove your worktree and branch, and end
+with the PR link and a "Framework feedback" section for anything in the framework that was
+wrong, ambiguous, or missing. Framework defects are reported there, never fixed in the
+framework repository or filed as issues.
+
+## Project-specific notes
+
+<none>

@@ -67,7 +67,7 @@ test command (`python scripts/run_tests.py` — bounded workers, no fail-fast; n
 `pytest -n auto`) and the local full-check command (`python scripts/run_checks.py`, the same
 one CI runs); apply the one-time concurrency-safe git config
 (`gc.auto 0`, `maintenance.auto false`, `gc.autoDetach false`); detect `ISSUE_MECHANISM`
-(the wrapper script — its absence is fatal, report and stop); record the in-progress
+(the wrapper script — its absence is fatal: exit 3 below); record the in-progress
 convention and merge authority; then `git fetch origin --prune --no-auto-gc`.
 
 Set `MODE: AUTO`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
@@ -84,7 +84,7 @@ ability to stop does.
 
 Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → PREPARE
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
-CLASSIFY (Type1/Type2) → FIX → PROOF_GATE → DOCUMENT → PR → MERGE_CLEANUP → RESOLVE →
+CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → MERGE_CLEANUP → RESOLVE →
 refresh → LOAD_ISSUES. If an issue number was passed as `$ARGUMENTS`, work that one first,
 then continue with the rest of the backlog.
 
@@ -97,17 +97,15 @@ then continue with the rest of the backlog.
   subagent so the reading cost lands in its context window, not yours. `no-guessing.md`
   applies throughout: every claim cites evidence, and you read COMPLETE command output
   (`no-output-shortening.md`) — never `tail`/`head`/`Select-Object`.
-- **Issues that need a spec get the full spec process.** Type2 (anything not provably
-  ≤3 non-test files with a high-confidence root cause, no new pattern/dependency/API or
-  IaC change — when in doubt, Type2): `spec-author` drives REQUIREMENTS → DESIGN, then the
-  `spec-phase-review.md` DESIGN_REVIEW_LOOP with the full six-reviewer panel
-  (`spec-review-agent`, `standards-reviewer`, `best-practice-reviewer`,
-  `security-reviewer`, `devops-iac-reviewer`, `test-architect`), exiting only when
-  combined A+B == 0 after ≥1 cycle against the CURRENT design and `test-architect`
-  confirms a property per requirement with full AC→test coverage (cap 8, then escalate) →
-  TASKS (test-first) → IMPLEMENT_LOOP. Type1 gets the lightweight test-first path
-  (`bugfix.md` + one `spec-review-agent` pass, plus `security-reviewer` if the code is
-  security-sensitive).
+- **Every issue gets the spec process at the size of its ASK** (`proportionality.md`).
+  Tier S — a value, default, config, message or doc change, or a bounded local fix,
+  however many files it touches — gets `change.md` (≤ 8,000 bytes), ONE combined
+  `spec-review-agent` pass and ONE implementation wave, inside three hours. Tier M/L gets
+  REQUIREMENTS → DESIGN under hard byte caps, the full panel dispatched in ONE message
+  with materiality-gated findings, delta review from iteration 2 and a frozen scope (cap 4
+  for M, 6 for L, then approve-as-reviewed with residuals), TASKS in waves, and wave-
+  parallel implementation. When in doubt choose the smaller tier. CI is awaited in the
+  background, never with `sleep`; the end-to-end check runs in the pipeline after merge.
 - Commit the reviewed spec artifacts on the issue branch before implementation begins, so
   the spec is in history independently of the code.
 - Pass the ABSOLUTE worktree path in EVERY delegate prompt (delegates inherit the session
@@ -147,17 +145,17 @@ already achieves:
   next read a matching file, so re-read the relevant rule if you are mid-task in a scoped
   area. Then resume the recorded phase; do not restart the issue or the backlog.
 - If the user wants compaction to run earlier (a bigger safety margin on long runs), that
-  is their `/autocompact <tokens>` setting to make — mention it once in your final report
-  if you hit repeated compactions, and never pause to ask about it.
+  is their `/autocompact <tokens>` setting to make — if you hit repeated compactions, say so
+  once as the Completion Block's `State` caveat, and never pause to ask about it.
 
 # When you may stop (the only three exits)
 
 1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue in a FRESH snapshot.
    Release it by APPENDING `Status: COMPLETED` and `Phase: DONE` at the END of this run's
    `resume_state.md` — each the WHOLE value of its field (`run-identity.md` §5) — and set
-   `WORKABLE_ISSUES_REMAIN: no` for the record (it releases nothing). Then
-   report: issues resolved with PR + evidence links, anything escalated, and confirmation
-   this run left no worktree/branch/lock behind and never moved the shared local `main`.
+   `WORKABLE_ISSUES_REMAIN: no` for the record (it releases nothing). Then reply with the
+   agent definition's Completion Block — verdict line, per-issue table, three trailer
+   lines — and nothing else; it is the only message of the run that carries that verdict.
 2. **A single batched escalation** when genuinely blocked (an issue too ambiguous to
    derive testable criteria even after research, a PROOF_GATE exhausted after the cap, a
    genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
@@ -166,9 +164,10 @@ already achieves:
    ONE clarity-first message — then keep working the other issues rather than idling. For
    an ambiguous issue specifically: comment the question on the issue, `issue release <N>`,
    drop the lock, remove the worktree, and move to the next issue.
-3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Report and
-   stop — recording a terminal `Phase: ABANDONED` with the reason in prose, so the gate sees
-   the same conclusion your report does.
+3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Record a
+   terminal `Phase: ABANDONED` with the reason in prose, then stop with the Completion
+   Block, verdict `ISSUE WORK FAILED — <reason>`, so the gate sees the same conclusion the
+   block does.
 
 Anything else — a finished issue, a long fix, a filling context window, an urge to
 summarize — is not a stopping point. Select the next issue and keep going. A merged PR, a
@@ -201,5 +200,5 @@ completion condition — `/goal every open issue is merged and closed, or no wor
 remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
 message, so this command cannot set it for them). `/goal` has an independent evaluator judge
 after every turn whether the condition holds, which takes the "am I done?" decision out of
-your hands entirely. If you end this run with workable issues still remaining, say in one
-line that `/goal` would have prevented it.
+your hands entirely. If you end this run with workable issues still remaining, the
+Completion Block's `Backlog` line says why and that `/goal` would have prevented it.

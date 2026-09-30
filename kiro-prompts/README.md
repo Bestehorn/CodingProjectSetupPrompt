@@ -28,6 +28,7 @@ one source of truth instead of duplicating the workflow into the hook JSON. See
 | `auto-work.md` | `@auto-work` (CLI) / "Auto-Work the Issue Backlog" hook (IDE) | `/auto-work` (`claude-commands/auto-work.md`) |
 | `continue-work.md` | `@continue-work` (CLI) / "Continue Work" hook (IDE) | `/continue-work` (`claude-commands/continue-work.md`) |
 | `close-session.md` | `@close-session` (CLI) / "Close Session" hook (IDE) | `/close-session` (`claude-commands/close-session.md`) |
+| `compile-memory.md` | `@compile-memory` (CLI) / "Compile Memory" hook (IDE) | `/compile-memory` (`claude-commands/compile-memory.md`) |
 
 ## Install
 
@@ -38,13 +39,22 @@ mkdir -p .kiro/prompts
 cp kiro-prompts/auto-work.md      .kiro/prompts/
 cp kiro-prompts/continue-work.md  .kiro/prompts/
 cp kiro-prompts/close-session.md  .kiro/prompts/
+cp kiro-prompts/compile-memory.md .kiro/prompts/
 ```
+
+`compile-memory` is the maintenance pass that keeps the always-loaded corpus and the memory
+docs under their caps (`templates/test_instruction_corpus_budget.py.template`): it archives
+aged ledger rows and lessons to `docs/archive/`, turns recurring ones into tests or rules, and
+moves incident narratives out of steering files. Run it when the corpus test goes red, and
+once per framework update.
 
 `auto-work` depends on the Part 8A advanced fleet (`issue-work-orchestrator`, the
 spec-workflow specialists, `code-merge-reviewer`) and the Part 8A.2 gate scripts in
 `.kiro/hooks-bin/` — in particular `kiro-loop-gate.sh`, the `stop` hook that mechanically
 holds the agent in the backlog loop, and `kiro-claim-before-worktree.sh`, which blocks
-creating a worktree for an unclaimed issue.
+creating a worktree for an unclaimed issue. Like every orchestrator run, it ends with the
+agent definition's fixed Completion Block (`ISSUE WORK FINISHED | BLOCKED | FAILED` over a
+per-issue table), never a free-form summary.
 
 `continue-work` has no fleet dependency — it restarts any stalled session. Both prompts
 assume the `continuous-work` steering rule (Part 8.33) is installed; that rule is the

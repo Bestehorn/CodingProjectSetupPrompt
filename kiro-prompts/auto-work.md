@@ -67,7 +67,7 @@ hook keys it by session); resume THIS run's `runs/<run-id>/resume_state.md` if i
 and the local full-check command (`python scripts/run_checks.py`, the same one CI runs);
 apply the one-time concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
 `gc.autoDetach false`); detect `ISSUE_MECHANISM` (the wrapper script — its absence is
-fatal, report and stop); record the in-progress convention and merge authority; then
+fatal: exit 3 below); record the in-progress convention and merge authority; then
 `git fetch origin --prune --no-auto-gc`.
 
 Set `Status: IN_PROGRESS`, `AWAITING_USER: none`, and **`WORKABLE_ISSUES_REMAIN: yes`** in
@@ -82,7 +82,7 @@ you should ever reach it is if you keep trying to stop when you should be workin
 
 Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → PREPARE
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
-CLASSIFY (Type1/Type2) → FIX → PROOF_GATE → DOCUMENT → PR → MERGE_CLEANUP → RESOLVE →
+CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → MERGE_CLEANUP → RESOLVE →
 refresh → LOAD_ISSUES.
 
 # Research, and the spec process
@@ -94,17 +94,15 @@ refresh → LOAD_ISSUES.
   subagent so the reading cost lands in its context, not yours. The `no-guessing` steering
   rule applies throughout: every claim cites evidence, and you read COMPLETE command
   output (`no-output-shortening`) — never `tail`/`head`/`Select-Object`.
-- **Issues that need a spec get the full spec process.** Type2 (anything not provably
-  ≤3 non-test files with a high-confidence root cause, no new pattern/dependency/API or
-  IaC change — when in doubt, Type2): `spec-author` drives REQUIREMENTS → DESIGN, then the
-  DESIGN_REVIEW_LOOP with the full six-reviewer panel (`spec-review-agent`,
-  `standards-reviewer`, `best-practice-reviewer`, `security-reviewer`,
-  `devops-iac-reviewer`, `test-architect`) **in waves of at most four**, exiting only when
-  combined A+B == 0 after ≥1 cycle against the CURRENT design and `test-architect`
-  confirms a property per requirement with full AC→test coverage (cap 8, then escalate) →
-  TASKS (test-first) → IMPLEMENT_LOOP. Type1 gets the lightweight test-first path
-  (`bugfix.md` + one `spec-review-agent` pass, plus `security-reviewer` if the code is
-  security-sensitive).
+- **Every issue gets the spec process at the size of its ASK** (`proportionality.md`).
+  Tier S — a value, default, config, message or doc change, or a bounded local fix,
+  however many files it touches — gets `change.md` (≤ 8,000 bytes), ONE combined
+  `spec-review-agent` pass and ONE implementation wave, inside three hours. Tier M/L gets
+  REQUIREMENTS → DESIGN under hard byte caps, the full panel dispatched in batches of four
+  with materiality-gated findings, delta review from iteration 2 and a frozen scope (cap 4
+  for M, 6 for L, then approve-as-reviewed with residuals), TASKS in waves, and wave-
+  parallel implementation. When in doubt choose the smaller tier. CI is awaited in the
+  background, never with `sleep`; the end-to-end check runs in the pipeline after merge.
 - Commit the reviewed spec artifacts on the issue branch before implementation begins, so
   the spec is in history independently of the code.
 - Pass the ABSOLUTE worktree path in EVERY delegate prompt (delegates inherit the session
@@ -148,8 +146,8 @@ already achieves:
 
 1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue. Set
    `Status: COMPLETED` and `WORKABLE_ISSUES_REMAIN: no` (this releases the stop gate), then
-   report: issues resolved with PR + evidence links, anything escalated, and confirmation
-   this run left no worktree/branch/lock behind and never moved the shared local `main`.
+   reply with the agent definition's Completion Block — verdict line, per-issue table, three
+   trailer lines — and nothing else; it is the only message of the run carrying that verdict.
 2. **A single batched escalation** when genuinely blocked (an issue too ambiguous to
    derive testable criteria even after research, a PROOF_GATE exhausted after the cap, a
    genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
@@ -157,8 +155,9 @@ already achieves:
    ONE clarity-first message — then keep working the other issues rather than idling. For
    an ambiguous issue specifically: comment the question on the issue, `issue release <N>`,
    drop the lock, remove the worktree, and move to the next issue.
-3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Report and
-   stop.
+3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Record a
+   terminal `Phase: ABANDONED` with the reason, then stop with the Completion Block, verdict
+   `ISSUE WORK FAILED — <reason>`.
 
 Anything else — a finished issue, a long fix, a filling context window, an urge to
 summarize — is not a stopping point. Select the next issue and keep going.

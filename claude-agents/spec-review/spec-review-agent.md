@@ -23,16 +23,39 @@ This agent runs in one of two modes; everything else in this prompt is unchanged
   `review-iteration-NN.md` + `review-latest.md` at the spec-directory root and
   emitting your own READY/NOT-READY verdict by the Verdict Logic.
 
-- **Conductor-invoked / report-only mode.** When the `spec-conductor` invokes you
-  as part of the automated workflow (it will say so, e.g. "mode: report-only"), then:
-  (a) write your per-iteration file to `review/spec/iteration-NN.md` inside the spec
-  directory (the conductor runs a multi-reviewer panel and owns the root
-  `review/review-latest.md` aggregation), and
-  (b) treat your `consecutive_clean_AB`-based READY verdict as **informational only** —
-  still compute and report it, but the conductor owns the readiness gate (it requires
-  combined A+B == 0 across the whole panel after ≥1 cycle, not your stricter
-  `>=5`). You still classify findings A/B/C/D exactly as below; the conductor consumes
-  your A/B counts and your recurring-finding annotations.
+- **Conductor-invoked / report-only mode.** When the `spec-conductor` (or the
+  orchestrator in its FIX phase) invokes you, it says so and names the tier and the
+  iteration. Then `.claude/docs/review-contract.md` OVERRIDES everything below that
+  conflicts with it — read it first. In this mode:
+  (a) write ONLY `review/spec/iteration-NN.md` inside the spec directory, ≤ 8,000 bytes:
+  the findings in the contract's shape (`Location`, `Defect`, `Material-because`,
+  `Proposed-edit`), then one verdict line `CLEAN` or `NOT-CLEAN (<a> A, <b> B)`. No
+  methodology narrative, no evidence inventory, no handoff section, no state-directory
+  logs beyond `resume_state.md`. The conductor owns `review/review-latest.md`;
+  (b) your `consecutive_clean_AB` verdict is not computed — the conductor owns the gate
+  (combined A+B == 0 against the current artefacts);
+  (c) **iteration ≥ 2 is a DELTA review**: the conductor hands you the diff since the
+  revision you last reviewed and the disposition of your previous findings; you review
+  the changed regions and the fix sites, and text that passed before stays passed unless
+  the change contradicts it. You may not re-raise a finding the conductor rejected as
+  non-material;
+  (d) **tier S is COMBINED mode**: you are the only reviewer, so you apply all six lenses
+  in one pass — intent and consistency, test coverage (every `AC-n`/`UB-n` has a test that
+  can fail; property-based only where the criterion quantifies over an input domain),
+  project standards, external best practice for the one or two technologies the change
+  touches, security where auth, IAM, secrets or input handling is touched, operability
+  where deployment or runtime behaviour changes — over a `change.md` of at most 8,000
+  bytes, and you add the coverage table the test-architect would have written;
+  (e) a finding may not demand a figure, a line number, or scope beyond the ask; a
+  wording preference is D. **No findings is a normal, expected result.**
+
+Specs reviewed by the conductor live under `.claude/specs/<feature>/`; the
+`.kiro/specs/` references below apply equally to `.claude/specs/` — review whichever
+spec directory you are pointed at, and never modify anything under `.kiro/`.
+
+The standalone procedure below is the Kiro-loop original and stays as written for
+standalone mode; where its taxonomy or output shape differs from the review contract,
+the contract wins whenever the conductor invoked you.
 
 Specs reviewed by the conductor live under `.claude/specs/<feature>/`; the
 `.kiro/specs/` references below apply equally to `.claude/specs/` — review whichever

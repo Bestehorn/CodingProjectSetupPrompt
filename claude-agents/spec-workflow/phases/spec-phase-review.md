@@ -1,85 +1,98 @@
 # Phase Fragment: REVIEW LOOPS (design + tasks)
 
-Followed by `spec-conductor` (DESIGN_REVIEW_LOOP and TASKS_REVIEW_LOOP) and by the
-`/spec-review` command (a single panel pass). Installed at
-`.claude/specs/_workflow/phases/spec-phase-review.md`.
+Followed by `spec-conductor` (DESIGN_REVIEW_LOOP and TASKS_REVIEW_LOOP), by the
+`issue-work-orchestrator` in its FIX phase, and by the `/spec-review` command (one pass).
+Installed at `.claude/specs/_workflow/phases/spec-phase-review.md`.
 
-This is the convergence engine: an adversarial panel reviews the spec, the conductor
-aggregates findings and applies the readiness gate, and `spec-author` revises until
-the gate passes. The conductor owns the loop and the exit predicate — the reviewers
-only detect and classify defects.
+The loop converges to **zero material defects** — A+B == 0 — and it converges
+structurally, not hopefully: the artefacts are size-capped so every lane reads them whole,
+findings must be material to the ask and carry their own fix, fixes may not add scope, and
+from the second iteration only the delta is reviewed. Every reviewer and the conductor
+read `.claude/docs/review-contract.md` first; it is the binding finding shape.
 
-## Finding severities (uniform across all reviewers)
+## Panel by tier (`proportionality.md`)
 
-- **A** — execution blocker. **B** — intent deviation / gap. **C** — clarification /
-  risk. **D** — nit. Only **A + B** block readiness. C/D are recorded, never gate.
+| Tier | Design review | Tasks review | Iteration caps |
+|---|---|---|---|
+| S | `spec-review-agent` alone, in COMBINED mode (all six lenses in one pass; the security lens is mandatory when auth, IAM, secrets or input handling is touched) | none — `change.md` carries the task list | 2 |
+| M | full panel: `spec-review-agent` (report-only), `test-architect`, `standards-reviewer`, `best-practice-reviewer`, `security-reviewer`, `devops-iac-reviewer` | `spec-review-agent` + `test-architect` | 4 design, 2 tasks |
+| L | full panel | `spec-review-agent` + `test-architect` | 6 design, 3 tasks |
 
-Panel findings live in `review/<reviewer>/iteration-NN.md` and the evidence report — NOT
-in the issue tracker. Neither a reviewer nor the conductor files an issue for a finding:
-A/B findings are fixed in the spec before implementation, C/D findings are recorded there
-(binding: `.claude/rules/issue-filing-discipline.md`).
+**Every lane of a panel is dispatched in ONE message** (`parallel-by-default.md`). Each
+lane writes only `review/<lane>/iteration-NN.md` (≤ 8,000 bytes) and never the decision
+log; the conductor is the Authoritative Writer (`agent-state-convention.md` §2a).
 
-## The loop (one iteration = NN)
+## Before dispatching: the cap check
 
-### DESIGN_REVIEW_LOOP — full panel
-Invoke all six reviewers (you MAY issue them as parallel Agent calls), each reading
-`requirements.md`/`bugfix.md` + `design.md`, each writing
-`review/<reviewer>/iteration-NN.md`:
-- `spec-review-agent` (invoke in **report-only** mode — its internal
-  `consecutive_clean_AB>=5` verdict is informational; the conductor owns the exit),
-- `test-architect`, `standards-reviewer`, `best-practice-reviewer`,
-  `security-reviewer`, `devops-iac-reviewer`.
+Measure the artefacts. Over the tier's byte cap → do not dispatch; return the artefact to
+`spec-author` with "cut, do not add" and the cap. Re-tier UP only with a recorded reason
+that names what in the ASK the tier missed — never because the analysis grew.
 
-### TASKS_REVIEW_LOOP — light panel
-Invoke only `spec-review-agent` (report-only) + `test-architect`, reading `tasks.md`
-(+ requirements/design). Focus: dependency-safe ordering, test-first ordering, and a
-test task for every Correctness Property and every acceptance-criteria row.
+## Iteration 1 — whole-artefact review
 
-## Aggregation (conductor does this itself)
+Each lane reads the whole `requirements.md` (or `change.md`) and `design.md`, applies its
+lens, and writes findings in the contract's shape.
 
-1. Read every `review/<reviewer>/iteration-NN.md`.
-2. Collect all findings; dedup near-identical ones across reviewers; conflict-resolve
-   (if two reviewers disagree, keep the stricter and note the conflict).
-3. Compute the combined **A+B count**.
-4. Write `review/review-latest.md` = the deduped union (the stable pointer) and append
-   a `DL-NNN` entry (iteration NN: combined A+B = n, by reviewer).
+## Iteration N ≥ 2 — delta review
 
-## Readiness gate (BOTH must hold)
+The conductor hands every lane: (a) the diff between the revision it last reviewed and the
+current one, (b) the list of findings that were applied, rejected or downgraded, with the
+reason. Lanes review the changed regions and the fix sites. Text that passed in an earlier
+iteration stays passed unless the current change contradicts it. A finding on unchanged
+text must say which change contradicted it, or it is downgraded to C.
 
-- **Negative gate:** combined A+B == 0, AND iteration >= 1, AND every reviewer's
-  `iteration-NN.md` was produced against the CURRENT `design.md`/`tasks.md`
-  (verify via mtime / git hash recorded in each reviewer's resume_state — reject a
-  clean verdict computed against a stale artifact and re-run that reviewer).
-- **Positive gate:** `test-architect`'s Coverage Report has zero GAP rows (≥1 property
-  per requirement; 100% of acceptance-criteria rows mapped to a test/test-task) and a
-  `TEST-READY` verdict.
+## Aggregation (the conductor, after every panel)
 
-If both hold → the phase is approved (DESIGN_REVIEW → TASKS; TASKS_REVIEW →
-IMPLEMENT_LOOP).
+1. Read every lane file. Apply the **materiality gate**: an A or B that lacks a
+   `Material-because` naming an acceptance criterion of the ask or one of the five failure
+   classes, or that lacks a concrete `Proposed-edit`, or that demands a figure, a line
+   number, or scope beyond the ask, is recorded as C with the reason. A finding rejected
+   this way may not be re-raised, and the lane is told so in the next brief.
+2. Dedupe across lanes (one defect, one entry; keep the stricter grade when lanes agree it
+   is material and disagree on grade).
+3. Write `review/review-latest.md`: the surviving A/B list, the C/D list, the rejections
+   with reasons, the combined A+B, and the coverage table from `test-architect`. One
+   `DL-NNN` entry only when a finding was rejected or downgraded (a decision), not for the
+   round itself.
+
+## Readiness gate (both must hold)
+
+- **Negative:** combined A+B == 0, computed against the CURRENT artefacts (a lane's verdict
+  on a stale revision is re-run, not trusted).
+- **Positive:** `test-architect` reports every acceptance criterion mapped to at least one
+  test task and every "Unchanged behaviour" clause covered, with zero GAP rows — verdict
+  `TEST-READY`. Property-based tests are required only where a criterion quantifies over an
+  input domain.
+
+When both hold and C/D findings remain: `spec-author` applies them in ONE pass (restate,
+clarify, tighten, delete — never add), the conductor verifies the pass added no
+requirement, criterion or mechanism, and the phase is approved WITHOUT another panel
+round. When both hold and nothing remains: approved.
 
 ## Otherwise — revise and loop
 
-Invoke `spec-author` with the aggregated A+B findings (and any test-architect
-coverage GAPs) to edit `design.md` (or `requirements.md`/`tasks.md` as the finding
-dictates). Increment NN and repeat the panel. Append a `DL-NNN` entry per applied
-finding-batch.
+Invoke `spec-author` with the aggregated A/B findings AND the C/D findings, the scope
+freeze (`proportionality.md`: restate or remove, never add; anything outside the ask goes
+to `## Residuals`), and the byte cap. Increment NN and re-dispatch the panel in delta mode.
 
-## Cap and oscillation (never spin)
+## Cap — and what happens at it
 
-- **Cap = 8 iterations** per loop.
-- **Oscillation:** if combined A+B does not strictly decrease across 3 consecutive
-  iterations (use the reviewers' recurring-finding annotations to detect the same
-  findings reappearing), stop early.
-- On cap or oscillation: do NOT loop silently. Consolidate the still-open A/B findings
-  into `open-questions.md` and escalate to the user in ONE batched, clarity-first
-  message (one numbered set; each item with options + your recommendation). Resume
-  when the user answers; record answers as `DL-NNN` entries and feed them to
-  `spec-author`.
+When the tier's cap is reached with A+B > 0, or A+B has not decreased across two
+consecutive iterations, the loop stops. The conductor puts ONE question in the five-line
+shape of `continuous-work.md`, recommended option first:
 
-## `/spec-review` standalone behavior
+1. **(Recommended)** Approve the reviewed spec as it stands; record the open A/B findings
+   under `## Residuals` with their proposed edits; any residual that is a genuine new ask
+   becomes its own issue via intake.
+2. One more full round (name what changed that makes convergence likely).
+3. Narrow the ask (name the criterion to drop).
 
-When run as the `/spec-review` command (not inside the conductor), perform exactly
-ONE panel iteration over the current spec, write the per-reviewer files +
-`review/review-latest.md`, print the combined A+B count and the test-architect
-Coverage Report, and stop (no author revision). This gives the user an on-demand
-review without running the whole loop.
+Record the answer as `DL-NNN` and continue. The old default of "keep running full rounds
+until the gate passes" is not offered: it is the measured cause of a sixteen-round review
+of a one-constant change.
+
+## `/spec-review` standalone
+
+Perform ONE panel iteration over the current spec (whole-artefact if no earlier iteration
+exists, else delta), write the lane files and `review/review-latest.md`, print the combined
+A+B and the coverage table, and stop.

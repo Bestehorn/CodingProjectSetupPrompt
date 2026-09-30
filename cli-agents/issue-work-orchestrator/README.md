@@ -7,9 +7,10 @@ end — select, claim, fix through the embedded spec/TDD engine, prove, PR, driv
 merge, clean up, close, repeat. The agent definition is
 [`issue-work-orchestrator.md`](issue-work-orchestrator.md); the Kiro agent config is
 [`KiroCLIAgent-IssueWorkOrchestrator.json`](KiroCLIAgent-IssueWorkOrchestrator.json).
-The lifecycle, the standing disciplines, and the escalation contract are documented in
-the Claude twin's README — this port differs in host paths (`.kiro/…`), a four-subagent
-concurrency cap, and the gate semantics below.
+The lifecycle, the standing disciplines, the escalation contract, and the fixed Completion
+Block that ends every run (identical on both hosts) are documented in the Claude twin's
+README — this port differs in host paths (`.kiro/…`), a four-subagent concurrency cap, and
+the gate semantics below.
 
 ## Maintainer notes (hook internals and Claude-gate comparison)
 

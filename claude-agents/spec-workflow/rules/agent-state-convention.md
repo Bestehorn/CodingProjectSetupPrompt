@@ -87,9 +87,14 @@ Create the file with an `# Decision Log` header on first use.
    registry lock; spec-context decisions still go to the spec's log.
 3. **Evidence required.** Every entry cites concrete evidence (`no-guessing.md`). A
    decision with no citable driver is itself a defect.
-4. **Granularity.** Record decisions, not narration. The conductor writes an entry per
-   phase transition and applied finding-batch; a reviewer per material classification
-   call; an implementer per task.
+4. **Granularity.** Record decisions, not narration. An entry is owed for: a tier call, a
+   design choice between alternatives, a rejected or downgraded finding, a re-tier or
+   split, an escalation, a proof rejection, a merge-conflict resolution. An entry is NOT
+   owed for a phase transition (the state file carries the phase), an applied finding
+   batch, a task or wave completion, or a routine sync. A spec's whole log should fit in a
+   few kilobytes; a log that narrates the run is a defect of the log.
+5. **Brevity.** `Decision`, `Driver` and `Evidence` are one line each; `Alternatives` and
+   `Supersedes` only when they exist. No entry quotes the artefact it decided about.
 
 The ported agents (dead-code, doc-review, ci-worker, issue-housekeeping, issue-intake,
 product-management, cv/*) inherit all of this without body edits — the rule is

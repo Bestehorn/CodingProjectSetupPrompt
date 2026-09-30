@@ -33,6 +33,28 @@
 #   tracked .githooks/ pair plus scripts/run_tests.py, run_checks.py and
 #   ci_outage_mode.py are the mechanism; Part 7 is the pipeline that must
 #   report ALL failures in one run so a fix batch costs ONE run, not ten.
+#
+# PROPORTIONALITY, PARALLELISM AND MEMORY (2026-09-30 revision — read before editing
+# Parts 8, 9, 12 or 13). A measured root-cause analysis over three production projects
+# (629 billion tokens in ten weeks; a one-constant change reviewed sixteen times into a
+# 1.5 MB design; zero parallel subagent dispatches in 4,999; 1,847 hours of `sleep`
+# polling; a 428 KB always-loaded rule corpus plus 1.7 MB of mandatory pre-work reading)
+# produced these changes, and every one of them is load-bearing:
+#   - `proportionality.md`: the ASK fixes a tier (S/M/L), the tier fixes hard byte caps
+#     on every spec artefact, the review panel and its iteration cap, and a time
+#     tripwire. Scope is frozen once review opens; specs carry no measurements.
+#   - The review contract (`.claude/docs/review-contract.md`): every A/B finding names the
+#     acceptance criterion it protects and carries its own edit; delta review from
+#     iteration 2; C/D fixed in one pass without a round; "no findings" is expected.
+#   - `parallel-by-default.md`: panels, research and implementation WAVES dispatch in one
+#     message; CI is awaited with the wrapper's blocking `wait` as a background task.
+#   - `always-test-e2e.md`: the end-to-end check is an automated script the pipeline runs
+#     after deploy — never a human step.
+#   - `continuous-work.md`: a question is five lines with the recommended option first;
+#     reversible decisions are decided, not asked.
+#   - Memory is compiled, not accumulated: `test/test_instruction_corpus_budget.py` caps the
+#     always-loaded corpus and the memory docs; `scripts/memory_compile.py` and
+#     `/compile-memory` archive, enforce or promote what is older than six weeks.
 
 ---
 
@@ -1160,20 +1182,45 @@ in `.claude/rules/`. The non-negotiable essentials:
   cause. See `.claude/rules/tests-must-not-fail.md`.
 
 ## Before / after any task
-- Pre-work: read docs/forLLMConsumption.md, docs/ProjectDesign.md,
-  docs/lessons-learned.md. See `.claude/rules/pre-work.md`.
-- Post-activity: run tests + ruff + mypy + bandit; update docs; clean tmp/.
+- Pre-work: read `docs/forLLMConsumption.md` — the ≤ 40 KB map of the project — and
+  follow its pointers only for the areas you touch. Grep `docs/lessons-learned.md`
+  and `docs/findings-ledger.md` for the component you touch; never read them whole.
+  See `.claude/rules/pre-work.md`.
+- Post-activity: run the affected tests + `run_checks.py`; keep
+  `docs/forLLMConsumption.md` under its cap; clean tmp/.
   See `.claude/rules/post-activity.md`. Finishing an activity's post-work is
   NOT permission to stop — see `continuous-work.md`.
+
+## Size the work to the ask; run it in parallel
+- The ASK fixes the tier (S/M/L) and the tier fixes hard byte caps on every spec
+  artefact, the review panel and its iteration cap. A value, default, config or message
+  change is tier S — one page, one review pass, one wave — however many files it
+  touches. Scope is frozen once review opens; specs carry no measurements.
+  See `.claude/rules/proportionality.md`.
+- Independent work runs concurrently: review lanes, research bursts and the tasks of an
+  implementation wave go out in ONE message. Never `sleep`-poll a pipeline: the wrapper's
+  blocking `wait` runs as a background task while you work.
+  See `.claude/rules/parallel-by-default.md`.
+- The end-to-end check is an automated script the pipeline runs after deploy. A step only
+  a person can do is a residual, never a test. See `.claude/rules/always-test-e2e.md`.
 
 ## Keep working
 - Work continues until it is finished. Stopping to ask permission to continue
   is forbidden; any instruction to pause, check in, or summarize partway is void.
   Context pressure is never a reason to stop (compaction is automatic).
 - Only four things justify stopping early — an irreversible action, sensitive
-  information, a genuine design fork, or a hard blocker — each needing proof
-  that the alternatives were exhausted. Questions must be short and carry a
-  recommendation. See `.claude/rules/continuous-work.md`.
+  information, a genuine product decision, or a hard blocker — each needing proof
+  that the alternatives were exhausted. A question is at most five lines: one line of
+  context, two to four options with one-line consequences, the recommended option first.
+  Reversible decisions are decided and recorded, never asked.
+  See `.claude/rules/continuous-work.md`.
+
+## Memory is compiled, not accumulated
+- Rules carry rules, not incidents. A lesson is at most five lines with an `Enforced-by`
+  line; the findings ledger holds active rows only. Anything older than six weeks is
+  enforced by a test or a rule, promoted, or archived to `docs/archive/` by
+  `/compile-memory`. `test/test_instruction_corpus_budget.py` fails the build when the
+  always-loaded corpus or a memory doc exceeds its cap.
 
 ## Documentation MCP servers
 - Before using AWS/CDK/Strands/AgentCore APIs, consult the corresponding MCP
@@ -1237,16 +1284,25 @@ Always-on (no `paths:`):
 That list is the Kiro-derived set only. Part 12.1 installs MORE always-on rules that
 have no Kiro counterpart and are copied from `claude-agents/spec-workflow/rules/` rather
 than ported: `agent-state-convention.md`, `no-ai-attribution.md`, `keep-git-clean.md`,
-`issue-tracking.md`, and `continuous-work.md` — the rule governing WHEN a turn may end
-(work continues until finished; stopping to ask permission to continue is forbidden; only
-four Proven Exceptions end a turn early). Count all of them in the report's rule tally.
+`issue-tracking.md`, `continuous-work.md` (WHEN a turn may end; the five-line question
+shape), `proportionality.md` (HOW MUCH spec a change gets: tiers, byte caps, scope
+freeze, no measurements in specs) and `parallel-by-default.md` (independent work in one
+dispatch; CI awaited in the background). Count all of them in the report's rule tally.
 
-When porting `post-activity.md`, `tests-must-not-fail.md` and `always-test-e2e.md`
-from Kiro steering, port the CURRENT bodies (Kiro 8.6, 8.23, 8.22): all three were
-changed so that the AFFECTED tests run locally and the FULL suite verdict comes from
-CI. A ported body that still says "run all tests: `pytest test/`" before marking work
-complete reinstates the per-commit suite this setup removed. Two of the ports are
-KERNEL+COMPANION splits, and each must produce BOTH files:
+When porting `pre-work.md`, `use-lessons-learned.md`, `no-guessing.md`,
+`post-activity.md`, `tests-must-not-fail.md` and `always-test-e2e.md` from Kiro steering,
+port the CURRENT bodies (Kiro 8.2, 8.18, 8.21, 8.6, 8.23, 8.22). Four of them changed in
+the 2026-09-30 revision and a stale port reinstates a measured failure: `pre-work.md` no
+longer mandates reading `lessons-learned.md` and `ProjectDesign.md` whole (1.7 MB of
+mandatory reading per task was measured); `use-lessons-learned.md` makes a lesson a
+five-line entry with an `Enforced-by` line, compiled after six weeks; `no-guessing.md`
+carries NO violation log inside the rule (an append-only ledger in the always-loaded
+corpus grew one rule to 85 KB); `always-test-e2e.md` requires the end-to-end check to be
+an automated script run by the pipeline's post-deploy stage and forbids any human step
+in a test. The other two were changed so that the AFFECTED tests run locally and the FULL
+suite verdict comes from CI. A ported body that still says "run all tests: `pytest test/`"
+before marking work complete reinstates the per-commit suite this setup removed. Two of
+the ports are KERNEL+COMPANION splits, and each must produce BOTH files:
 
 - `tests-must-not-fail.md` (Kiro 8.23) is TWO files: the always-on kernel
   `.claude/rules/tests-must-not-fail.md` (the standard plus the COMPLETE
@@ -1341,6 +1397,16 @@ project's own spec, decision log, and conventions already contain the answer. Th
 timer and no built-in "check back after N minutes" instruction — that is a folk explanation.
 The real causes are this trained-in check-in behavior plus harness-level boundaries
 (compaction, turn caps, usage limits).
+
+**The 2026-09-30 revision shortened the rule to a kernel and changed one thing of
+substance:** a question to the operator has exactly one shape — at most five lines, one
+line of context, two to four options each with a one-line consequence, the recommended
+option first and marked, no ids or references the reader must look up — and REVERSIBLE
+decisions are never asked: they are decided, recorded as `DL-NNN`, and the work continues.
+The measured background: long runs stopped for `mwinit`, for review-cap decisions and for
+design questions with two pages of context each, and the operator read none of them.
+`CONTRACT_VERSION` was bumped so live sessions receive the new shape through the loop
+gate's handshake.
 
 **What it mandates.** Four things, and the rule is worth reading in full rather than
 paraphrasing here:
@@ -1487,26 +1553,72 @@ Report the number of rule files created and any that needed correction.
 
 Apply Rule 1; assistant-agnostic. Ensure `docs/forLLMConsumption.md`,
 `docs/ProjectPlan.md`, `docs/ProjectDesign.md`, and `docs/lessons-learned.md`
-exist with their standard sections (create `lessons-learned.md` with the
-Date/Context/Lesson/Action format if missing). These are referenced by
-`pre-work.md` and `use-lessons-learned.md`.
+exist with their standard sections. These are referenced by `pre-work.md` and
+`use-lessons-learned.md`.
 
-Also create `docs/findings-ledger.md` if the project installs
-`issue-filing-discipline.md` (Part 8.2). It is the append-only home for findings
-that are deliberately NOT filed as issues — the pressure valve that lets "nothing
-may be dropped" coexist with "do not file it". Create it with this header:
+**The memory docs are CAPPED, and the caps are enforced by a test, because prose caps
+were measured not to hold:** on three production projects `forLLMConsumption.md` reached
+600–770 KB, `lessons-learned.md` 640–960 KB and `findings-ledger.md` 890–940 KB in ten
+weeks, and `pre-work.md` made two of them mandatory reading before every task. Install
+the guard and the compile tool with the other check scripts:
+
+```bash
+cp templates/test_instruction_corpus_budget.py.template test/test_instruction_corpus_budget.py
+cp templates/memory_compile.py.template               scripts/memory_compile.py
+cp claude-commands/compile-memory.md                  .claude/commands/
+mkdir -p docs/archive
+```
+
+The caps (framework defaults; a project may lower them, and raises one only by its
+measured cost with the reason in the commit): the always-loaded corpus — `CLAUDE.md` plus
+every `.claude/rules/*.md` without `paths:` — 100,000 bytes and no single rule over
+12,000; `docs/forLLMConsumption.md` 40,000; `docs/lessons-learned.md` 40,000; the active
+`docs/findings-ledger.md` 60,000. The test also fails on a rule file that carries two or
+more dated headings — an incident ledger living inside the corpus.
+
+- `docs/forLLMConsumption.md` is a MAP: purpose, architecture in brief, where things
+  are, the invariants a change must respect, how to run/test/deploy, and pointers to the
+  topic docs. Detail lives in topic docs under `docs/`, read on demand.
+- `docs/lessons-learned.md` holds COMPILED lessons. Create it with this header if
+  missing, and convert an existing narrative file by archiving it (Part 9's compile step
+  below):
+
+```markdown
+# Lessons Learned
+
+Each lesson is at most five lines. A lesson older than six weeks with `Enforced-by: none`
+is enforced by a test, hook or rule line, or archived to docs/archive/ by /compile-memory.
+Incident narratives belong in docs/archive/incidents/<date>-<slug>.md, never here.
+
+## <YYYY-MM-DD> — <one-line lesson>
+- Lesson: <one sentence>
+- Enforced-by: <test path | hook | rule file: line | none>
+- Scope: <component>
+```
+
+- `docs/findings-ledger.md` (create if the project installs `issue-filing-discipline.md`)
+  holds the ACTIVE rows only. Header:
 
 ```markdown
 # Findings Ledger
 
 Findings recorded but deliberately NOT filed as issues, per
-`.claude/rules/issue-filing-discipline.md`. Append-only: never delete a row; mark
-it `stale` instead. Promote a row to an issue when it recurs or causes measured
-damage, and record the issue number here.
+`.claude/rules/issue-filing-discipline.md`. Active rows only: a row older than six weeks
+is promoted to an issue, enforced by a test or rule (`enforced <path>`), or archived
+verbatim to docs/archive/findings-ledger-<YYYY-MM>.md by /compile-memory. Nothing is
+deleted from git; what changes is what a session loads.
 
 | Date | Subject | Finding | Evidence | Why not filed | Status |
 |---|---|---|---|---|---|
 ```
+
+**On an EXISTING project, run the compile once as part of setup:** `python
+scripts/memory_compile.py report`, then `/compile-memory` (or its steps by hand: move
+dated incident sections out of the rules with `extract-rule-incidents --apply`, archive
+ledger rows and lessons older than six weeks with `archive-ledger --apply` and
+`archive-lessons --apply`, rewrite `forLLMConsumption.md` as a map with the detail moved
+to topic docs), until `python scripts/run_tests.py test/test_instruction_corpus_budget.py`
+passes. Report the before/after sizes.
 
 ### The CI capacity-fallback guide (INSTALL IT, always)
 
@@ -1711,6 +1823,16 @@ this prompt (leave any existing one alone).
     text does NOT survive inside the always-on rule. A kernel with no pointer,
     or a missing doc, means the ladder was dropped and the project will fall
     back to local execution as its FIRST move.
+13. Memory budget and proportionality (Part 9, Part 12) —
+    `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes in full and
+    `python scripts/memory_compile.py report` exits 0; `.claude/rules/proportionality.md`
+    and `.claude/rules/parallel-by-default.md` are installed with no `paths:`;
+    `.claude/docs/review-contract.md` exists; `/compile-memory` is installed; the wrapper
+    implements the blocking wait (`pipeline wait` / `wait-run` — a `NotImplementedError`
+    means agents will fall back to `sleep` polling); and where the project deploys, the
+    pipeline has a post-deploy job that runs the committed end-to-end script (Part 7 /
+    `always-test-e2e.md`). Grep the installed agents and commands for `Type1`/`Type2`: a
+    survivor means an old copy was preserved over the tiered version.
 12. Issue-filing containment (if any tracker-capable agent was installed) —
     `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no
     `paths:`); `docs/findings-ledger.md` exists with its table header;
@@ -1816,11 +1938,16 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   `spec-implementer`, plus the reused `spec-review-agent` and
   `spec-prompt-author-agent`.
 - **Slash commands** → `.claude/commands/`: `spec-new`, `spec-review`, `spec-tasks`,
-  `spec-implement`.
+  `spec-implement`, and `compile-memory` (the maintenance pass of Part 9).
 - **Phase fragments** (single source of truth for both the conductor and the
   commands) → `.claude/specs/_workflow/phases/`: `spec-phase-prompt.md`,
-  `spec-phase-design.md`, `spec-phase-review.md`, `spec-phase-tasks.md`,
-  `spec-phase-implement.md`.
+  `spec-phase-design.md` (proportional artefacts: `change.md` for tier S; capped
+  requirements/design for M and L), `spec-phase-review.md` (the parallel panel, the
+  materiality gate, delta review, the frozen scope, C/D fixed without a round, the per-tier
+  cap whose escalation recommends shipping the reviewed spec), `spec-phase-tasks.md`
+  (waves with file ownership), `spec-phase-implement.md` (wave-parallel TEST then IMPL
+  dispatches, one capture per wave with a `# tasks:` header, one push, CI awaited in the
+  background, the end-to-end check run by CI).
 - **Shared rules** → `.claude/rules/`: `agent-state-convention.md` (the state-directory
   layout, plain `Name: value` field semantics, and the decision log — and, in §1a, the
   clause that BINDS every registered run to the IDENTITY CONTRACT the hooks and the
@@ -1844,10 +1971,20 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   end a turn early), `ci-owns-the-test-suite.md` (WHERE tests run: the affected tests
   locally, the full suite in CI; commit often and push once; bounded local workers; and
   the obligation to fix EVERY failure a CI run reports in one pass instead of one run per
-  failure) — all always-loaded — and
+  failure), `proportionality.md` (HOW MUCH spec a change gets: the ASK fixes a tier S/M/L,
+  the tier fixes hard byte caps, the panel, the iteration cap and a time tripwire; scope is
+  frozen once review opens; specs carry no measurements; evidence is test output) and
+  `parallel-by-default.md` (panels, research bursts and implementation waves dispatch in
+  ONE message; a pipeline is awaited with the wrapper's blocking wait as a background task,
+  never with `sleep`) — all always-loaded — and
   `per-worktree-venv.md` (CONDITIONAL, `paths:`-scoped to cdk/app projects: each worktree
   gets its own venv when running code/CDK from worktrees).
-- **On-demand docs** → `.claude/docs/`: `run-identity.md` — the AUTHORITATIVE
+- **On-demand docs** → `.claude/docs/`: `review-contract.md` — the finding shape every
+  reviewer uses (`Location`, `Defect`, `Material-because`, `Proposed-edit`), the forbidden
+  findings (figures, line numbers, scope beyond the ask, re-raising a rejected finding,
+  re-opening passed text), the rule that C/D are fixed in the same pass but never gate, and
+  "no findings is a normal result"; read by every reviewer before its first finding — and
+  `run-identity.md` — the AUTHORITATIVE
   run-identity/gate-release contract: the registry/locks/`runs/<run-id>/` layout (§1), the
   registry-derived run id (§2), the seeded field set (§3), `Name: value` field semantics
   (§4), the release vocabulary (§5), and the `SESSION_ID` rung, the
@@ -1877,6 +2014,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   - `issue-loop-gate.sh` (Stop) — the primary brake: blocks turn-end while this session's own
     run has CLAIMED tracked work and has recorded no affirmative release (Part 13.3).
   - `spec-stop-gate.sh` (Stop) — blocks turn-end on implementation work that is not proven.
+    A task is proven by its own capture OR by a WAVE capture whose `# tasks:` header names
+    it (`hook_capture_for_task` in the library; both gates resolve evidence through it, so
+    they cannot disagree). Waves are how concurrently implemented tasks share one test run.
   - `spec-tdd-gate.sh` (PreToolUse/Bash) — gates the PUSH, not the commit: blocks `git push`
     while a checked task has no capture, the newest paired-test capture is red or full of
     skips, or CI-OUTAGE MODE is declared with no green full-suite capture; bans `--no-verify`
@@ -1912,7 +2052,7 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   - `MIGRATION.md` — the reference for deploying all of this to a project whose agents are
     already running, and the only place that records which live sessions the handshake reaches.
     Documentation, not a hook.
-  - `tests/` — EIGHT self-contained suites, 272 assertions, asserting the gates' EXIT CODES
+  - `tests/` — EIGHT self-contained suites, 277 assertions, asserting the gates' EXIT CODES
     (and, where an exit code cannot distinguish two causes, the REFUSAL TEXT). The acceptance
     criterion for this Part.
 
@@ -1923,14 +2063,18 @@ mkdir -p .claude/agents .claude/commands .claude/rules .claude/hooks \
 cp claude-agents/spec-workflow/*.md            .claude/agents/    # excludes README via *.md? see note
 cp claude-agents/spec-review/*.md              .claude/agents/
 cp claude-commands/spec-*.md                   .claude/commands/
+cp claude-commands/compile-memory.md           .claude/commands/
 cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
 cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-convention,
                                                                # no-ai-attribution,
                                                                # keep-git-clean, issue-tracking,
                                                                # issue-filing-discipline,
                                                                # continuous-work,
-                                                               # ci-owns-the-test-suite
+                                                               # ci-owns-the-test-suite,
+                                                               # proportionality,
+                                                               # parallel-by-default
 mkdir -p .claude/docs
+cp claude-agents/spec-workflow/docs/review-contract.md .claude/docs/  # ON-DEMAND: every reviewer reads it
 cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, deliberately NOT in
                                                                # rules/: the authoritative
                                                                # run-identity/gate-release contract,
@@ -1960,7 +2104,7 @@ bash .claude/hooks/tests/test_reinject.sh         # no cross-run adoption + deli
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # fixes that were real but guarded by nothing
 bash .claude/hooks/tests/test_scoped_temp.sh      # the self-writing settings.local.json env block
 ```
-272 assertions in total (11 + 64 + 24 + 50 + 42 + 23 + 32 + 26, in the order above).
+277 assertions in total (11 + 64 + 27 + 50 + 44 + 23 + 32 + 26, in the order above).
 `test_unpinned_fixes.sh` is the youngest and explains why a green suite is not the same as a
 guarded one: an adversarial pass MUTATED the shipped hooks and re-ran all 193 assertions the
 other six then held, and THREE mutations survived every one of them — the contract handshake's
@@ -1985,12 +2129,14 @@ after them. Preserve that ordering if you edit it.
 Each is self-contained: it builds a synthetic project tree in a temp directory, drives the real
 hook scripts, and asserts EXIT CODES. `test_hook_state_lib.sh` is separate from the gate suite
 on purpose — it calls the library functions directly, with no caller globals in scope, because a
-measured fail-open hid in precisely that gap and all 24 of `test_stop_gates.sh`'s end-to-end
+measured fail-open hid in precisely that gap and all 27 of `test_stop_gates.sh`'s end-to-end
 assertions passed over it.
 ALL EIGHT reporting `0 failed` is the acceptance criterion for this Part — `test_stop_gates.sh`
-at `24 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
-`test_reinject.sh` at `23`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `42`,
-`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11`. A gate that is installed but exits 0 on a registered run with no
+at `27 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
+`test_reinject.sh` at `23`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `44`,
+`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11` (the three added
+stop-gate cases and the two added push-gate cases pin the WAVE capture: a `# tasks:` header
+covers exactly the ids it names, so `1.1` never covers `1.10`). A gate that is installed but exits 0 on a registered run with no
 state file is INERT, and inert is indistinguishable from satisfied without these suites. If a
 count comes back LOWER than the figure above, a suite is not running all of its cases — check
 that before reading the `0 failed` as a pass.
@@ -2341,6 +2487,18 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > once. When a CI run comes back red, enumerate every failing job and every failure
 > inside it BEFORE changing anything, group them by root cause, fix them ALL, and push
 > once — fixing one failure and re-pushing to find the next is a rule violation.
+> All agents and the main session follow `.claude/rules/proportionality.md`: the ASK fixes
+> the tier (S/M/L) and the tier fixes hard byte caps on every spec artefact, the review
+> panel and its iteration cap; a value, default, config or message change is tier S however
+> many files it touches; scope is frozen once review opens; a spec cites symbols and never
+> carries a measurement.
+> All agents and the main session follow `.claude/rules/parallel-by-default.md`: review
+> lanes, research bursts and the tasks of an implementation wave are dispatched in ONE
+> message; a pipeline is awaited with the wrapper's blocking wait as a background task,
+> never with `sleep`.
+> Every question to the operator has the five-line shape of `continuous-work.md` — one line
+> of context, two to four options with one-line consequences, the recommended option first
+> — and reversible decisions are decided and recorded, never asked.
 
 Because those rule files have no `paths:` frontmatter, they load every session and every
 agent observes them. The decision-log rule preserves decisions across agents and
@@ -2370,10 +2528,18 @@ recommended as the proof record (e.g. ignore `evidence/` but force-include
 
 ### Part 12.6 — The autonomy gate and the evidence guarantee
 
-- **Readiness gate** (maximally autonomous): a spec is ready to implement when, after
-  ≥1 review cycle, the combined **A+B finding count across the whole panel is 0**
-  (computed against the current artifact) AND the test-architect confirms a property
-  per requirement and full acceptance-criteria→test coverage. C/D findings never block.
+- **Readiness gate** (zero material defects, structurally convergent): a spec is ready
+  to implement when the combined **A+B finding count across the panel is 0** against the
+  current artefacts AND the test-architect maps every acceptance criterion and
+  unchanged-behaviour clause to a test that can fail. What makes the gate converge rather
+  than spin (`spec-phase-review.md`, `.claude/docs/review-contract.md`): an A or B must
+  name the acceptance criterion it protects or one of five failure classes and carry its
+  own proposed edit, or the conductor records it as C; from iteration 2 lanes review only
+  the delta and the fix sites; the author fixes by restating or removing, never by adding
+  scope; C and D are fixed in the same pass but never gate and never open a round; the
+  cap is per tier (S 2, M 4, L 6) and its escalation recommends approving the reviewed
+  spec with residuals. The measured alternative — full rounds until the gate passes —
+  produced a sixteen-round, 1.5 MB review of a one-constant change.
 - **Proof, not assertion:** the implementer writes tests + code but never certifies
   its own work; the conductor runs the tests and captures evidence; the
   adversarial-verifier independently re-runs and tries to refute every claim
@@ -2390,6 +2556,10 @@ backlog end to end: it selects the highest-priority not-in-progress issue, devel
 and PROVES a fix through the Part 12 spec/TDD engine, opens a PR, drives CI green,
 merges (self-approving if branch protection allows), cleans up, closes the issue, and
 repeats — fully resumable. It is the autonomous-delivery layer above the spec workflow.
+Every run ends with the agent's fixed Completion Block — a verdict line (`ISSUE WORK
+FINISHED | BLOCKED | FAILED`) over a per-issue table of result, task arithmetic, PR and
+follow-ups filed — and `issue-intake` ends with the matching `ISSUE INTAKE …` block, so the
+end of a run is recognisable at a glance instead of buried in a summary.
 
 DEPENDS ON Part 12 (the spec-workflow agents, the phase fragments under
 `.claude/specs/_workflow/phases/`, the `agent-state-convention` rule, and the
@@ -2506,7 +2676,8 @@ Four things differ from the backlog command, and they are the whole point of the
    `/work-issue` sessions (and `/issues-work` runs) coexist on one machine and one clone
    under the Part 13.1a concurrency model. The shared local `main` is never moved.
 4. **Spec artifacts committed BEFORE implementation.** After the spec passes review
-   (`spec-author` + `spec-review-agent`, full six-reviewer panel for Type2) and before the
+   (the panel the tier prescribes: one combined `spec-review-agent` pass for tier S, the
+   full parallel panel with the materiality gate for M and L) and before the
    first line of implementation, the spec is committed as its OWN commit on the issue
    branch and pushed. The gate is evidence-backed (`git log --stat -1` showing the spec
    files) so the reviewed spec exists in history independently of the code.
@@ -2594,10 +2765,13 @@ orchestrator that delegates to ~10 leaf subagents — so the orchestrator does N
 FIX phase: it reads the same phase fragments and delegates to the same leaf agents
 (`spec-author`, the six reviewers, `test-architect`, `adversarial-verifier`,
 `spec-implementer`, `spec-researcher`), all listed in its `Agent(...)` allowlist. The
-interactive interview is skipped — the prompt is derived from the issue. Type1 issues
-(≤3 files, clear root cause) get a lightweight test-first fix; Type2 get the full
-spec/TDD pipeline. Both produce a test that reproduces the issue's symptom and an
-`evidence/REPORT.md` proof chain.
+interactive interview is skipped — the prompt is derived from the issue. The ASK fixes
+the tier (`proportionality.md`): tier S (a value, default, config, message or doc change,
+a bounded local fix — however many files it touches) gets `change.md`, one combined
+review pass and one implementation wave inside three hours; M and L get the capped
+requirements/design, the parallel panel and wave implementation. All tiers produce a
+test per acceptance criterion and an `evidence/REPORT.md` proof chain; the end-to-end
+check is a committed script the trunk pipeline runs after deploy.
 
 Per issue the orchestrator works in a git worktree under `.claude/worktrees/issue-<n>/`
 (plain `git worktree add`), so the spec + code + tests + evidence are committed and
@@ -2631,10 +2805,15 @@ holistically and line by line, preserves both sides' intent, forbids blind take-
 and re-runs the affected tests to prove no regression (the whole-suite check is the CI
 run after the push — `rules/ci-owns-the-test-suite.md`); (4) **claim at selection** — the issue is
 assigned + dated in-progress the moment it is chosen, so other workers skip it; (5)
-**the issue is the live record** — checklists, progress, Q&A, and metadata
-(assignee/dates/time-spent/parent) are kept updated ON the issue throughout, so any
-agent can resume from it; (6) **keep-git-clean** — only the right files are committed
-(never generated/temp), and no stale worktree/branch survives closure.
+**the issue is the resumable record** — one note per phase transition (claimed, spec
+approved, pushed with the PR, merged and closed), checklist ticks, every Q&A verbatim,
+and metadata (assignee/dates/time-spent/parent) ON the issue, so any agent can resume from
+it — while step-level progress stays in the run's state file (a measured 1,200 issue notes
+in one project was noise, not a record); (6) **keep-git-clean** — only the right files are
+committed (never generated/temp), and no stale worktree/branch survives closure; (7) **CI
+is awaited in the background**, never sleep-polled, and the trunk pipeline's post-deploy
+stage runs the end-to-end check — the agent never deploys a branch to the shared
+environment and never asks the operator to check anything by hand.
 
 Autonomy is backed by a mechanical brake, and the brake's REACH is worth stating exactly,
 because a gate everyone believes is enforcing is worse than no gate at all. The
@@ -2802,7 +2981,11 @@ expected outcome, not a sign that something was missed.
   `gitlab.json.template`, `gitlab_wrapper.py.template`,
   `github_wrapper.py.template`,
   `reap_agent_temp.py.template` (→ `scripts/reap_agent_temp.py`; the OS-temp reaper,
-  Part 5.4)
+  Part 5.4),
+  `test_instruction_corpus_budget.py.template` (→ `test/test_instruction_corpus_budget.py`;
+  the memory-budget guard, Part 9),
+  `memory_compile.py.template` (→ `scripts/memory_compile.py`; the mechanical half of
+  `/compile-memory`, Part 9)
 
 ### Custom agents (under claude-agents/ — see claude-agents/README.md)
 - dead-code-removal-agent, doc-reviewer-agent, ci-workflow-agent,
@@ -2815,7 +2998,10 @@ expected outcome, not a sign that something was missed.
 - Specialists: spec-author, spec-researcher, test-architect, adversarial-verifier,
   standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer,
   spec-implementer (+ reused spec-review-agent, spec-prompt-author-agent).
-- Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement.
+- Commands: /spec-new, /spec-review, /spec-tasks, /spec-implement, /compile-memory.
+- Tiers (proportionality.md): S = change.md ≤ 8 KB, one combined review pass, one wave;
+  M = requirements ≤ 20 KB / design ≤ 60 KB / tasks ≤ 15 KB, parallel panel, cap 4;
+  L = double, cap 6. Review contract: .claude/docs/review-contract.md.
 - Gates: spec-tdd-gate.sh (PUSH, plus the --no-verify ban on commit and push),
   spec-stop-gate.sh (turn-end), red-for-right-reason.sh (helper, not registered),
   issue-loop-gate.sh (the primary brake against ending a turn on unfinished work),
@@ -2836,9 +3022,16 @@ expected outcome, not a sign that something was missed.
   items ticked is a precondition for closing, and a close over unticked items is reopened),
   issue-filing-discipline.md (observed defects only, fix-first before filing, zero filings
   is valid, findings ledger),
-  continuous-work.md (WHEN a turn may end: only finished work or a Proven Exception),
+  continuous-work.md (WHEN a turn may end: only finished work or a Proven Exception; a
+  question is five lines with the recommended option first),
   ci-owns-the-test-suite.md (affected tests locally, full suite in CI; commit often and
-  push once; bounded local workers; fix every failure a CI run reports in one pass).
+  push once; bounded local workers; fix every failure a CI run reports in one pass; wait
+  for a run in the background, never with sleep),
+  proportionality.md (the ASK fixes the tier; the tier fixes byte caps, panel, iteration
+  cap and time tripwire; scope frozen once review opens; no measurements in specs),
+  parallel-by-default.md (independent work in one dispatch; waits in the background).
+  On-demand docs in .claude/docs/: review-contract.md (the finding shape every reviewer
+  uses) and run-identity.md.
 
 ### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).

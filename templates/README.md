@@ -17,9 +17,11 @@ final filename) and then extends or adapts it as the project evolves.
 | `run_tests.py.template` | `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast) |
 | `run_checks.py.template` | `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
 | `ci_outage_mode.py.template` | `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
-| `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects |
-| `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects |
+| `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`) |
+| `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects (includes the REQUIRED blocking `pipeline wait`) |
 | `gitlab.json.template` | `config/gitlab.json.template` | GitLab-hosted projects |
+| `test_instruction_corpus_budget.py.template` | `test/test_instruction_corpus_budget.py` | Always (caps the always-loaded corpus and the memory docs; the mechanical half of the token budget) |
+| `memory_compile.py.template` | `scripts/memory_compile.py` | Always (report budgets; archive aged ledger rows and lessons; move incident text out of rules — run by `/compile-memory`) |
 
 Git hooks pattern: the hooks themselves are TRACKED files under the
 project's `.githooks/` directory (copied from `templates/githooks/`), so
@@ -51,6 +53,20 @@ The rule these templates implement is
 the split necessary — hour-long commits, a host made unusable by `pytest -n auto`
 across concurrent worktrees, and one CI run per failure — so read it before
 "simplifying" any of this back.
+
+## The memory budget (what the two newest templates implement)
+
+Every byte of `CLAUDE.md` plus the unscoped `.claude/rules/*.md` is read into every model
+call. Measured on three production projects, that corpus tripled after installation because
+each incident appended a narrative to a rule, and the mandatory pre-work documents reached
+1.7 MB. `test_instruction_corpus_budget.py` caps the corpus at 100,000 bytes, any single rule
+at 12,000, `docs/forLLMConsumption.md` and `docs/lessons-learned.md` at 40,000 each and the
+active `docs/findings-ledger.md` at 60,000, and fails on a rule that carries dated incident
+headings. `memory_compile.py` is the mechanical half of the repair: it reports, archives
+ledger rows and lessons older than six weeks to `docs/archive/` (verbatim, still in git), and
+moves dated incident sections out of the rules. The judgment half — promote a finding to an
+issue, turn a lesson into a test — is the `/compile-memory` command
+(`claude-commands/compile-memory.md`, Kiro: `kiro-prompts/compile-memory.md`).
 
 ## Conventions
 

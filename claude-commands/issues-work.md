@@ -50,7 +50,7 @@ and the no-claim release is never a way out of an issue you have already claimed
 
 Run the lifecycle from `issue-work-orchestrator.md`: Discovery (venv, ISSUE_MECHANISM
 via the wrapper script, in-progress convention, merge authority, clean tree) → the outer
-loop LOAD_ISSUES → SELECT → PREPARE (worktree + branch) → CLASSIFY (Type1/Type2) → FIX
+loop LOAD_ISSUES → SELECT → PREPARE (worktree + branch) → CLASSIFY (tier S/M/L) → FIX
 (embedded spec/TDD core, proof with evidence) → PROOF_GATE → DOCUMENT → PR (rebase,
 line-by-line conflict resolution, push, open, self-approve+merge if allowed, monitor CI)
 → MERGE_CLEANUP → RESOLVE → refresh, until no not-in-progress open issue remains.

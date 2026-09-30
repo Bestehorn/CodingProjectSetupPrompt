@@ -108,6 +108,16 @@ tasksfile "$SPEC" '- [x] 3. Do the thing'
 printf '5 passed in 1.2s\n' > "$SPEC/evidence/green/3.txt"
 check "checked task with clean green capture -> allow"      0 "$(run 'git push')"
 
+# A WAVE capture (`# tasks:` header) covers every task it names — and only those.
+reset_arena; workflow "$CONDUCTOR" IMPLEMENT ".claude/specs/demo"
+tasksfile "$SPEC" '- [x] 1.1 TEST: parser' '- [x] 1.2 IMPL: parser'
+printf '# tasks: 1.1, 1.2\n7 passed in 1.3s\n' > "$SPEC/evidence/green/wave-1.txt"
+check "wave capture naming both checked tasks -> allow"     0 "$(run 'git push')"
+reset_arena; workflow "$CONDUCTOR" IMPLEMENT ".claude/specs/demo"
+tasksfile "$SPEC" '- [x] 1.1 TEST: parser' '- [x] 1.2 IMPL: parser' '- [x] 2.1 IMPL: writer'
+printf '# tasks: 1.1, 1.2\n7 passed in 1.3s\n' > "$SPEC/evidence/green/wave-1.txt"
+check "checked task no wave capture names -> BLOCK push"    2 "$(run 'git push')"
+
 # A checked HEADING whose children are checked must not demand its own capture.
 reset_arena; workflow "$CONDUCTOR" IMPLEMENT ".claude/specs/demo"
 tasksfile "$SPEC" '- [x] **1. Heading**' '- [x] 1.1 Leaf'

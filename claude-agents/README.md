@@ -76,9 +76,12 @@ evidence-proven code in one session.
 | `docs/run-identity.md` | The AUTHORITATIVE run-identity/gate-release contract (registry-derived run id, seeded fields, release vocabulary, `OWNED`/`UNREGISTERED`/`BROKEN` verdicts). Installs to `.claude/docs/` — deliberately NOT a rule, so it is read on demand by registered runs instead of loading into every session |
 | `rules/no-ai-attribution.md` | Descriptive names; no Claude/AI attribution in commits/PRs/issues/branches (all agents) |
 | `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
-| `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; questions must carry a recommendation; context pressure is not a stop reason (all agents + main session) |
+| `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; a question is five lines with the recommended option first; reversible decisions are decided, not asked (all agents + main session) |
+| `rules/proportionality.md` | HOW MUCH spec a change gets: tiers S/M/L from the ASK, hard byte caps, scope frozen once review opens, no measurements in specs (all agents) |
+| `rules/parallel-by-default.md` | Independent work runs concurrently — panels, research, implementation waves in ONE message; CI awaited in the background (all agents) |
+| `docs/review-contract.md` | The finding shape every reviewer uses and the forbidden findings; installs to `.claude/docs/`, read on demand |
 | `rules/ci-owns-the-test-suite.md` | WHERE tests run: affected tests locally, full suite in CI, never as a commit precondition; commit often and push once; bounded local workers (never `-n auto`); fix EVERY failure a CI run reports in one pass (all agents + main session) |
-| `hooks/*.sh` | TDD/evidence gates (PUSH gate, stop gate, red-for-right-reason) + the issue-filing gate |
+| `hooks/*.sh` | TDD/evidence gates (PUSH gate, stop gate, red-for-right-reason; both accept per-task and wave captures) + the issue-filing gate |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
 `spec-prompt-author-agent`). The four `/spec-*` slash commands live in

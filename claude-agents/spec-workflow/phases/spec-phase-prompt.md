@@ -52,16 +52,20 @@ initial prompt for the feature/bugfix, and write:
    create `.claude/specs/<feature>/`. If a seed idea/file came with the invocation,
    read it and skip asking for the idea.
 1. **Intent.** Problem solved, users/consumers, inputs/outputs, explicit
-   out-of-scope, constraints (perf/security/compat). Determine FEATURE vs BUGFIX.
+   out-of-scope, constraints (perf/security/compat). Determine FEATURE vs BUGFIX and the
+   **tier** (`proportionality.md`: S/M/L from the ASK — a default, value or local fix is
+   S even when it touches several files). State the tier as a determination; ask only
+   when the ask itself is ambiguous between tiers.
 2. **Research & validate.** As intent firms up, search the codebase for existing
    patterns and duplication, query MCP servers for best practices, present findings
-   as context for the next question.
+   as context for the next question. Research is bounded by the tier: for S, locate the
+   value and the tests that pin it, nothing more.
 3. **Draft & confirm.** Draft `prompt.md` and present it; iterate one question at a
-   time on the draft. The prompt must state: the goal, the FEATURE/BUGFIX kind, the
-   concrete scope and out-of-scope, the codebase integration points (cited), the
-   constraints, and an explicit instruction that the spec must include a Testing
-   Strategy + Correctness Properties and that implementation is test-first with
-   evidence-based proof.
+   time on the draft, each in the five-line shape of `continuous-work.md`. The prompt
+   must state: the goal, the FEATURE/BUGFIX kind, `Tier: S|M|L` with one line of reason,
+   the concrete scope and out-of-scope, the codebase integration points (cited by symbol
+   and path), the constraints, and that implementation is test-first with captured
+   evidence and an automated end-to-end check where runtime behaviour changes.
 
 ## On completion
 

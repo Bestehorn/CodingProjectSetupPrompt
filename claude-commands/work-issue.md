@@ -65,22 +65,26 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      (`python scripts/run_checks.py`, the same one CI runs), the one-time
      concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
      `gc.autoDetach false`), and `ISSUE_MECHANISM` (the wrapper script — its absence is
-     fatal, report and stop). Record the in-progress convention and the merge authority.
+     fatal: stop with the Completion Block, verdict FAILED). Record the in-progress
+     convention and the merge authority.
 
 **Step 1: Read issue X fresh from the remote**
    - `git fetch origin --prune --no-auto-gc`. Do NOT check out or fast-forward the shared
      local `main` — you stay MAIN-CHECKOUT-FREE and branch off `origin/<main>`.
    - Fetch X fresh via the wrapper (`get-issue`, `get-issue-comments`) — never work from a
      cached or previously-listed snapshot. Quote its state, labels, assignee, and body.
-   - If X is already CLOSED, report that with the quoted state and stop (do not reopen).
-   - If X does not exist, report the wrapper's exact error and stop.
+   - If X is already CLOSED, stop with the Completion Block — X as a `skipped` row quoting
+     the state (do not reopen).
+   - If X does not exist, stop with the Completion Block — X as a `skipped` row quoting the
+     wrapper's exact error.
 
 **Step 2: Claim X as in-progress BEFORE any work (the anti-duplicate-work gate)**
    - Acquire the local cross-run lock FIRST: atomically `mkdir`
      `.claude/agent-state/issue-work-orchestrator/.locks/issue-<X>.lock` (atomic
      create-or-fail on NTFS too — never rename-over-existing) and write your `run_id` +
      timestamp inside. If it exists and its owner is a LIVE run (in `registry.json` with a
-     fresh heartbeat), a sibling session in this clone already has X: report that and stop.
+     fresh heartbeat), a sibling session in this clone already has X: stop with the
+     Completion Block (X as a `skipped` row naming that run).
      Reclaim only a provably stale lock (owner heartbeat past the bound AND its worktree's
      `.git` pointer no longer resolves AND its `resume_state` is terminal), archiving the
      stale contents first.
@@ -121,27 +125,28 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `runs/<run-id>/workflow_state.md` so the TDD/evidence hooks fire for this run.
 
 **Step 4: Classify, then run the spec process (spec-author / spec-review-agent)**
-   - CLASSIFY Type1 vs Type2 by the orchestrator's criteria (Type1 only if ALL hold: ≤3
-     non-test files, no new architectural pattern, no public-API change with downstream
-     consumers, no new dependency, no IaC change, existing test patterns suffice, root
-     cause identifiable with high confidence). When ambiguous, choose Type2. Record the
-     call + rationale as `DL-NNN`.
-   - Synthesize `<worktree>/.claude/specs/<slug>/prompt.md` from the issue (goal, FEATURE
-     vs BUGFIX, scope/out-of-scope, integration points) with the explicit requirement that
-     the spec include an end-to-end test reproducing the reported symptom plus regression
-     coverage. Note in `qa_log.md` that the interview was skipped and the prompt derives
-     from issue X.
-   - **Type2 → the full spec process:** `spec-phase-design.md` (REQUIREMENTS → DESIGN with
-     Correctness Properties, Testing Strategy, threat model, DevOps, AC→test mapping) →
-     `spec-phase-review.md` DESIGN_REVIEW_LOOP with the full six-reviewer panel, exiting
-     only when combined A+B == 0 after ≥1 cycle against the CURRENT design and
-     `test-architect` confirms a property per requirement with full AC→test coverage (cap
-     8 cycles, then escalate) → `spec-phase-tasks.md` TASKS (test-first) → light
-     TASKS_REVIEW_LOOP.
-   - **Type1 → lightweight test-first:** `spec-author` writes `bugfix.md`
-     (Current/Expected/Unchanged behavior in EARS) from the issue; run
-     `spec-review-agent` over it for a single review pass; add `security-reviewer` if the
-     issue touches security-sensitive code. Skip the heavy design panel.
+   - CLASSIFY the tier from the ASK (`proportionality.md`): **S** for a value, default,
+     config, message or doc change or a bounded local fix — however many files, snapshots
+     or infrastructure constants it touches; **M** for a feature or fix across components
+     with a design choice; **L** for a subsystem. When in doubt choose the smaller tier;
+     re-tier UP only with a recorded reason naming what the ask contains. Record
+     `Tier:` in `prompt.md` and one `DL-NNN`. The tier fixes the byte caps, the panel, the
+     iteration cap and the time tripwire (S 3 h, M 24 h, L 72 h).
+   - Synthesize `<worktree>/.claude/specs/<slug>/prompt.md` from the issue: goal, FEATURE
+     vs BUGFIX, tier, the ASK's scope (the issue's risk sections, open questions and
+     measurements feed residuals, not scope), integration points by symbol and path, and
+     the tests that pin each criterion plus — where runtime behaviour changes — the
+     automated end-to-end check the pipeline runs after deploy. Note in `qa_log.md` that
+     the interview was skipped.
+   - **Tier M/L → the proportional spec process:** `spec-phase-design.md` (REQUIREMENTS →
+     DESIGN under the caps) → `spec-phase-review.md` (the panel dispatched in ONE message;
+     materiality gate; delta review from iteration 2; scope frozen; exit at A+B == 0 with
+     full coverage; C/D applied in one pass without a round; cap 4 for M, 6 for L, then the
+     five-line question recommending "approve as reviewed, record residuals") →
+     `spec-phase-tasks.md` (waves with `Files:` ownership) → light TASKS_REVIEW_LOOP.
+   - **Tier S → `change.md` (≤ 8,000 bytes) and one combined `spec-review-agent` pass**
+     (all lenses, security included when auth, IAM, secrets or input handling is touched;
+     max 2 iterations). No design.md, no panel.
    - Every delegate prompt MUST state the ABSOLUTE worktree path and that spec artifacts
      go under `<worktree>/.claude/specs/<slug>/`, code under `<worktree>/src/`, tests under
      `<worktree>/test/` — delegates inherit the SESSION cwd, not the worktree. After each
@@ -167,14 +172,12 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `DL-NNN` entry. Do NOT start implementation until this commit exists.
 
 **Step 6: Implement, prove, document**
-   - Type2: `spec-phase-implement.md` IMPLEMENT_LOOP per task — RED (a failing test that
-     reproduces the reported symptom; confirm RED-FOR-THE-RIGHT-REASON via
-     `.claude/hooks/red-for-right-reason.sh` — assertion failure, not an import/collection
-     error) → GREEN (minimal fix, paired tests only via
-     `python scripts/run_tests.py <paths>`) → COMMIT, YOU capturing every run into
-     `<worktree>/.claude/specs/<slug>/evidence/`. Type1: the same RED → GREEN → commit
-     cycle without the design panel. Then run `adversarial-verifier` and produce
-     `evidence/REPORT.md`.
+   - `spec-phase-implement.md`, per WAVE: dispatch all the wave's TEST tasks in ONE
+     message → run the wave's tests once → `evidence/red/wave-N.txt` with a `# tasks:`
+     header, confirmed RED-FOR-THE-RIGHT-REASON via `.claude/hooks/red-for-right-reason.sh`
+     → dispatch all the wave's IMPL tasks in ONE message → run once →
+     `evidence/green/wave-N.txt` → ONE commit per wave. Tier S is a single wave. Then run
+     `adversarial-verifier` once and produce `evidence/REPORT.md` (≤ 8,000 bytes).
    - **No per-task full-suite run.** Commit per task instead — the pre-commit hook is lint
      + security, about a second. The regression verdict for the whole batch is the CI run
      after Step 7's single push (`ci-owns-the-test-suite.md`). Run the affected module
@@ -227,7 +230,10 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      protection forbids self-approval, set `AWAITING_USER: waiting for external approval
      of PR #<n>`, poll `get-pr` on an interval, checkpoint between polls, and merge once
      approved and CI is green; clear `AWAITING_USER` back to `none` after merging.
-   - Monitor CI to a terminal state via `get-pr-checks` / `list-runs` + `get-logs`.
+   - Wait for CI in the BACKGROUND: start the wrapper's blocking wait (`pipeline wait
+     <id>` / `wait-run <id>`) as a background task — never `sleep` in a tool call — and
+     meanwhile write the issue note and the docs. Then read the verdict via
+     `get-pr-checks` / `get-logs`.
      **On failure, fix the whole run in one pass:** retrieve the COMPLETE logs of EVERY
      non-successful job (the pipeline does not fail fast, so a red run is the complete
      list), enumerate every failing test and check, group them by root cause and record
@@ -244,8 +250,11 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `git worktree remove .claude/worktrees/issue-<X>` and
      `git branch -D issue-<X>-<slug>`. Verify with `git worktree list` and that the
      directory is gone (`keep-git-clean.md`).
-   - Monitor the post-merge trunk pipeline if one exists; if it fails, the fix is not done
-     — rework in a FRESH worktree cut from `origin/<main>` until it is green.
+   - Wait for the post-merge trunk pipeline in the background; its deploy and post-deploy
+     stage run the committed end-to-end check, and that verdict on the merged SHA is the
+     E2E evidence (`always-test-e2e.md`) — you never deploy a branch to the shared
+     environment or ask the operator to check anything by hand. If it fails, the fix is
+     not done — rework in a FRESH worktree cut from `origin/<main>` until it is green.
    - RESOLVE per `issue-tracking.md`: final comment linking the merged PR and the evidence,
      checklist fully ticked — re-read X and COUNT its `- [ ]` / `- [x]` lines, then finish
      any item still open rather than closing over it (only an item whose deferral was
@@ -260,21 +269,22 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      — it must be the WHOLE value of the field (`Phase: DONE`, never
      `Phase: DONE (was IMPLEMENT)`), and an unrecorded belief that you are finished releases
      nothing.
-   - **Then STOP.** Report: issue X, the PR link, the spec-artifact commit, the proof
-     summary, how many CI runs the fix took and what each surfaced, and confirmation that
-     no worktree, branch, or lock of this run survives and the shared local `main` was
-     never moved. Do NOT select another issue — that is what `/issues-work` (or
-     `/auto-work`, for an unattended whole-backlog run) is for. Use those when you want
-     the next workable issue picked for you. If other workable issues remain, say so and
-     let the user decide.
+   - **Then STOP, and reply with the agent definition's Completion Block** — the fixed
+     verdict line, the per-issue table (X as its `closed` row: `Tasks` from a fresh re-read,
+     the merged PR, the CI-run count in `Detail`, plus a `filed` row for anything routed
+     through intake), and the three trailer lines — and nothing else. Do NOT select another
+     issue — that is what `/issues-work` (or `/auto-work`, for an unattended whole-backlog
+     run) is for. The block's `Backlog` line is where "other workable issues remain" is
+     said; the user decides from there.
 
 **Escalation and the ambiguous-issue path**
    - If X is too ambiguous to derive testable acceptance criteria even after research, post
      the clarifying question(s) ON issue X via `comment-issue` (questions live on the
      issue, not in transient chat), then release the claim with `issue release <X>` and the
      local lock, tear down the worktree venv and remove the worktree so nothing stale is
-     left, record the state, and stop with a report. Do not guess, and do not silently
-     substitute a different issue.
+     left, record the state, and stop with the Completion Block (X as a `blocked` row,
+     `Detail` = released; question on issue). Do not guess, and do not silently substitute
+     a different issue.
    - Otherwise escalate ONCE, batched, only when genuinely blocked (proof gate exhausted, a
      genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
      subcommand): post the specifics to the issue, record the blocked state with

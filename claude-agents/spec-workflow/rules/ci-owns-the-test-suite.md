@@ -97,10 +97,27 @@ concurrent worktree in the clone, and the `pre-push` hook picks it up with no fu
 configuration. Clearing it is not housekeeping: while it is set, every push in every
 worktree pays for a full local suite.
 
+## Waiting for a run — never sleep-poll
+
+A pipeline takes as long as it takes; what is yours to decide is what happens meanwhile.
+Start the wrapper's blocking wait (`pipeline wait <id>` on GitLab, `wait-run <id>` on
+GitHub; both poll internally and exit with the terminal verdict) as a BACKGROUND task and
+continue with work that does not depend on the verdict — the next wave, the docs, the
+issue note, another issue in another worktree. The completion re-invokes you. A `sleep N`
+inside a tool call, repeated, is the measured shape of a thousand hours of nothing
+(`parallel-by-default.md`), and each wake-up re-reads the whole context.
+
+If the push transport's credential lapses mid-run (an expired SSH certificate, a
+`Permission denied (publickey)`), the push is queued, not the work: keep implementing and
+committing locally, and ask ONCE in the five-line shape of `continuous-work.md`, naming the
+exact command the operator must run. Batch remote operations at the defined boundaries
+(one push per batch, one merge) so the exposure to expiry is small.
+
 ## Self-check
 
 Before pushing, confirm: paired tests green and captured; the batch is complete rather than
-a probe; no `--no-verify` anywhere; no local full-suite run was performed to satisfy a gate.
+a probe; no `--no-verify` anywhere; no local full-suite run was performed to satisfy a gate;
+no `sleep` polling anywhere in the session.
 After a red CI run, confirm: every failing job read, every failure enumerated, root causes
 grouped and written down, all of them fixed, exactly one push.
 

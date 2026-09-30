@@ -941,6 +941,35 @@ hook_decision_log() {
     printf '%s\t%s\t%s\t%s\n' "$stamp" "$name" "$decision" "$detail" >> "$log_file" 2>/dev/null || true
 }
 
+# hook_capture_for_task <spec_dir> <red|green> <task id> -> prints the capture that covers the task, or returns 1.
+#
+# Two capture shapes are accepted, and both gates MUST use this one resolver so they cannot disagree:
+#   * the per-task file `evidence/<kind>/<id>.txt`;
+#   * a WAVE capture — any `evidence/<kind>/*.txt` whose first lines carry `# tasks: <id> <id> ...` naming the
+#     task. Waves exist because independent tasks are implemented CONCURRENTLY and their tests run ONCE
+#     (`parallel-by-default.md`): one run, one capture, several tasks proven by it.
+# The header is a comment line, so every counter predicate that strips `^\s*#` lines still reads the runner
+# summary beneath it. Ids are matched as WHOLE tokens (`1.1` does not cover `1.10`); commas are separators.
+hook_capture_for_task() {
+    local spec_dir="$1" kind="$2" id="$3" f header pattern
+    if [[ -f "$spec_dir/evidence/$kind/$id.txt" ]]; then
+        printf '%s' "$spec_dir/evidence/$kind/$id.txt"
+        return 0
+    fi
+    pattern="[[:space:]]$(printf '%s' "$id" | sed 's/\./\\./g')[[:space:]]"
+    for f in "$spec_dir"/evidence/"$kind"/*.txt; do
+        [[ -f "$f" ]] || continue
+        header="$(head -n 5 "$f" 2>/dev/null | tr -d '\r' | grep -iE '^[[:space:]]*#[[:space:]]*tasks[[:space:]]*:' | head -1)"
+        [[ -n "$header" ]] || continue
+        header="${header#*:}"
+        if printf ' %s ' "$header" | tr ',' ' ' | grep -qE "$pattern"; then
+            printf '%s' "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------------------------------------
 # THE SELF-TEST MUST REMAIN THE LAST DEFINITION IN THIS FILE. See the header.
 # ---------------------------------------------------------------------------------------------------------

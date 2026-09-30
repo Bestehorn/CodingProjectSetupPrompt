@@ -199,8 +199,10 @@ if [[ -f "$tasks" ]]; then
     if grep -qE "^${id}\." <<<"$checked_ids"; then
       continue
     fi
-    if [[ ! -f "$spec_dir/evidence/green/${id}.txt" && ! -f "$spec_dir/evidence/red/${id}.txt" ]]; then
-      problems+="  - task ${id} is marked complete but has no capture (evidence/green/${id}.txt or evidence/red/${id}.txt)."$'\n'
+    # Per-task capture OR a wave capture whose `# tasks:` header names the id — the SAME resolver the Stop
+    # gate uses (`hook_capture_for_task`), so the two gates cannot disagree about what covers a task.
+    if ! hook_capture_for_task "$spec_dir" green "$id" >/dev/null && ! hook_capture_for_task "$spec_dir" red "$id" >/dev/null; then
+      problems+="  - task ${id} is marked complete but no capture covers it (evidence/green/${id}.txt, evidence/red/${id}.txt, or a wave capture whose '# tasks:' line names ${id})."$'\n'
     fi
   done <<<"$checked_ids"
 fi

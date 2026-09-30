@@ -123,6 +123,10 @@ never spawns a replacement issue.
 
 # Type1 vs Type2 Classification Criteria
 
+(Type1 is tier S of `proportionality.md`; Type2 is tier M or L. A spec prompt drafted for a
+Type2 issue states the tier, and a Type2 verdict never rests on the number of files an
+investigation touched — only on the ask.)
+
 An issue is Type1 (quick-fix) when ALL of the following hold:
   - The fix involves changes to at most 3 files (excluding test files).
   - The fix does not require new architectural patterns or abstractions.

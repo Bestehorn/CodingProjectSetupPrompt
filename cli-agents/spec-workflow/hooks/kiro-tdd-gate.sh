@@ -133,14 +133,31 @@ fi
 tasks="$spec_dir/tasks.md"
 problems=""
 
-# (b) Every task marked complete must have a capture. An IMPL task produces a green
-#     paired-test capture; a pure TEST task produces a red one (that IS its evidence).
+# capture_for_task <kind> <id> -> 0 when `evidence/<kind>/<id>.txt` exists OR a WAVE capture whose first
+# lines carry `# tasks: <id> ...` names the task (concurrently implemented tasks share one test run).
+# Whole-token id match; commas are separators. Mirrors kiro-stop-gate.sh and the Claude twin exactly.
+capture_for_task() {
+  local kind="$1" id="$2" f header pattern
+  [[ -f "$spec_dir/evidence/$kind/$id.txt" ]] && return 0
+  pattern="[[:space:]]$(printf '%s' "$id" | sed 's/\./\\./g')[[:space:]]"
+  for f in "$spec_dir"/evidence/"$kind"/*.txt; do
+    [[ -f "$f" ]] || continue
+    header="$(head -n 5 "$f" 2>/dev/null | tr -d '\r' | grep -iE '^[[:space:]]*#[[:space:]]*tasks[[:space:]]*:' | head -1)"
+    [[ -n "$header" ]] || continue
+    printf ' %s ' "${header#*:}" | tr ',' ' ' | grep -qE "$pattern" && return 0
+  done
+  return 1
+}
+
+# (b) Every task marked complete must be covered by a capture — its own, or a wave capture that
+#     names it. An IMPL task produces a green paired-test capture; a pure TEST task produces a red
+#     one (that IS its evidence).
 if [[ -f "$tasks" ]]; then
   while IFS= read -r line; do
     id="$(sed -E 's/^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/' <<<"$line")"
     [[ "$id" == "$line" ]] && continue           # no numeric id parsed
-    if [[ ! -f "$spec_dir/evidence/green/${id}.txt" && ! -f "$spec_dir/evidence/red/${id}.txt" ]]; then
-      problems+="  - task ${id} is marked complete but has no capture (evidence/green/${id}.txt or evidence/red/${id}.txt)."$'\n'
+    if ! capture_for_task green "$id" && ! capture_for_task red "$id"; then
+      problems+="  - task ${id} is marked complete but no capture covers it (evidence/green/${id}.txt, evidence/red/${id}.txt, or a wave capture whose '# tasks:' line names ${id})."$'\n'
     fi
   done < <(grep -E '^[[:space:]]*-[[:space:]]*\[[xX]\]' "$tasks")
 fi

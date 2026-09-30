@@ -100,11 +100,16 @@ Substituting easier adjacent work for the hard task and ending on a polished rep
 and is the single most common form of this failure. An accurate, evidence-backed report does not make a stop
 legitimate — the accuracy is what disguises it.
 
-If a Proven Exception genuinely applies: keep it to a few lines, include a recommendation, record it where the
-work lives (the issue, or the spec's qa_log.md), and add an AWAITING_USER line to this run's resume_state.md
-naming the ACTUAL reason (e.g. `AWAITING_USER: waiting on the production credential for the smoke test`) — a
-placeholder or a one-word token is REJECTED, so the reason has to be a reason —
-then immediately continue with every part of the task that does not depend on the answer.
+If a Proven Exception genuinely applies, ask in ONE shape: at most five lines — one line of context, two to
+four options each with a one-line consequence, the recommended option FIRST and marked (Recommended), plain
+words with nothing the reader must look up. Reversible decisions are never asked: decide, record, continue.
+Record the question where the work lives (the issue, or the spec's qa_log.md) and add an AWAITING_USER line
+to this run's resume_state.md naming the ACTUAL reason (e.g. `AWAITING_USER: waiting on the production
+credential for the smoke test`) — a placeholder or a one-word token is REJECTED — then immediately continue
+with every part of the task that does not depend on the answer.
+
+Independent work runs in PARALLEL (review lanes, research, the tasks of a wave: one message), and a pipeline
+is awaited with the wrapper's blocking wait as a BACKGROUND task, never with sleep.
 CONTRACT
 
 if [[ -z "$sid" ]]; then

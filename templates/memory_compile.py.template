@@ -1,0 +1,398 @@
+#!/usr/bin/env python
+"""Compile the project's agent memory: report budgets, archive aged ledger rows and lessons, move
+incident narratives out of the always-loaded rules.
+
+Installed from ``templates/memory_compile.py.template`` to ``scripts/memory_compile.py``. The mechanical
+half of ``/compile-memory``; the judgment half (promote a finding to an issue, turn a lesson into a test)
+stays with the agent running that command.
+
+Nothing is deleted. Archived material moves verbatim to ``docs/archive/`` and stays in git; what changes
+is what a session loads.
+
+USAGE
+    python scripts/memory_compile.py report                          # sizes vs caps, aged rows, aged lessons
+    python scripts/memory_compile.py archive-ledger  [--weeks 6] [--until-under-cap] [--apply]
+    python scripts/memory_compile.py archive-lessons [--weeks 6] [--until-under-cap] [--apply]
+        # --until-under-cap: after the age pass, keep archiving oldest-first until the active
+        # file fits its cap — for a ledger that grew 880 KB in five weeks, age alone frees nothing.
+    python scripts/memory_compile.py extract-rule-incidents [--apply]
+
+Without ``--apply`` every subcommand is a dry run that prints what it would move.
+
+EXIT CODES
+    0 = ran; ``report`` exits 1 when any cap is exceeded, so CI or a hook can consume it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path.cwd()
+CLAUDE_MD = ROOT / "CLAUDE.md"
+RULES_DIR = ROOT / ".claude" / "rules"
+STEERING_DIR = ROOT / ".kiro" / "steering"
+FOR_LLM = ROOT / "docs" / "forLLMConsumption.md"
+LESSONS = ROOT / "docs" / "lessons-learned.md"
+LEDGER = ROOT / "docs" / "findings-ledger.md"
+ARCHIVE = ROOT / "docs" / "archive"
+
+# Keep these equal to the constants in test/test_instruction_corpus_budget.py.
+CORPUS_CAP_BYTES = 100_000
+RULE_FILE_CAP_BYTES = 12_000
+FOR_LLM_CAP_BYTES = 40_000
+LESSONS_CAP_BYTES = 40_000
+LEDGER_CAP_BYTES = 60_000
+
+DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+DATED_HEADING_RE = re.compile(r"^(#{2,6})\s.*\b\d{4}-\d{2}-\d{2}")
+HEADING_RE = re.compile(r"^(#{1,6})\s")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FRONTMATTER_PATHS_RE = re.compile(r"^paths\s*:", re.MULTILINE)
+KIRO_ALWAYS_RE = re.compile(r"^inclusion\s*:\s*always\s*$", re.MULTILINE)
+ENFORCED_RE = re.compile(r"^\s*-?\s*\**Enforced-by\**\s*:\s*(.+?)\s*$", re.IGNORECASE)
+LEDGER_HEADER = "| Date | Subject | Finding | Evidence | Why not filed | Status |\n|---|---|---|---|---|---|\n"
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _append(path: Path, header: str, body: str) -> None:
+    existing = _read(path) if path.exists() else ""
+    if not existing:
+        existing = header
+    if not existing.endswith("\n"):
+        existing += "\n"
+    _write(path, existing + body)
+
+
+def _size(path: Path) -> int:
+    return len(_read(path).encode("utf-8")) if path.exists() else 0
+
+
+def _frontmatter(text: str) -> str:
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    return text[3:end] if end != -1 else ""
+
+
+def _rule_files() -> list[Path]:
+    files = sorted(RULES_DIR.glob("*.md")) if RULES_DIR.is_dir() else []
+    if STEERING_DIR.is_dir():
+        files += [p for p in sorted(STEERING_DIR.glob("*.md")) if KIRO_ALWAYS_RE.search(_frontmatter(_read(p)))]
+    return files
+
+
+def _unscoped_rules() -> list[Path]:
+    return [p for p in _rule_files() if not FRONTMATTER_PATHS_RE.search(_frontmatter(_read(p)))]
+
+
+def _cutoff(weeks: int) -> dt.date:
+    return dt.date.today() - dt.timedelta(weeks=weeks)
+
+
+def _parse_date(text: str) -> dt.date | None:
+    match = DATE_RE.search(text)
+    if not match:
+        return None
+    try:
+        return dt.date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+
+# ----------------------------------------------------------------------------------------------- ledger
+
+
+@dataclass
+class LedgerRow:
+    line: str
+    date: dt.date | None
+    status: str
+
+
+def _ledger_rows(text: str) -> tuple[list[str], list[LedgerRow]]:
+    head: list[str] = []
+    rows: list[LedgerRow] = []
+    seen_separator = False
+    for line in text.split("\n"):
+        if not seen_separator:
+            head.append(line)
+            if re.match(r"^\|\s*-+\s*\|", line):
+                seen_separator = True
+            continue
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            rows.append(LedgerRow(line=line, date=_parse_date(cells[0] if cells else ""), status=(cells[-1] if cells else "")))
+        elif line.strip():
+            head.append(line)  # stray prose after the table stays with the file
+    return head, rows
+
+
+def _aged_rows(rows: list[LedgerRow], weeks: int) -> list[LedgerRow]:
+    cutoff = _cutoff(weeks)
+    return [
+        r
+        for r in rows
+        if r.date is not None
+        and r.date < cutoff
+        and not r.status.lower().startswith(("promoted", "enforced"))
+    ]
+
+
+def _oldest_first_until_under_cap(rows: list[LedgerRow], cap: int, header_bytes: int) -> list[LedgerRow]:
+    """Pick the oldest non-promoted, non-enforced rows whose removal brings the active ledger under cap."""
+    movable = sorted(
+        (r for r in rows if r.date is not None and not r.status.lower().startswith(("promoted", "enforced"))),
+        key=lambda r: r.date,
+    )
+    size = header_bytes + sum(len(r.line.encode("utf-8")) + 1 for r in rows)
+    picked: list[LedgerRow] = []
+    for r in movable:
+        if size <= cap:
+            break
+        picked.append(r)
+        size -= len(r.line.encode("utf-8")) + 1
+    return picked
+
+
+def archive_ledger(weeks: int, apply: bool, until_under_cap: bool = False) -> int:
+    if not LEDGER.exists():
+        print("no docs/findings-ledger.md")
+        return 0
+    head, rows = _ledger_rows(_read(LEDGER))
+    aged = _aged_rows(rows, weeks)
+    print(f"ledger rows: {len(rows)} total, {len(aged)} older than {weeks} weeks and not promoted/enforced")
+    if until_under_cap:
+        header_bytes = len("\n".join(head).encode("utf-8")) + 1
+        extra = [r for r in _oldest_first_until_under_cap(rows, LEDGER_CAP_BYTES, header_bytes) if r not in aged]
+        if extra:
+            print(f"  +{len(extra)} more (oldest first) so the active ledger fits under {LEDGER_CAP_BYTES:,d} bytes")
+        aged = aged + extra
+    if not aged:
+        return 0
+    by_month: dict[str, list[str]] = {}
+    for r in aged:
+        by_month.setdefault(r.date.strftime("%Y-%m"), []).append(r.line)
+    for month, lines in sorted(by_month.items()):
+        target = ARCHIVE / f"findings-ledger-{month}.md"
+        print(f"  -> {target.relative_to(ROOT).as_posix()}: {len(lines)} rows")
+        if apply:
+            _append(target, f"# Findings Ledger — archived rows ({month})\n\n{LEDGER_HEADER}", "\n".join(lines) + "\n")
+    if apply:
+        keep = {id(r) for r in rows} - {id(r) for r in aged}
+        kept_rows = [r.line for r in rows if id(r) in keep]
+        _write(LEDGER, "\n".join(head).rstrip("\n") + "\n" + ("\n".join(kept_rows) + "\n" if kept_rows else ""))
+        print(f"archived {len(aged)} rows; active ledger now {_size(LEDGER):,d} bytes")
+    else:
+        print("dry run — pass --apply to move them")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------- lessons
+
+
+@dataclass
+class Entry:
+    heading: str
+    body: list[str]
+
+    @property
+    def date(self) -> dt.date | None:
+        return _parse_date(self.heading) or next((d for d in (_parse_date(ln) for ln in self.body) if d), None)
+
+    @property
+    def enforced(self) -> bool:
+        for ln in self.body:
+            m = ENFORCED_RE.match(ln)
+            if m and m.group(1).strip().lower() not in {"none", "-", "n/a", "tbd", ""}:
+                return True
+        return False
+
+    def text(self) -> str:
+        return "\n".join([self.heading, *self.body]).rstrip("\n") + "\n"
+
+
+def _entries(text: str, level_re: re.Pattern[str]) -> tuple[list[str], list[Entry]]:
+    preamble: list[str] = []
+    entries: list[Entry] = []
+    inside_fence = False
+    for line in text.split("\n"):
+        if FENCE_RE.match(line):
+            inside_fence = not inside_fence
+        if not inside_fence and level_re.match(line):
+            entries.append(Entry(heading=line, body=[]))
+            continue
+        (entries[-1].body if entries else preamble).append(line)
+    return preamble, entries
+
+
+def archive_lessons(weeks: int, apply: bool, until_under_cap: bool = False) -> int:
+    if not LESSONS.exists():
+        print("no docs/lessons-learned.md")
+        return 0
+    preamble, entries = _entries(_read(LESSONS), re.compile(r"^#{2,3}\s"))
+    cutoff = _cutoff(weeks)
+    aged = [e for e in entries if e.date is not None and e.date < cutoff and not e.enforced]
+    print(f"lessons: {len(entries)} entries, {len(aged)} older than {weeks} weeks without Enforced-by")
+    if until_under_cap:
+        size = _size(LESSONS)
+        extra: list[Entry] = []
+        for e in sorted((e for e in entries if e.date is not None and not e.enforced and e not in aged), key=lambda e: e.date):
+            if size - sum(len(x.text().encode("utf-8")) for x in aged + extra) <= LESSONS_CAP_BYTES:
+                break
+            extra.append(e)
+        if extra:
+            print(f"  +{len(extra)} more (oldest first) so the file fits under {LESSONS_CAP_BYTES:,d} bytes")
+        aged = aged + extra
+    if not aged:
+        return 0
+    by_month: dict[str, list[Entry]] = {}
+    for e in aged:
+        by_month.setdefault(e.date.strftime("%Y-%m"), []).append(e)
+    for month, group in sorted(by_month.items()):
+        target = ARCHIVE / f"lessons-learned-{month}.md"
+        print(f"  -> {target.relative_to(ROOT).as_posix()}: {len(group)} entries")
+        if apply:
+            _append(target, f"# Lessons Learned — archived entries ({month})\n\n", "\n".join(e.text() for e in group))
+    if apply:
+        kept = [e for e in entries if e not in aged]
+        _write(LESSONS, "\n".join(preamble).rstrip("\n") + "\n\n" + "\n".join(e.text() for e in kept))
+        print(f"archived {len(aged)} entries; lessons now {_size(LESSONS):,d} bytes")
+    else:
+        print("dry run — pass --apply to move them")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------- rule incidents
+
+
+def _dated_sections(text: str) -> tuple[str, list[str]]:
+    """Split out every section whose heading carries a date (to the next heading of the same or higher level)."""
+    lines = text.split("\n")
+    kept: list[str] = []
+    moved: list[str] = []
+    i = 0
+    inside_fence = False
+    while i < len(lines):
+        line = lines[i]
+        if FENCE_RE.match(line):
+            inside_fence = not inside_fence
+        m = DATED_HEADING_RE.match(line) if not inside_fence else None
+        if not m:
+            kept.append(line)
+            i += 1
+            continue
+        level = len(m.group(1))
+        section = [line]
+        i += 1
+        while i < len(lines):
+            nxt = lines[i]
+            hm = HEADING_RE.match(nxt)
+            if hm and len(hm.group(1)) <= level:
+                break
+            section.append(nxt)
+            i += 1
+        moved.append("\n".join(section).rstrip("\n") + "\n")
+    return "\n".join(kept), moved
+
+
+def extract_rule_incidents(apply: bool) -> int:
+    moved_total = 0
+    for rule in _rule_files():
+        kept, moved = _dated_sections(_read(rule))
+        if not moved:
+            continue
+        target = ARCHIVE / "rule-incidents" / f"{rule.stem}.md"
+        print(f"{rule.relative_to(ROOT).as_posix()}: {len(moved)} dated section(s) -> {target.relative_to(ROOT).as_posix()}")
+        moved_total += len(moved)
+        if apply:
+            _append(target, f"# {rule.stem} — incident records moved out of the always-loaded rule\n\n", "\n".join(moved))
+            pointer = f"\nIncident records for this rule: `docs/archive/rule-incidents/{rule.stem}.md` (read on demand).\n"
+            if pointer.strip() not in kept:
+                kept = kept.rstrip("\n") + "\n" + pointer
+            _write(rule, kept)
+    if moved_total and not apply:
+        print("dry run — pass --apply to move them")
+    if not moved_total:
+        print("no dated incident sections in the rules")
+    return 0
+
+
+# ----------------------------------------------------------------------------------------------- report
+
+
+def report(weeks: int) -> int:
+    corpus = [CLAUDE_MD, *_unscoped_rules()]
+    corpus_size = sum(_size(p) for p in corpus)
+    rows = [
+        ("CLAUDE.md + unscoped rules", corpus_size, CORPUS_CAP_BYTES),
+        ("docs/forLLMConsumption.md", _size(FOR_LLM), FOR_LLM_CAP_BYTES),
+        ("docs/lessons-learned.md", _size(LESSONS), LESSONS_CAP_BYTES),
+        ("docs/findings-ledger.md", _size(LEDGER), LEDGER_CAP_BYTES),
+    ]
+    over = False
+    print(f"{'File':<32} {'Bytes':>10} {'Cap':>10}  Status")
+    for name, size, cap in rows:
+        status = "OK" if size <= cap else "OVER"
+        over |= size > cap
+        print(f"{name:<32} {size:>10,d} {cap:>10,d}  {status}")
+    print("\nLargest always-loaded files:")
+    for size, name in sorted(((_size(p), p.relative_to(ROOT).as_posix()) for p in corpus), reverse=True)[:12]:
+        flag = "  OVER-PER-FILE" if size > RULE_FILE_CAP_BYTES and name != "CLAUDE.md" else ""
+        print(f"  {size:>8,d}  {name}{flag}")
+        over |= bool(flag)
+    dated = [(p, len(_dated_sections(_read(p))[1])) for p in _rule_files()]
+    dated = [(p, n) for p, n in dated if n]
+    if dated:
+        over = True
+        print("\nRules carrying dated incident sections:")
+        for p, n in dated:
+            print(f"  {n:>3}  {p.relative_to(ROOT).as_posix()}")
+    if LEDGER.exists():
+        _, ledger_rows = _ledger_rows(_read(LEDGER))
+        aged = _aged_rows(ledger_rows, weeks)
+        print(f"\nLedger: {len(ledger_rows)} active rows, {len(aged)} older than {weeks} weeks to promote/enforce/archive")
+    if LESSONS.exists():
+        _, entries = _entries(_read(LESSONS), re.compile(r"^#{2,3}\s"))
+        cutoff = _cutoff(weeks)
+        aged_lessons = [e for e in entries if e.date is not None and e.date < cutoff and not e.enforced]
+        print(f"Lessons: {len(entries)} entries, {len(aged_lessons)} older than {weeks} weeks without Enforced-by")
+    return 1 if over else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Compile the project's agent memory")
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("report", "archive-ledger", "archive-lessons", "extract-rule-incidents"):
+        p = sub.add_parser(name)
+        p.add_argument("--weeks", type=int, default=6)
+        p.add_argument("--apply", action="store_true")
+        p.add_argument(
+            "--until-under-cap",
+            action="store_true",
+            help="after the age pass, keep archiving oldest-first until the active file fits its cap",
+        )
+    args = parser.parse_args()
+    if args.command == "report":
+        return report(weeks=args.weeks)
+    if args.command == "archive-ledger":
+        return archive_ledger(weeks=args.weeks, apply=args.apply, until_under_cap=args.until_under_cap)
+    if args.command == "archive-lessons":
+        return archive_lessons(weeks=args.weeks, apply=args.apply, until_under_cap=args.until_under_cap)
+    return extract_rule_incidents(apply=args.apply)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
