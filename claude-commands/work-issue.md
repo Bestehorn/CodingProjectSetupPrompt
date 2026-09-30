@@ -247,8 +247,10 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Monitor the post-merge trunk pipeline if one exists; if it fails, the fix is not done
      — rework in a FRESH worktree cut from `origin/<main>` until it is green.
    - RESOLVE per `issue-tracking.md`: final comment linking the merged PR and the evidence,
-     checklist fully ticked (or remaining items explicitly deferred with a reason — routed
-     per `issue-filing-discipline.md`, never as an automatic follow-up issue), time
+     checklist fully ticked — re-read X and COUNT its `- [ ]` / `- [x]` lines, then finish
+     any item still open rather than closing over it (only an item whose deferral was
+     already recorded on the issue may stay unticked, routed per
+     `issue-filing-discipline.md`, never as an automatic follow-up issue) — time
      spent recorded (elapsed from the Step 2 start time), then close X via `update-issue`.
    - Release the local lock (`rmdir .locks/issue-<X>.lock`) — and remove the tracker's
      in-progress marker BEFORE releasing that lock, since the lock is the ownership evidence

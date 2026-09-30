@@ -601,8 +601,14 @@ subcommands the project's agents invoke. The minimum set:
   GitHub — `list-workflows`, `list-runs`, `get-run`, `get-jobs`, `get-logs`
   (strip the Authorization header before following the 302 to Azure Blob
   Storage), `rerun`, `cancel`, `list-issues`, `get-issue`, `get-issue-comments`,
-  `comment-issue`, `update-issue`, `create-issue`. GitLab — `pipeline status`,
-  `pipeline log`, `issue list/show/create/comment/close`, `label list/create`.
+  `comment-issue`, `update-issue`, `create-issue`, `reopen-issue`. GitLab —
+  `pipeline status`, `pipeline log`, `issue list/show/create/comment/close/reopen`,
+  `label list/create`.
+- Reopen is NOT optional (`reopen-issue <n>` / `issue reopen <iid>`; one call —
+  GitHub `PATCH /issues/{n}` `{"state":"open"}`, GitLab `PUT /issues/{iid}`
+  `{"state_event":"reopen"}`). `/close-session`'s task-item gate (Part 6.1) uses
+  it to undo a closure made over unfinished checklist items, and without it the
+  only way to correct that record is to leave it wrong.
 - In-progress claim (REQUIRED for the orchestrator; the fix for dropped
   in-progress labels): additive, non-destructive label ops and a single
   self-verifying claim. GitLab — `issue label-add`/`issue label-remove` (use
@@ -620,13 +626,16 @@ subcommands the project's agents invoke. The minimum set:
   (See the expanded docstrings in `templates/github_wrapper.py.template` and
   `templates/gitlab_wrapper.py.template` for the exact REST endpoints and the
   "can't approve your own PR/MR" caveat the orchestrator handles by polling.)
-- Issue metadata + checklist (best-effort, per `issue-tracking.md`): assign an
-  issue, set start/end dates, record time-spent, set a parent/epic link, and
-  toggle a checklist item. GitLab supports these natively (assignee, `/spend`,
-  due date, epics, task-list lines); GitHub mostly via the issue body/comments
-  (no native time-tracking or start-date on classic issues). The wrapper should
-  implement what the host supports and return a clear "unsupported" result
-  otherwise so agents degrade gracefully. (See the wrapper docstrings.)
+- Issue metadata + checklist (per `issue-tracking.md`): assign an issue, set
+  start/end dates, record time-spent, set a parent/epic link, and toggle a
+  checklist item. GitLab supports these natively (assignee, `/spend`, due date,
+  epics, task-list lines); GitHub mostly via the issue body/comments (no native
+  time-tracking or start-date on classic issues). Most are best-effort — the
+  wrapper implements what the host supports and returns a clear "unsupported"
+  result otherwise so agents degrade gracefully — but the **checklist toggle is
+  required**, on both hosts, because ticking an item is how the task-item gate is
+  satisfied and both hosts model it the same way (flip the `- [ ]` line in the
+  body and write the body back). (See the wrapper docstrings.)
 
 If you allow `gh`/`glab` instead of the wrapper, add the corresponding allow
 rules (e.g. `Bash(gh pr *)`, `Bash(gh issue *)`) and the orchestrator will use
@@ -846,57 +855,120 @@ hook but belong in every project. These ship verbatim in this repo's
 
 `.claude/commands/close-session.md` (`/close-session`): the end-of-session close-out. It
 answers "can we close this session?" by FINISHING what is unfinished, then verifying, then
-emitting a one-glance verdict. Eight steps, and the early ones can change things:
+emitting ONE fixed nine-row verdict table (the report contract is below the step list, and
+it is as load-bearing as the steps). Nine steps, and the early ones can change things:
 
 1. **Work-complete gate.** For every issue this session worked, check against project
    standards — implemented, tested (a test reproducing the original symptom passes, suite
    green for the merged SHA, cited from the CI run per `ci-owns-the-test-suite.md`, no
-   skip/xfail dodges), documented (issue updated, checklist ticked, spec artifacts
-   committed). Anything missing is FINISHED NOW with `continue-work` semantics, not
-   reported and handed back. Nothing else runs until this passes. This is why the command
-   carries write tools and an `Agent(...)` allowlist — it is a close-OUT, not a read-only
-   peek.
-2. **CI gate.** Pending CI means the work is not finished, so it precedes every
+   skip/xfail dodges), documented (issue updated, spec artifacts committed). Anything
+   missing is FINISHED NOW with `continue-work` semantics, not reported and handed back.
+   Nothing else runs until this passes. This is why the command carries write tools and an
+   `Agent(...)` allowlist — it is a close-OUT, not a read-only peek.
+2. **Task-item gate — every checklist item on the issue is actually done.** The measured
+   failure this step exists for: work reported as closed while task items on the issue were
+   still unfinished. So the check is MECHANICAL, per issue, never from recall — re-read the
+   issue through the wrapper, COUNT `- [ ]` vs `- [x]` in the body (a tick you believe you
+   wrote but cannot see is not ticked), name every unticked item, and treat a parent whose
+   work is tracked as CHILD ISSUES the same way. An unticked item is unfinished work unless
+   the issue itself already carried a deferral with its reason and its
+   `issue-filing-discipline.md` routing BEFORE this close-out, or a Proven Exception is
+   proven — **a deferral written during close-out to pass this gate is not a deferral.**
+   Then two remedies, and neither is a question to the user:
+   - issue still OPEN with unfinished items → exactly step 1's remedy, FINISH IT NOW,
+     ticking through the wrapper as each genuinely completes;
+   - issue already CLOSED with unfinished items → **REOPEN it** (`reopen-issue` /
+     `issue reopen`), re-claim it, say plainly that it was closed while `<n>` items were
+     unfinished and that the closure was wrong, comment the outstanding items onto the
+     issue, finish them all, and only then re-close in step 7 with the checklist visibly
+     complete. Reopening is reversible, so Exception 1 makes it the required path rather
+     than something to ask for; the report's task-items line must say `REOPENED`, because a
+     premature closure silently fixed teaches nobody anything.
+     **The reopen also re-arms the brake**, which is what turns "finish them" from an
+     intention into an obligation: it appends `Status: IN_PROGRESS` + the resumed `Phase` +
+     `CURRENT_ISSUE` to this run's `resume_state.md`, so the terminal `Phase` recorded
+     earlier in the session stops being the last occurrence and `issue-loop-gate.sh` holds
+     the turn again (Part 12.2a; `run-identity.md` §4–§5).
+   One carve-out keeps the gate from wedging legitimate triage: an issue closed
+   ADMINISTRATIVELY (duplicate, obsolete, already resolved elsewhere, won't-do) is outside
+   it, provided the closing comment NAMES that reason. It sits BEFORE the CI gate
+   deliberately: finishing a missed item produces commits CI must then see.
+3. **CI gate.** Pending CI means the work is not finished, so it precedes every
    cleanliness check: wait and monitor to a terminal state (repeated `get-run` captures on
    a stated interval — never `watch-run`, which has no clock and no timeout), drive red CI
    green via `remote-ci-must-pass.md`, and apply that rule's capacity ladder if CI cannot
    run at all.
-3. **Tree clean** — `git status --porcelain` plus `--untracked-files=all`, in ITS OWN tree.
-4. **Leftovers DELETED, not just reported** — `tmp/`, self-created scratch, and the OS temp
+4. **Tree clean** — `git status --porcelain` plus `--untracked-files=all`, in ITS OWN tree.
+5. **Leftovers DELETED, not just reported** — `tmp/`, self-created scratch, and the OS temp
    residue via `python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply`
    (Part 5.4). Only files this session created; never another session's scratch.
-5. **Its own worktree/branch/lock AND claim markers gone** — worktree/branch torn down
+6. **Its own worktree/branch/lock AND claim markers gone** — worktree/branch torn down
    (venv first, or locked DLLs block removal on Windows), this run's own claim set
    unclaimed (derived from its lock records/registry entry, never topical adjacency;
    marker removed BEFORE the local lock it evidences), lock released.
-6. **Issues closed with evidence** — each finished issue gets a final comment linking the
-   merged PR and evidence and is closed via the wrapper; an unfinished issue stays OPEN
-   with a status comment carrying branch/worktree/PR so any agent can resume from the
-   issue alone.
-7. **Shared local `main` untouched** — expected-behind is the designed state, reported as
+7. **Issues closed with evidence** — each finished issue gets a final comment linking the
+   merged PR and evidence and is closed via the wrapper, with the checklist count re-read
+   after step 2 rather than taken on trust; an issue reopened in step 2 is re-closed here,
+   its comment naming what was outstanding; an unfinished issue stays OPEN with a status
+   comment carrying branch/worktree/PR so any agent can resume from the issue alone.
+8. **Shared local `main` untouched** — expected-behind is the designed state, reported as
    such.
-8. **A terminal `Phase` recorded** — appended at the END of this run's registry-derived
+9. **A terminal `Phase` recorded** — appended at the END of this run's registry-derived
    `resume_state.md` (never a self-invented path, whole-value `Phase: DONE`): that is what
    releases `issue-loop-gate.sh`, and recording it over unfinished work is the failure the
    gate exists to catch.
 
-The remediation in steps 4–6 and 8 is MANDATORY, not a request — `keep-git-clean.md` makes
-the clean end-state per run ("each run leaves no worktree, branch, or lock of its own
-behind"), and `continuous-work.md` Exception 1 says to take a reversible path rather than
-ask for one. ANYTHING ELSE is recommend-and-wait: never another run's artifacts, never the
-shared local `main`, never an untracked file whose fate is the user's call.
+The remediation in steps 5–7 and 9, plus the step-2 reopen, is MANDATORY, not a request —
+`keep-git-clean.md` makes the clean end-state per run ("each run leaves no worktree, branch,
+or lock of its own behind"), and `continuous-work.md` Exception 1 says to take a reversible
+path rather than ask for one. ANYTHING ELSE is recommend-and-wait: never another run's
+artifacts, never the shared local `main`, never an untracked file whose fate is the user's
+call.
 
-Two properties to preserve if you edit it. **Scope is THIS session only:** it must not
+**The report is a FIXED FORM, and that is half the point of shipping this command rather
+than letting each project write one.** Free-form close-outs drifted every run — different
+shape, different length, the findings buried in prose. So the reply is exactly three things:
+a `CLOSE: YES` / `CLOSE: NO — <n> blocker(s)` verdict line, a table of NINE rows (one per
+step, fixed labels, fixed order, all nine always present) whose `✓` column is one of exactly
+three marks, and an `Issues` block of one line per issue this session worked or filed. Four
+constraints do the work, and weakening any of them brings the drift back:
+
+- **`✅` / `❌` / `➖`, nothing else.** `❌` covers failing AND not-checked; `➖` means the
+  step has no subject in this session (no pipeline on this host, no worktree created), never
+  "skipped" and never "unclear". There is no `⚠️` — a caveat is a `✅` whose Detail names it,
+  or a `❌`.
+- **Detail cells are ≤60 characters** and carry the deciding number (run id, SHA prefix,
+  `m/n`, byte total). No sentences, no hedging, no quoted output. A finding that will not fit
+  has not been decided yet.
+- **The verdict is arithmetic:** `YES` iff zero `❌`, else the exact `❌` count. Not a mood.
+- **Nothing else is in the reply** — no preamble, no narration, no paragraph under the table
+  re-explaining a `❌`. One clean single-issue session is 16 lines, and only extra issues grow
+  it. The half-page ceiling is the deliverable, not a nicety.
+
+**A blocker that needs a decision goes through `AskUserQuestion`** — which is why that tool
+is in the allowlist. The table is emitted FIRST, then ONE batched call: at most four
+questions, ≤2 sentences of context each, concrete action options with the recommendation
+first and labelled `(Recommended)`, and the same question recorded on the issue and as
+`AWAITING_USER`. It is NOT for permission to do the mandatory remediation (finishing work,
+reopening an issue, deleting its own leftovers) — those are obligations, and "shall I
+continue?" stays forbidden. On `CLOSE: YES` the archive offer uses the same mechanism.
+
+Two more properties to preserve if you edit it. **Scope is THIS session only:** it must not
 inspect, enumerate, or mention other sessions' worktrees, branches, locks or issues —
-earlier versions told it not to *flag* siblings, which still invited it to look. **Output is
-terse:** the verdict is the FIRST line, then one fixed checkbox line per step, so the answer
-is visible at a glance; an unchecked box's clause IS the explanation and gets no paragraph.
+earlier versions told it not to *flag* siblings, which still invited it to look.
+**The task-item gate is arithmetic, not judgement:** it must quote `m/n ticked` per issue
+from a fresh wrapper read and name the unticked items — the moment it becomes "the checklist
+looks complete" it is back to the recall that produced the failure, and the two remedies
+(finish / reopen-then-finish) are unconditional, never offered as options.
 It archives (`archive_session` `session_id: "self"`) only after an explicit go-ahead, and
-only if that MCP tool is present — a plain CLI session has none, so it recommends instead of
-reporting a tool failure. It leans on `continuous-work.md`, `remote-ci-must-pass.md`,
-`ci-owns-the-test-suite.md`, `keep-git-clean.md`, `file-organization.md`, `no-guessing.md`
-and `no-output-shortening.md`; the worktree/lock/CI steps degrade gracefully when the
-issue-work-orchestrator (Part 13) is not installed.
+only if that MCP tool is present — a plain CLI session has none, so it appends a one-line
+recommendation instead of reporting a tool failure. It leans on `continuous-work.md`, `issue-tracking.md`,
+`issue-filing-discipline.md`, `remote-ci-must-pass.md`, `ci-owns-the-test-suite.md`,
+`keep-git-clean.md`, `file-organization.md`, `no-guessing.md` and
+`no-output-shortening.md`; the worktree/lock/CI steps degrade gracefully when the
+issue-work-orchestrator (Part 13) is not installed. The step-2 reopen needs the wrapper's
+`reopen-issue` / `issue reopen` subcommand (Part 5.3) — the one capability this command
+added to the required set.
 
 `.claude/commands/continue-work.md` (`/continue-work`): the recovery command for a run that
 stopped before the work was done. It emits a ≤5-line status update, re-establishes its place
@@ -1606,7 +1678,11 @@ this prompt (leave any existing one alone).
 8. Commands — intended slash commands exist in `.claude/commands/`.
 9. Agents — intended subagents exist in `.claude/agents/`; `cv-orchestrator`
    has its `Agent(...)` allowlist line.
-10. Git wrapper — for the detected host, the wrapper + credential stub exist.
+10. Git wrapper — for the detected host, the wrapper + credential stub exist, and the
+    subcommands `/close-session`'s task-item gate depends on are IMPLEMENTED, not just
+    documented: `reopen-issue` / `issue reopen` (undo a close made over unfinished
+    checklist items) and the checklist toggle (mark one done). A `NotImplementedError`
+    from either means the gate can count unticked items but cannot fix them.
 11. Coexistence (Kiro projects) — `.kiro/` is byte-for-byte unchanged; both
     `.kiro/agents/` and `.claude/agents/` are present.
 11b. Temp-leak containment (Part 5.4) — `scripts/reap_agent_temp.py` exists;
@@ -1755,7 +1831,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   source/config/docs/tests, never generated/temp files, no stale worktrees/branches,
   per-run clean end-state, never move the shared local `main`, concurrency-safe gc
   config), `issue-tracking.md` (use+update issue checklists, set metadata, keep the issue
-  updated live, log Q&A on the issue — best-effort per host),
+  updated live, log Q&A on the issue — best-effort per host; every task item done is a
+  PRECONDITION for closing, and an issue closed over unticked items is REOPENED and
+  finished, not explained),
   `issue-filing-discipline.md` (WHETHER an issue should exist at all: observed defects
   only, the mandatory fix-first evaluation, zero filings is a valid outcome, no quotas,
   the four provenance lines, and the `docs/findings-ledger.md` route for everything not
@@ -2232,7 +2310,10 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > All agents that touch the issue tracker follow `.claude/rules/issue-tracking.md`: use
 > and update issue checklists, set metadata (assignee, start/end date, time-spent,
 > parent link) best-effort per host, keep the issue updated live so any agent can
-> resume, and record every user question and its answer on the issue.
+> resume, and record every user question and its answer on the issue. Closing requires
+> EVERY task item ticked (count them; a deferral counts only if it was recorded on the
+> issue when the decision was taken) — an issue closed with items outstanding is reopened
+> and finished, which needs no permission.
 > All agents and the main session follow `.claude/rules/issue-filing-discipline.md`:
 > file an issue ONLY for a defect you OBSERVED, and only after evaluating whether to
 > simply FIX it — a few lines with no design choice gets fixed now, not filed. File only
@@ -2336,7 +2417,9 @@ TDD/evidence hooks). Install Part 12 first.
   - `continue-work.md` — `/continue-work`, the manual restart after a run stopped early.
     Needing it means the continuous-work rule was not honored, so it also records WHY.
   - `close-session.md` — `/close-session`, the end-of-session check. Running it is NOT
-    permission to stop if work remains.
+    permission to stop if work remains — including when what remains is an unticked task
+    item on an issue this session already closed, which it REOPENS rather than reports
+    (Part 6.1, step 2; needs the wrapper's `reopen-issue` / `issue reopen`).
   All five, `/issues-work` included, carry `disable-model-invocation: true`, so an autonomous merge-and-close run can
   never begin because a prompt merely mentioned an issue number.
 - The `session-register.sh` and `continuous-work-reinject.sh` (SessionStart) and
@@ -2749,7 +2832,8 @@ expected outcome, not a sign that something was missed.
   authoritative copy is the on-demand .claude/docs/run-identity.md), no-ai-attribution.md
   (descriptive names, no AI
   attribution), keep-git-clean.md (commit-what-belongs, no stale worktrees/branches),
-  issue-tracking.md (checklists + metadata + live issue updates + Q&A on issue),
+  issue-tracking.md (checklists + metadata + live issue updates + Q&A on issue; all task
+  items ticked is a precondition for closing, and a close over unticked items is reopened),
   issue-filing-discipline.md (observed defects only, fix-first before filing, zero filings
   is valid, findings ledger),
   continuous-work.md (WHEN a turn may end: only finished work or a Proven Exception),
@@ -2774,13 +2858,15 @@ expected outcome, not a sign that something was missed.
   claim-first, own worktree, spec artifacts committed before implementation, stops after that
   issue), /auto-work (never-stop whole-backlog run for an unattended session: no questions, no
   intermediate reports, survives auto-compaction via on-disk checkpoints), /continue-work
-  (manual restart after a run stopped early), /close-session (end-of-session check). All four
+  (manual restart after a run stopped early), /close-session (end-of-session check, whose
+  task-item gate counts the issue's checklist mechanically and REOPENS an issue closed over
+  unfinished items). All four
   carry disable-model-invocation: true, so an autonomous merge-and-close run can never begin
   because a prompt merely mentioned an issue number.
 - New wrapper subcommands required (Part 5.3): GitHub get-pr, get-pr-checks, approve-pr,
-  merge-pr, delete-remote-branch, list-issues --state/--assignee/--label, plus
-  best-effort issue metadata/checklist ops; GitLab mr get/checks/approve/merge,
-  delete-branch, plus assign/spend/due-date/epic-link/checklist-toggle.
+  merge-pr, delete-remote-branch, list-issues --state/--assignee/--label, reopen-issue, plus
+  the checklist toggle and best-effort issue metadata ops; GitLab mr get/checks/approve/merge,
+  delete-branch, issue reopen, plus assign/spend/due-date/epic-link/checklist-toggle.
 - Per-issue worktrees under .claude/worktrees/ (gitignore them).
 
 # END OF PROMPT

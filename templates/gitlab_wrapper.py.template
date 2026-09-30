@@ -13,6 +13,7 @@ Usage:
     python scripts/gitlab_wrapper.py issue label-add <iid> --labels in-progress
     python scripts/gitlab_wrapper.py issue assign <iid> --me
     python scripts/gitlab_wrapper.py issue close <iid>
+    python scripts/gitlab_wrapper.py issue reopen <iid>       # undo a premature close
     python scripts/gitlab_wrapper.py mr create --source <branch> --target main --title "..."
     python scripts/gitlab_wrapper.py mr get <mr_iid>
     python scripts/gitlab_wrapper.py mr checks <mr_iid>
@@ -121,6 +122,11 @@ def _api_request(
 #     "none" -> assignee_id=None, else assignee_username=<user>.
 #   - issue_comment(iid, body): POST /issues/{iid}/notes
 #   - issue_close(iid): PUT /issues/{iid}?state_event=close
+#   - issue_reopen(iid): PUT /issues/{iid}?state_event=reopen. REQUIRED, not
+#     optional: it is how a close made over unfinished checklist items is undone
+#     (@close-session / /close-session step 2, and the Closing section of the
+#     issue-tracking rule). Idempotent — an already-opened issue exits 0.
+#     Re-claiming afterwards is issue_start's job, not this one's.
 #   - mr_create(source, target, title, description): POST /merge_requests
 #       {"source_branch","target_branch","title","description",
 #        "remove_source_branch": true}
@@ -183,7 +189,11 @@ def _api_request(
 #   - checklist items live in the issue DESCRIPTION as "- [ ]" / "- [x]"
 #     lines: toggle_checklist_item(iid, item_text, checked) by GET-ing the
 #     description, flipping the matching line, and PUT-ing it back. (GitLab
-#     renders these as "N of M checklist items completed".)
+#     renders these as "N of M checklist items completed".) NOT best-effort:
+#     this is how a task item is marked done, and the task-item gate in
+#     @close-session is satisfied by the resulting description. Consider a
+#     --count mode that reports ticked/total and lists the unticked items, so
+#     the gate needs no description parsing of its own.
 # For every field the host or this issue does not support, return a clear
 # "unsupported" result so the caller can fall back to a note and continue.
 #

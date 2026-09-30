@@ -102,6 +102,30 @@
 #     four. 8.34 mirrors the Claude twin's compressed why-paragraph. Do NOT
 #     re-inline the moved text into always-on steering: nothing was deleted,
 #     only relocated behind named pointers, and 8.26 now verifies the split.
+#   - MAKES "EVERY TASK ITEM DONE" A CLOSING PRECONDITION, CHECKED
+#     MECHANICALLY (new @close-session prompt in PART 8A.5 with its IDE hook
+#     9.4c, amended steering 8.30, and `issue reopen`/`reopen-issue` added to
+#     the required wrapper subcommands in PART 6.2). Measured problem: workers
+#     reported an issue as closed while task items on its checklist were still
+#     unfinished. Step 2 of the close-out now COUNTS the issue's `- [ ]` /
+#     `- [x]` lines from a fresh wrapper read, names every unticked item,
+#     treats a deferral invented at close-out as the unfinished work it is,
+#     and — when the issue was already CLOSED with items outstanding — REOPENS
+#     it, re-claims it, re-arms the stop gate by appending a non-terminal
+#     Status, finishes every item, and only then closes it again. The same
+#     invariant binds every agent through steering 8.30, so the orchestrator
+#     should never leave the close-out anything to reopen.
+#   - STANDARDIZES THE CLOSE-OUT REPORT INTO ONE FIXED TABLE (@close-session's
+#     Output section, PART 8A.5, and the 9.4c hook prompt). Measured problem:
+#     every run produced a differently shaped, wordy close-out and the findings
+#     were buried in prose. Now the reply is three things and nothing else — a
+#     CLOSE: YES / CLOSE: NO — <n> blocker(s) line, a NINE-ROW table (one row per
+#     step, fixed labels and order, one of exactly three marks ✅/❌/➖, Detail
+#     capped at 60 characters and carrying the deciding number), and an Issues
+#     block of one line per issue worked or filed. A ❌ needing a decision
+#     becomes one batched Questions block with a recommendation per question,
+#     never a paragraph. A clean single-issue close-out is 16 lines. The table's
+#     shape is identical to the Claude Code twin's on purpose.
 
 ---
 
@@ -921,10 +945,22 @@ GitHub: `list-workflows`, `list-runs`, `get-run`, `get-jobs`,
 `get-logs` (must strip `Authorization` header before following the
 302 redirect to Azure Blob Storage), `rerun`, `cancel`, `create-pr`,
 `list-issues`, `get-issue`, `get-issue-comments`, `comment-issue`,
-`update-issue`, `create-issue`.
+`update-issue`, `create-issue`, `reopen-issue`.
 
 GitLab: `pipeline status`, `pipeline log`, `issue create`,
-`issue list`, `issue show`, `label list`, `label create`.
+`issue list`, `issue show`, `issue close`, `issue reopen`,
+`label list`, `label create`.
+
+Reopen and the checklist toggle are NOT optional. Reopen is one call
+(GitLab `PUT /issues/{iid}` `{"state_event":"reopen"}`, GitHub
+`PATCH /issues/{n}` `{"state":"open"}`), idempotent, and is how a close
+made over unfinished checklist items is undone — the task-item gate in
+`@close-session` (Part 8A.5) and the Closing rule in steering 8.30 both
+depend on it, and without it the only way to correct that record is to
+leave it wrong. The checklist toggle (flip the `- [ ]` line in the
+description and write it back) is how an item is marked done in the
+first place; consider a `--count` mode that reports ticked/total and
+lists the unticked items, so the gate needs no parsing of its own.
 
 In-progress claim (REQUIRED for the issue-work-orchestrator; the fix
 for dropped in-progress labels). Additive, non-destructive label ops
@@ -1628,7 +1664,7 @@ tooling makes that acute — each `cdk` invocation orphans a
 `cdk.out<hash>` assemblies accumulate unboundedly (a reported 170 GB in
 two days). Scoping temp per tree makes every artifact attributable to the
 tree that made it, which is what allows cleanup at all. See
-`scripts/reap_agent_temp.py` and the `/close-session` command.
+`scripts/reap_agent_temp.py` and the `@close-session` prompt.
 ```
 
 ### 8.15 `no-output-shortening.md` (always) — NEW IN v2
@@ -2807,7 +2843,9 @@ the log) — never treat a missing optional field as a blocker.
 - **Checklists:** when filing an issue whose work decomposes, INCLUDE a structured
   task-list checklist; during implementation, tick items off via the wrapper as each
   is genuinely completed (with evidence) and add newly-discovered items. The checklist
-  is a living progress record, not decoration.
+  is a living progress record, not decoration. A tick is a claim like any other
+  (`no-guessing`): write it when the item is DONE, never ahead of the work — a tick that
+  runs ahead of reality is worse than no checklist at all.
 - **Live updates (resume-anywhere):** post a short status comment at each meaningful
   step (what was done, what's next, links to branch/PR/evidence); update the checklist;
   record the current branch/worktree/PR and the spec/evidence location.
@@ -2821,11 +2859,28 @@ the log) — never treat a missing optional field as a blocker.
   the whole set and silently drops other labels (this repeatedly caused duplicate work).
   Use additive `issue label-add`/`issue label-remove` for label changes; `issue release`
   to drop a claim you can't act on now.
-- **Closing:** close with a final comment linking the merged PR/MR and evidence,
-  ensure the checklist is fully ticked (or remaining items deferred with a reason),
-  and record the time spent. A deferred item is NOT an automatic follow-up issue —
+- **Closing — every task item done is a PRECONDITION, not a nicety:** re-read the issue
+  and COUNT its task list before closing (`- [ ]` vs `- [x]`; a tick you believe you wrote
+  but cannot see is not ticked). An unticked item means the issue is not closeable, and
+  the same goes for an epic whose work is tracked as CHILD issues: every child closed, or
+  the parent stays open. The ONE exception is an item whose deferral is recorded ON THE
+  ISSUE with its reason and its routing, recorded when the decision was taken — a deferral
+  invented at the moment of closing is just closing over unfinished work with extra words.
+  Then close with a final comment linking the merged PR/MR and evidence, the checklist
+  fully ticked, and the time spent. A deferred item is NOT an automatic follow-up issue —
   route it through `issue-filing-discipline.md` (fix it now, one gated issue, or a
   findings-ledger row).
+- **A close made over unticked items is corrected, not explained: REOPEN the issue**
+  (`issue reopen <iid>` / `reopen-issue <N>`), re-claim it, comment every outstanding item
+  onto it, finish them all, then close it again with the checklist complete. Reopening is
+  reversible, so it needs no permission (`continuous-work` Exception 1) and is never a
+  question for the user. `@close-session` audits this at the end of a session and will
+  reopen what you left — do not make it the place this gets caught.
+- **Scope of the two bullets above: closing an issue as DONE.** An ADMINISTRATIVE close —
+  duplicate, obsolete, already resolved elsewhere, won't-do — is a different act: it closes
+  on that reason with its evidence, and unticked items are expected there because they were
+  never going to be done. Name which kind of close it is in the closing comment; the
+  every-item-ticked precondition binds the first kind only.
 
 Scope: this rule governs an issue that EXISTS. Whether an issue should exist at all is
 governed by `issue-filing-discipline.md`.
@@ -3481,7 +3536,7 @@ wiring is needed beyond the copy):
   cap entirely. The orchestrator's per-run registry/locks (8.27) and the
   never-move-local-`main` + `gc.auto 0` git rules (8.29) make sharing one clone safe.
 
-### 8A.5 Reusable prompts (`.kiro/prompts/`) — the `/auto-work` equivalent
+### 8A.5 Reusable prompts (`.kiro/prompts/`) — the slash-command equivalent
 
 Kiro has NO user-defined `/name` slash commands (that is a Claude Code concept; see the
 mapping table in Part 1). The equivalent surface is Kiro's **file-based prompts**: a
@@ -3492,14 +3547,87 @@ File-based prompts do NOT accept arguments (only MCP prompts do), which is fine 
 `auto-work` — it takes none. `/prompts list`, `/prompts edit <name>`, and
 `/prompts details <name>` manage them.
 
-Install the never-stop autonomous backlog prompt, the counterpart of Claude Code's
-`/auto-work` command (`ClaudeCodeSetupPrompt.txt` Part 13.1c):
+Install the never-stop autonomous backlog prompt (the counterpart of Claude Code's
+`/auto-work`, `ClaudeCodeSetupPrompt.txt` Part 13.1c), plus the two prompts that bracket a
+run: `@continue-work` restarts one that stopped early, `@close-session` closes one out.
 
 ```bash
 mkdir -p .kiro/prompts
 cp kiro-prompts/auto-work.md      .kiro/prompts/
 cp kiro-prompts/continue-work.md  .kiro/prompts/
+cp kiro-prompts/close-session.md  .kiro/prompts/
 ```
+
+`@close-session` is the end-of-session close-out, the counterpart of Claude Code's
+`/close-session` (`ClaudeCodeSetupPrompt.txt` Part 6.1). It answers "can we close this
+session?" by FINISHING what is unfinished, then verifying, then emitting a one-glance
+verdict: nine steps — work-complete gate, task-item gate, CI gate, tree clean, leftovers
+deleted (the Part 5.4 reaper), worktree/branch/lock/claims gone, issues closed with
+evidence, shared local `main` untouched, terminal state recorded. Its scope is THIS session
+only: it resolves its own run from `registry.json` and never inspects, enumerates or
+mentions a sibling run's worktrees, branches, locks or issues.
+
+**Step 2, the task-item gate, is the part worth not weakening.** The measured failure it
+exists for is work reported as closed while task items on the issue were still unfinished,
+so the check is MECHANICAL, per issue, never from recall: re-read the issue through the
+wrapper, COUNT `- [ ]` vs `- [x]` in the description (a tick you believe you wrote but
+cannot see is not ticked), name every unticked item, and treat an epic whose work is tracked
+as CHILD issues the same way. An unticked item is unfinished work unless the issue itself
+already carried a deferral with its reason and its `issue-filing-discipline` routing BEFORE
+the close-out, or a Proven Exception is proven — a deferral written during close-out to pass
+the gate is not a deferral. Then two remedies, neither of them a question to the user: an
+issue still OPEN with unfinished items gets step 1's treatment (finish it now, ticking
+through the wrapper as each completes); an issue **already CLOSED with unfinished items is
+REOPENED** (`issue reopen <iid>` / `reopen-issue <N>`), re-claimed, told plainly that it was
+closed while `<n>` items were unfinished and that the closure was wrong, its outstanding
+items commented onto it, finished, and only then re-closed with the checklist visibly
+complete — and the report's task-items line says `REOPENED`, because a premature closure
+silently fixed teaches nobody anything. Reopening is reversible, so `continuous-work`
+Exception 1 makes it the required path rather than something to ask for. The reopen also
+RE-ARMS the brake, which is what turns "finish them" from an intention into an obligation:
+it appends `Status: IN_PROGRESS`, `CURRENT_ISSUE`, `WORKABLE_ISSUES_REMAIN: yes` and the
+resumed `Phase` to this run's `resume_state.md` — exactly the fields `kiro-loop-gate.sh`
+blocks on, and since every field read takes the LAST occurrence, a `Status: COMPLETED`
+written earlier in the session stops being the answer. One carve-out keeps the gate from
+wedging legitimate triage: an issue closed ADMINISTRATIVELY (duplicate, obsolete, already
+resolved elsewhere, won't-do) is outside it, provided the closing comment NAMES that reason.
+The gate sits BEFORE
+the CI check deliberately: finishing a missed item produces commits CI must then see. It
+needs the wrapper's `issue reopen` / `reopen-issue` subcommand and its checklist toggle
+(Part 6.2) — the same invariant is stated for every agent in the `issue-tracking` steering
+rule (8.30), so the orchestrator should never leave `@close-session` anything to reopen.
+
+**The report is a FIXED FORM, and that is half the point of shipping this prompt rather than
+letting each project write one.** Free-form close-outs drifted every run — different shape,
+different length, the findings buried in prose. So the reply is exactly three things: a
+`CLOSE: YES` / `CLOSE: NO — <n> blocker(s)` verdict line, a table of NINE rows (one per step,
+fixed labels, fixed order, all nine always present) whose `✓` column is one of exactly three
+marks, and an `Issues` block of one line per issue this session worked or filed. Four
+constraints do the work, and weakening any of them brings the drift back:
+
+- **`✅` / `❌` / `➖`, nothing else.** `❌` covers failing AND not-checked; `➖` means the step
+  has no subject in this session (no pipeline on this host, no worktree created), never
+  "skipped" and never "unclear". There is no `⚠️` — a caveat is a `✅` whose Detail names it,
+  or a `❌`.
+- **Detail cells are ≤60 characters** and carry the deciding number (pipeline id, SHA prefix,
+  `m/n`, byte total). No sentences, no hedging, no quoted output. A finding that will not fit
+  has not been decided yet.
+- **The verdict is arithmetic:** `YES` iff zero `❌`, else the exact `❌` count. Not a mood.
+- **Nothing else is in the reply** — no preamble, no narration, no paragraph under the table
+  re-explaining a `❌`. A clean single-issue session is 16 lines, and only extra issues grow
+  it. The half-page ceiling is the deliverable, not a nicety.
+
+The table is BYTE-IDENTICAL in shape to the Claude Code twin's, deliberately: a close-out
+reads the same whichever assistant produced it, which is what makes the two surfaces
+comparable at a glance. Two differences remain, both at the ending. Kiro has no
+session-archive tool, so the table IS the go-ahead and `/quit` stays the user's to type —
+the prompt adds no sentence about it. And Kiro has no structured question tool, so a blocker
+that genuinely needs a decision is asked in TEXT, in one batched `Questions` block under the
+Issues block: at most four, one to two lines each, every one carrying a recommendation, each
+also recorded on the issue and as `AWAITING_USER` (a question asked only in chat survives no
+compaction and releases no stop gate). That block is the ONLY thing permitted to grow the
+reply beyond the template, and it is never used to ask permission for the mandatory
+remediation. The Claude twin routes the same thing through `AskUserQuestion`.
 
 `@continue-work` is the recovery prompt for a run that stopped before the work was done: a
 ≤5-line status update, then it re-establishes its place from the on-disk state files
@@ -3825,6 +3953,47 @@ without the Part 8A fleet — any stalled session can be restarted with it.
   that you exhausted the alternatives — and if one applies, state it in two
   sentences WITH a recommendation and keep working on everything that does
   not depend on the answer."
+
+#### 9.4c `close-session.kiro.hook`
+
+The IDE button for the end-of-session close-out (the CLI reaches the same body
+with `@close-session`). Like 9.4b it does not need the Part 8A fleet — without
+a registered run its scope is simply the current working tree.
+
+- name: "Close Session"
+- description: "End-of-session close-out: finish anything unfinished (including
+  every task item on the issue, reopening an issue closed over unfinished
+  items), wait out CI, clean up this session's own leftovers, record a terminal
+  state, and report whether the session is safe to end."
+- trigger: `userTriggered`
+- action: `askAgent`
+- prompt: "Read `.kiro/prompts/close-session.md` COMPLETELY and execute it
+  exactly as written. Running it is NOT permission to stop: if work remains
+  unfinished, close-out is not what comes next — the work is. Two gates come
+  first and both may change things. (1) Is the work DONE against the project's
+  standards (implemented, tested with the symptom-reproducing test passing and
+  the suite green for the merged SHA from CI, documented)? (2) Is EVERY task
+  item on the issue done — counted mechanically from a fresh wrapper read of
+  the issue, `- [ ]` vs `- [x]`, with every unticked item named? An unticked
+  item is unfinished work unless the issue already recorded its deferral with a
+  reason and a routing before now. If the issue is still open, finish the items.
+  If the issue was already CLOSED with items unfinished, REOPEN it (`issue
+  reopen <iid>`), re-claim it, say plainly that it was closed while `<n>` items
+  were unfinished and that the closure was wrong, comment the outstanding items
+  onto the issue, finish them, and only then close it again with the checklist
+  complete — do not ask permission, reopening is reversible. Then CI, tree
+  clean, leftovers deleted (`python scripts/reap_agent_temp.py --scoped-temp
+  tmp/os-temp --apply`), worktree/branch/lock/claims gone, issues closed with
+  evidence, shared local `main` untouched, and a terminal state appended to this
+  run's `resume_state.md`. Scope is THIS session only — never inspect or mention
+  another run's worktrees, branches, locks or issues. The reply is the FIXED FORM
+  the prompt's Output section prescribes and nothing else: a CLOSE: YES / CLOSE:
+  NO — <n> blocker(s) line, the nine-row table (fixed labels, fixed order, all
+  nine rows, one ✅/❌/➖ each, Detail ≤60 characters carrying the deciding
+  number), then the Issues block of one line per issue worked or filed. No
+  preamble, no narration, no paragraph under the table. If something is genuinely
+  blocked, add the one batched Questions block — at most four, each with a
+  recommendation — and nothing more."
 
 #### 9.7 `git-push.kiro.hook`
 - name: "Git Push"
@@ -4223,7 +4392,9 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
   `docs/findings-ledger.md` [created / already present], block+allow self-check
   [exit 2 / exit 0 as expected]
 - Reusable prompts in `.kiro/prompts/` (PART 8A.5): [list — e.g. auto-work,
-  invoked as `@auto-work`]
+  continue-work, close-session, invoked as `@auto-work` etc.]
+- Wrapper implements `issue reopen`/`reopen-issue` and the checklist toggle,
+  which `@close-session`'s task-item gate needs (PART 6.2): [yes / no]
 - Delegation rosters resolve (no orchestrator/conductor `availableAgents`
   entry points at an uninstalled agent): [yes / no — list gaps]
 
@@ -4409,6 +4580,18 @@ global overrides MCP. Managed with `/prompts list|edit|details`.
   instruction declared void (Claude Code counterpart: `/continue-work`). IDE hook: Part 9.4b.
   The behavioral fix that should make it unnecessary is the `continuous-work` steering rule
   (Part 8.33).
+- `close-session.md` → `@close-session`: the end-of-session close-out — nine steps that
+  FINISH what is unfinished, then verify, then emit ONE fixed nine-row verdict table with a
+  ✅/❌/➖ per step, ≤60-character details, and an Issues block below it; a blocker that needs
+  a decision becomes one batched `Questions` block, never prose (Claude Code counterpart:
+  `/close-session`, which routes the same through `AskUserQuestion`). IDE hook: Part 9.4c.
+  The report contract is as load-bearing as the steps — free-form close-outs drifted every
+  run, which is why the rows, the marks and the 60-character budget are fixed. Step 2 is the
+  task-item gate: the
+  issue's checklist is counted from a fresh wrapper read, and an issue CLOSED while items
+  were unfinished is REOPENED, finished and re-closed rather than reported — so it needs the
+  wrapper's `issue reopen`/`reopen-issue` and checklist toggle (Part 6.2). Unlike the Claude
+  command it cannot archive the session (no such tool in Kiro); it recommends `/quit`.
 
 ### Custom-agent hook trigger types (PART 8A, Kiro CLI agent JSON `hooks`)
 Distinct from the Part 9 `.kiro.hook` triggers above. Keyed by trigger, each an array

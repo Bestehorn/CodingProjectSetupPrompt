@@ -10,6 +10,7 @@ Usage:
     python scripts/github_wrapper.py start-issue <number>    # claim in-progress (idempotent, verified)
     python scripts/github_wrapper.py claim-check <number>    # read-only; exit 3 if open+unclaimed
     python scripts/github_wrapper.py release-issue <number>  # drop the claim
+    python scripts/github_wrapper.py reopen-issue <number>   # undo a premature close
     python scripts/github_wrapper.py create-pr --head <branch> --base main --title "..." --body-file <path>
     python scripts/github_wrapper.py get-pr <pr_number>
     python scripts/github_wrapper.py get-pr-checks <pr_number>
@@ -192,6 +193,15 @@ def _api_request(
 #     live in the issue BODY as "- [ ] item" / "- [x] item" lines. Implement
 #     by GET-ing the issue body, flipping the matching line, and PATCH-ing
 #     the body back. (GitLab has a dedicated checklist API; GitHub does not.)
+#     NOT best-effort: this is how a task item is marked done, and the
+#     task-item gate in /close-session is satisfied by the resulting body.
+#     Consider a --count mode that just reports ticked/total and lists the
+#     unticked items, so the gate needs no body parsing of its own.
+#   - reopen_issue(number): PATCH /repos/{o}/{r}/issues/{n} {"state":"open"}.
+#     REQUIRED, not optional. It is how a close made over unfinished checklist
+#     items is undone (/close-session step 2, and the Closing section of the
+#     issue-tracking rule). Idempotent: an already-open issue is a no-op that
+#     exits 0. Re-claiming afterwards is start_issue's job, not this one's.
 #   - Time tracking: GitHub has no native time-tracking field. Record
 #     time-spent in a closing comment instead; report the limitation.
 #   - Start/end dates: no native field on classic issues; record as a dated

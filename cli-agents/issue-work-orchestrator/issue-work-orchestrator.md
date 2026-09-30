@@ -594,12 +594,15 @@ host didn't auto-delete):
 
 ## RESOLVE
 Close issue X per the **issue-tracking** rule: post a final comment linking the merged
-PR and the evidence; ensure the issue's checklist is fully ticked (or any remaining item
-is explicitly deferred with a reason — a deferred item is routed by discipline C, so it
-becomes a fix here, a ledger row, or ONE gated issue, never an automatic follow-up);
-**record the time spent** (elapsed from the start
-timestamp set at SELECT) in the host's time-tracking field if it has one, else in the
-closing comment; then close the issue via `update-issue` (state closed). Mark it
+PR and the evidence; ensure the issue's checklist is fully ticked — re-read the issue and
+COUNT its `- [ ]` / `- [x]` lines rather than trusting the ticks you believe you wrote, and
+FINISH any item that is still open instead of closing over it (only an item whose deferral
+was already recorded on the issue may stay unticked; a deferred item is routed by discipline
+C, so it becomes a fix here, a ledger row, or ONE gated issue, never an automatic
+follow-up). Closing X with items outstanding is not a smaller close, it is a wrong one, and
+`@close-session` will reopen X to finish them. Then **record the time spent** (elapsed from
+the start timestamp set at SELECT) in the host's time-tracking field if it has one, else in
+the closing comment, and close the issue via `update-issue` (state closed). Mark it
 resolved in this run's `issue_queue.md`, release the issue's local lock if still held,
 update your registry entry, and append a `DL-NNN` entry. Confirm per keep-git-clean that
 this run left no stale worktree/branch/lock behind (and the shared local `main` was never

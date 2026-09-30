@@ -27,6 +27,7 @@ one source of truth instead of duplicating the workflow into the hook JSON. See
 |---|---|---|
 | `auto-work.md` | `@auto-work` (CLI) / "Auto-Work the Issue Backlog" hook (IDE) | `/auto-work` (`claude-commands/auto-work.md`) |
 | `continue-work.md` | `@continue-work` (CLI) / "Continue Work" hook (IDE) | `/continue-work` (`claude-commands/continue-work.md`) |
+| `close-session.md` | `@close-session` (CLI) / "Close Session" hook (IDE) | `/close-session` (`claude-commands/close-session.md`) |
 
 ## Install
 
@@ -36,6 +37,7 @@ one source of truth instead of duplicating the workflow into the hook JSON. See
 mkdir -p .kiro/prompts
 cp kiro-prompts/auto-work.md      .kiro/prompts/
 cp kiro-prompts/continue-work.md  .kiro/prompts/
+cp kiro-prompts/close-session.md  .kiro/prompts/
 ```
 
 `auto-work` depends on the Part 8A advanced fleet (`issue-work-orchestrator`, the
@@ -47,3 +49,16 @@ creating a worktree for an unclaimed issue.
 `continue-work` has no fleet dependency — it restarts any stalled session. Both prompts
 assume the `continuous-work` steering rule (Part 8.33) is installed; that rule is the
 behavioral fix, and `@continue-work` is only the manual recovery path for when it fails.
+
+`close-session` is the end-of-session close-out: it finishes what is unfinished, then
+verifies, then reports ONE fixed nine-row table — one row per step, a single ✅/❌/➖ mark
+each, details capped at 60 characters, an `Issues` block of one line per issue worked or
+filed underneath, and nothing else (a clean single-issue close-out is 16 lines). Its step 2
+is the task-item gate — it counts the issue's `- [ ]` / `- [x]` lines from a fresh wrapper
+read and, if the issue was CLOSED while items were still unfinished, REOPENS it, says so,
+finishes them, and re-closes. That needs the wrapper's `issue reopen` / `reopen-issue`
+subcommand and its checklist toggle (Part 6.2). Its worktree/lock/CI steps degrade gracefully
+outside an orchestrator run. Two endings differ from the Claude twin: Kiro has no
+session-archive tool (the table is the go-ahead; `/quit` is the user's), and no structured
+question tool, so a blocker needing a decision becomes one batched `Questions` block instead
+of an `AskUserQuestion` call.

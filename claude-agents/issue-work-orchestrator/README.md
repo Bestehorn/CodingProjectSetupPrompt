@@ -134,7 +134,7 @@ the entry points the continuous-work contract is written around:
 | `/work-issue <X>` | the SAME lifecycle for exactly one named issue, then stop |
 | `/auto-work` | the never-stop, unattended whole-backlog run — nobody is watching, so nothing it could ask is worth the wait |
 | `/continue-work` | the manual restart after a run stopped early. Needing it means the contract was not honored, so part of its job is to record WHY |
-| `/close-session` | the end-of-session close-out: assess the tree, remediate THIS run's own artifacts, record a terminal `Phase`, report whether the session is safe to close |
+| `/close-session` | the end-of-session close-out: finish what is unfinished — including every task item on the issue, REOPENING an issue that was closed while items were still unticked — remediate THIS run's own artifacts, record a terminal `Phase`, then report it as ONE fixed nine-row table (✅/❌/➖ per step, ≤60-char details, an `Issues` block below, blockers asked through `AskUserQuestion`) so a close-out is readable at a glance instead of drifting in shape every run |
 
 All five carry `disable-model-invocation: true`, so an autonomous merge-and-close run can never
 begin because a prompt merely mentioned an issue. `/close-session` is also what puts a run into a
@@ -144,8 +144,9 @@ Also ensure the git wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrap
 implements the PR/merge/CI subcommands the orchestrator needs (the setup prompt Part 6.2
 lists them: `get-pr`, `get-pr-checks`, `approve-pr`, `merge-pr`, `delete-remote-branch`,
 and `list-issues` with state/assignee/label filters, plus the existing issue/run
-subcommands), and add `.claude/worktrees/` to `.gitignore`. `ClaudeCodeSetupPrompt.txt`
-Part 13 does all of this for you.
+subcommands, plus `reopen-issue` / `issue reopen` and the checklist toggle that
+`/close-session`'s task-item gate needs), and add `.claude/worktrees/` to `.gitignore`.
+`ClaudeCodeSetupPrompt.txt` Part 13 does all of this for you.
 
 ## Run it
 
