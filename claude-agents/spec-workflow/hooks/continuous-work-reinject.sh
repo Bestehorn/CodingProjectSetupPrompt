@@ -112,6 +112,25 @@ Independent work runs in PARALLEL (review lanes, research, the tasks of a wave: 
 is awaited with the wrapper's blocking wait as a BACKGROUND task, never with sleep.
 CONTRACT
 
+# A FRAMEWORK REVISION NOTICE, while one is valid. This is the channel a live run picks a revision up on: its
+# agent definition was fixed at spawn and the rules return only at the next compaction, which is exactly when
+# this hook fires. The file retires itself through its `Valid-until:` line (see hook_revision_notice).
+if notice="$(hook_revision_notice "$(dirname "$lib")")"; then
+    printf '\n%s\n' "$notice"
+fi
+
+# A STALE CHECKOUT is told so at the same moments. On a machine nobody has pulled on, the fetched trunk carries a
+# newer framework than the checkout these hooks run from, and every session here still works under the replaced
+# one. Informational here (SessionStart cannot block); the loop gate enforces it once per registered run.
+if stale="$(hook_framework_stale "$(hook_project_dir)")"; then
+    printf '\nFRAMEWORK STALE: %s carries framework %s; this checkout runs %s. The rules, phases and agents you\n' \
+        "${stale%% *}" "${stale##* }" "$(hook_contract_version)"
+    printf 'were loaded with were replaced. If `git status --porcelain` in the checkout prints nothing and HEAD is an\n'
+    printf 'ancestor of %s, run `git merge --ff-only %s` there (the one sanctioned move of local main);\n' \
+        "${stale%% *}" "${stale%% *}"
+    printf 'otherwise ask the operator, in five lines, to update the checkout. Then read .claude/hooks/REVISION_NOTICE.md.\n'
+fi
+
 if [[ -z "$sid" ]]; then
     printf '\n## Your recorded place in the work\n\nThe harness supplied no session id, so this run cannot be identified. Read your own state file before acting.\n'
     exit 0

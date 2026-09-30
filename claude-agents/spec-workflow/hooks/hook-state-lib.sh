@@ -970,6 +970,68 @@ hook_capture_for_task() {
     return 1
 }
 
+# hook_revision_notice <hooks dir> -> prints the body of <hooks dir>/REVISION_NOTICE.md while it is valid.
+#
+# THE LIVE-SESSION MIGRATION CHANNEL for a framework revision. A running agent's system prompt is fixed at
+# spawn and its rules re-enter context only at the next compaction, so a revision that changes HOW the phases
+# run has to be delivered where a live run cannot miss it: the loop gate's contract handshake (once per run,
+# keyed on CONTRACT_VERSION) and the SessionStart re-inject (every compaction, resume and startup). Both print
+# this file when it exists. The optional first line `Valid-until: YYYY-MM-DD` retires it automatically, so a
+# notice cannot outlive its rollout and load into every session forever. Prints nothing and returns 1 when
+# the file is absent or expired.
+hook_revision_notice() {
+    local dir="$1" f="$1/REVISION_NOTICE.md" until today
+    [[ -f "$f" ]] || return 1
+    until="$(head -n 3 "$f" 2>/dev/null | tr -d '\r' | grep -iE '^Valid-until:' | head -1 | sed -E 's/^[^:]*:[[:space:]]*//')"
+    today="$(date -u +%Y-%m-%d 2>/dev/null || echo 0000-00-00)"
+    if [[ -n "$until" && "$today" > "$until" ]]; then
+        return 1
+    fi
+    grep -viE '^Valid-until:' "$f" 2>/dev/null | tr -d '\r'
+    return 0
+}
+
+# hook_framework_stale <project dir> -> prints "<remote>/<branch> <version>" and returns 0 when a FETCHED trunk
+# carries a newer .claude/hooks/CONTRACT_VERSION than the checkout these hooks run from; returns 1 otherwise,
+# including when git or the tracking refs are absent.
+#
+# WHY: the hooks, rules and agents a live session uses are read from ITS OWN main checkout, and the
+# orchestrator is main-checkout-free — it never moves that checkout. A framework revision merged on the trunk
+# therefore reaches a machine only when someone fast-forwards the checkout there; until then every run on it
+# keeps working under the replaced framework, and nothing tells it so. This check is that telling. It reads
+# the LOCAL tracking refs only (no network — the orchestrator's Remote Sync fetches keep them current) and
+# scans every remote, because a project may push to `gitlab` and keep `origin` as a frozen archive.
+hook_framework_stale() {
+    local proj="$1" local_v remote branch ref remote_v best_ref="" best_v=""
+    command -v git >/dev/null 2>&1 || return 1
+    git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    local_v="$(hook_contract_version)"
+    [[ "$local_v" == "unversioned" ]] && local_v=""
+    for remote in $(git -C "$proj" remote 2>/dev/null); do
+        for branch in main master; do
+            ref="refs/remotes/$remote/$branch"
+            git -C "$proj" rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
+            # The object spec goes in on STDIN, never as an argument: on Windows the MSYS runtime rewrites an
+            # argument shaped `ref:path` into `ref;path` with backslashes (measured: "ambiguous argument
+            # 'refs\remotes\origin\main;.claude\hooks\CONTRACT_VERSION'"), and MSYS_NO_PATHCONV=1 would also
+            # stop `-C "$proj"` from being converted. `cat-file --batch` prints a header line, then the blob;
+            # for a missing object the header says `missing` and there is no second line, so remote_v is empty.
+            remote_v="$(printf '%s\n' "$ref:.claude/hooks/CONTRACT_VERSION" \
+                | git -C "$proj" cat-file --batch 2>/dev/null | sed -n 2p | tr -d '\r\n[:space:]')"
+            [[ -n "$remote_v" ]] || continue
+            if [[ "$remote_v" > "$local_v" && "$remote_v" > "$best_v" ]]; then
+                best_v="$remote_v"; best_ref="$remote/$branch"
+            fi
+        done
+    done
+    [[ -n "$best_v" ]] || return 1
+    printf '%s %s' "$best_ref" "$best_v"
+    return 0
+}
+hook_framework_ack_file() { # <run_dir> <version> -> the path whose EXISTENCE means "this run was told about <version>"
+    printf '%s/framework-ack-%s' "$1" "${2//[^A-Za-z0-9._-]/_}"
+}
+
 # ---------------------------------------------------------------------------------------------------------
 # THE SELF-TEST MUST REMAIN THE LAST DEFINITION IN THIS FILE. See the header.
 # ---------------------------------------------------------------------------------------------------------

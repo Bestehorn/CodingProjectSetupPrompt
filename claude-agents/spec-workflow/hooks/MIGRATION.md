@@ -125,13 +125,48 @@ A blocked turn-end costs one turn; an allowed turn-end on unfinished work costs 
 unacked contract blocks rather than warns — and the message is written to be actionable inside the
 same turn (create one file, carry on), never to send the agent looking for documentation.
 
+### 3a. A framework revision rides the handshake: `REVISION_NOTICE.md`
+
+A contract bump tells a live run how to *stop*; a framework revision changes how it *works* —
+tiers, caps, the review contract, waves. The run's agent definition and command body were fixed at
+spawn and its rules return only at the next compaction, so the revision has to be delivered where
+the run cannot miss it. `hooks/REVISION_NOTICE.md` is that delivery: `hook_revision_notice` prints
+it inside the loop gate's contract handshake (once per run, keyed on `CONTRACT_VERSION`) and in
+`continuous-work-reinject.sh` at every compaction, resume and startup. Its first line
+`Valid-until: YYYY-MM-DD` retires it, so a notice cannot outlive its rollout and load into every
+session forever. Bumping `CONTRACT_VERSION` alongside the notice is what makes every live run see
+it exactly once. Replace the body at the next revision; never let two notices accumulate.
+
+### 3b. Other machines: the freshness handshake
+
+Everything above assumes the hooks on disk are the new ones. On a machine where nobody has pulled,
+they are not — and the orchestrator is main-checkout-free, so **nothing there ever moves the
+checkout the hooks are read from**. `hook_framework_stale` closes that gap: it compares the
+checkout's `CONTRACT_VERSION` with the one in every fetched trunk ref (`<remote>/main|master`,
+every remote, local refs only — the orchestrator's Remote Sync fetches keep them current). When the
+trunk is newer, the loop gate refuses once per run and version (`runs/<run-id>/framework-ack-<v>`)
+with the update instruction, and `continuous-work-reinject.sh` says the same at session start:
+
+- **The one sanctioned move of local main** (`keep-git-clean.md`): if `git status --porcelain` in
+  the checkout prints nothing and HEAD is an ancestor of the trunk ref, `git merge --ff-only
+  <remote>/<main>`. Reversible via the reflog; moves no one else's branch; every hook re-reads its
+  script on its next call, so the run is on the new framework from that moment.
+- Otherwise the checkout holds someone's work: the run asks the operator in five lines, records
+  `AWAITING_USER`, and continues what does not depend on it.
+
+Like the contract handshake, it never stands the gate down at the cap: it auto-acks and falls
+through to the brake. So **pushing the project update to the trunk is the whole rollout**: the
+first Remote Sync on each machine fetches the new version, the next turn-end delivers the
+instruction, and the fast-forward brings the notice, rules, agents and hooks with it. Ordinary chat
+sessions (`UNREGISTERED`) are told only at session start and never refused.
+
 ---
 
 ## 4. Deploying to a project with live workers
 
 ```
 1. Copy the hooks into <project>/.claude/hooks/:
-       hook-state-lib.sh   CONTRACT_VERSION   MIGRATION.md
+       hook-state-lib.sh   CONTRACT_VERSION   MIGRATION.md   REVISION_NOTICE.md
        session-register.sh issue-loop-gate.sh
        spec-stop-gate.sh   spec-tdd-gate.sh   continuous-work-reinject.sh
        tests/
@@ -328,9 +363,9 @@ mkdir -p /tmp/gp/hooks && cp .claude/hooks/issue-loop-gate.sh /tmp/gp/hooks/
 #    than trusting the counts below.
 bash .claude/hooks/tests/test_crlf_hygiene.sh     # 11 — a CR smuggled through a line protocol
 bash .claude/hooks/tests/test_hook_state_lib.sh   # 64 — identity, parsing, counters, cap validation
-bash .claude/hooks/tests/test_stop_gates.sh       # 24 — Stop gate exit codes
-bash .claude/hooks/tests/test_tdd_gate.sh         # 42 — push gate, both directions
-bash .claude/hooks/tests/test_reinject.sh         # 23 — no cross-run adoption + delivery invariants
+bash .claude/hooks/tests/test_stop_gates.sh       # 35 — Stop gate exit codes + the framework freshness handshake
+bash .claude/hooks/tests/test_tdd_gate.sh         # 44 — push gate, both directions
+bash .claude/hooks/tests/test_reinject.sh         # 26 — no cross-run adoption + delivery invariants + revision notice
 bash .claude/hooks/tests/test_gate_overblock.sh   # 50 — the OVER-block direction: turns that must be ALLOWED
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # 32 — handshake BLOCK by text, evidence, mtime, cross-gate
 bash .claude/hooks/tests/test_scoped_temp.sh      # 26 — the self-writing settings.local.json env block

@@ -2052,7 +2052,21 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   - `MIGRATION.md` — the reference for deploying all of this to a project whose agents are
     already running, and the only place that records which live sessions the handshake reaches.
     Documentation, not a hook.
-  - `tests/` — EIGHT self-contained suites, 277 assertions, asserting the gates' EXIT CODES
+  - `REVISION_NOTICE.md` — the live-session migration notice for a framework revision: what
+    changed and what a run in flight does about it (re-tier, freeze scope, materiality gate,
+    waves, no sleep, no manual E2E). The loop gate prints it inside the contract handshake and
+    `continuous-work-reinject.sh` prints it at every compaction/resume/startup, so a running
+    agent whose definition was fixed at spawn still learns the phases changed. Its first line
+    `Valid-until: YYYY-MM-DD` retires it automatically. Data, not a script — copy it as-is;
+    replace its body when the framework is next revised.
+    The same two hooks also run the FRESHNESS check (`hook_framework_stale`): when a fetched
+    trunk's `.claude/hooks/CONTRACT_VERSION` is newer than the checkout's, the loop gate refuses
+    once per run with the update instruction — fast-forward a clean, strictly-behind checkout
+    (`git merge --ff-only <remote>/<main>`, the one sanctioned move of local main per
+    `keep-git-clean.md`), otherwise ask the operator — and `framework-ack-<version>` stops the
+    repeat. This is how a revision merged on the trunk reaches live sessions on OTHER machines,
+    where nobody has pulled and the orchestrator never moves the checkout.
+  - `tests/` — EIGHT self-contained suites, 288 assertions, asserting the gates' EXIT CODES
     (and, where an exit code cannot distinguish two causes, the REFUSAL TEXT). The acceptance
     criterion for this Part.
 
@@ -2084,6 +2098,7 @@ cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, 
 cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
+cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md .claude/hooks/
 mkdir -p .claude/hooks/tests
 cp claude-agents/spec-workflow/hooks/tests/*.sh .claude/hooks/tests/   # all EIGHT suites
 ```
@@ -2104,7 +2119,7 @@ bash .claude/hooks/tests/test_reinject.sh         # no cross-run adoption + deli
 bash .claude/hooks/tests/test_unpinned_fixes.sh   # fixes that were real but guarded by nothing
 bash .claude/hooks/tests/test_scoped_temp.sh      # the self-writing settings.local.json env block
 ```
-277 assertions in total (11 + 64 + 27 + 50 + 44 + 23 + 32 + 26, in the order above).
+288 assertions in total (11 + 64 + 35 + 50 + 44 + 26 + 32 + 26, in the order above).
 `test_unpinned_fixes.sh` is the youngest and explains why a green suite is not the same as a
 guarded one: an adversarial pass MUTATED the shipped hooks and re-ran all 193 assertions the
 other six then held, and THREE mutations survived every one of them — the contract handshake's
@@ -2129,14 +2144,17 @@ after them. Preserve that ordering if you edit it.
 Each is self-contained: it builds a synthetic project tree in a temp directory, drives the real
 hook scripts, and asserts EXIT CODES. `test_hook_state_lib.sh` is separate from the gate suite
 on purpose — it calls the library functions directly, with no caller globals in scope, because a
-measured fail-open hid in precisely that gap and all 27 of `test_stop_gates.sh`'s end-to-end
+measured fail-open hid in precisely that gap and all 35 of `test_stop_gates.sh`'s end-to-end
 assertions passed over it.
 ALL EIGHT reporting `0 failed` is the acceptance criterion for this Part — `test_stop_gates.sh`
-at `27 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
-`test_reinject.sh` at `23`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `44`,
-`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11` (the three added
-stop-gate cases and the two added push-gate cases pin the WAVE capture: a `# tasks:` header
-covers exactly the ids it names, so `1.1` never covers `1.10`). A gate that is installed but exits 0 on a registered run with no
+at `35 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
+`test_reinject.sh` at `26`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `44`,
+`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11` (the wave-capture cases in
+both gate suites pin that a `# tasks:` header covers exactly the ids it names, so `1.1` never
+covers `1.10`; the freshness cases pin that a newer trunk version is refused ONCE per run with
+the fast-forward instruction, that an acked run reaches the brake, and that equal versions
+never refuse; the reinject cases pin that a valid `REVISION_NOTICE.md` is delivered and an
+expired one is withheld). A gate that is installed but exits 0 on a registered run with no
 state file is INERT, and inert is indistinguishable from satisfied without these suites. If a
 count comes back LOWER than the figure above, a suite is not running all of its cases — check
 that before reading the `0 failed` as a pass.
@@ -2428,7 +2446,14 @@ What to know here:
    error and the action proceeds. Exit 2 fails closed; JSON-only fails open.
 4. **Bumping `CONTRACT_VERSION` is the entire deployment procedure** for pushing revised contract
    text to every live run: each run's ack filename stops matching, so each is refused once, gets
-   the new text on stderr, writes the ack, and continues.
+   the new text on stderr, writes the ack, and continues. A framework revision rides the same
+   handshake: `REVISION_NOTICE.md` is printed inside it (and on every compaction), so the
+   run in flight is told the phases changed and what to do about the work it is holding.
+   **Other machines** are reached by the freshness check in the same two hooks: the moment a
+   clone there fetches a trunk whose `CONTRACT_VERSION` is newer than its checkout's, every
+   registered run on it is refused once with the instruction to fast-forward the clean,
+   strictly-behind checkout (or ask the operator) — so pushing the project update is the
+   whole rollout; no one has to visit each machine.
 5. **Loading is not engaging — and this is the part most likely to be missed.** A live session
    whose registry entry was never written resolves `UNREGISTERED`, which every gate treats as
    benign (it is indistinguishable from an ordinary chat session), so it loads the new code and

@@ -51,6 +51,20 @@ echo "Context pressure is never a reason to stop: compaction is automatic and yo
 echo "trigger it. If you must ask, keep it to a few lines and include a recommendation."
 echo "If work is already in flight below, continue it — do not restart or re-plan it."
 
+# ------------------------------------------------ a framework revision notice, while valid
+# REVISION_NOTICE.md beside this hook is how a relaunched run learns that the phases it was
+# spawned with were replaced (mirrors the Claude twin's hook_revision_notice). Its optional
+# first line `Valid-until: YYYY-MM-DD` retires it automatically.
+notice_file="$(dirname "${BASH_SOURCE[0]:-$0}")/REVISION_NOTICE.md"
+if [[ -f "$notice_file" ]]; then
+    notice_until="$(head -n 3 "$notice_file" | tr -d '\r' | grep -iE '^Valid-until:' | head -1 | sed -E 's/^[^:]*:[[:space:]]*//')"
+    notice_today="$(date -u +%Y-%m-%d 2>/dev/null || echo 0000-00-00)"
+    if [[ -z "$notice_until" || ! "$notice_today" > "$notice_until" ]]; then
+        echo
+        grep -viE '^Valid-until:' "$notice_file" | tr -d '\r' | sed 's#\.claude/#.kiro/#g; s#\.kiro/rules/#.kiro/steering/#g'
+    fi
+fi
+
 # ------------------------------------------------------- this run's place, if discoverable
 run_dir=""
 if [[ -n "$sid" && -f "$orch/registry.json" ]] && command -v jq >/dev/null 2>&1; then

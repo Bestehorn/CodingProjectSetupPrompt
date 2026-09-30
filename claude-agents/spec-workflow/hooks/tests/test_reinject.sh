@@ -34,6 +34,7 @@ echo "==========================================================================
 reset; sibling
 out="$(run "$MINE")"
 chk  "contract is always injected"                    "Continuous work is in force" "$out"
+chk  "revision notice delivered while valid"          "FRAMEWORK REVISION" "$out"
 chk  "unregistered says so plainly"                   "No orchestrator/spec run is registered" "$out"
 nchk "does NOT leak the sibling's issue number"       "565" "$out"
 nchk "does NOT leak the sibling's branch"             "fix-issue-565" "$out"
@@ -118,6 +119,16 @@ else printf '  FAIL  invariant: stdout begins with { and may be parsed as JSON\n
 #     which reads as delivered but is not.
 if (( "$(wc -c < "$ARENA/o.txt")" < 10000 )); then printf '  PASS  invariant: stdout under the 10000-char cap (%s bytes)\n' "$(wc -c < "$ARENA/o.txt")"; pass=$((pass+1));
 else printf '  FAIL  invariant: stdout is %s bytes, at/over the 10000 cap\n' "$(wc -c < "$ARENA/o.txt")"; fail=$((fail+1)); fi
+
+# 6b. An EXPIRED revision notice is not delivered: the `Valid-until:` line retires it, so a rollout notice
+#     cannot outlive its rollout and load into every session forever.
+EXPIRED="$(mktemp -d)"; mkdir -p "$EXPIRED/hooks"
+cp "$HOOKS/continuous-work-reinject.sh" "$HOOKS/hook-state-lib.sh" "$EXPIRED/hooks/"
+printf 'Valid-until: 2000-01-01\n## FRAMEWORK REVISION long gone\n' > "$EXPIRED/hooks/REVISION_NOTICE.md"
+out="$( cd "$EXPIRED" && printf '{"session_id":"x","source":"startup","cwd":"."}' | bash hooks/continuous-work-reinject.sh 2>&1 )"
+nchk "expired revision notice is NOT delivered"        "FRAMEWORK REVISION" "$out"
+chk  "contract still delivered without a notice"      "Continuous work is in force" "$out"
+rm -rf "$EXPIRED"
 
 # 7. A missing library must never break startup (SessionStart cannot block).
 BROKE="$(mktemp -d)"; mkdir -p "$BROKE/hooks"; cp "$HOOKS/continuous-work-reinject.sh" "$BROKE/hooks/"

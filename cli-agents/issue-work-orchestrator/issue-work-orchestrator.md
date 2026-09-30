@@ -286,6 +286,17 @@ Remote Sync(target = <this run's own worktree>; NEVER the shared main checkout):
   1. git -C <target> fetch origin --prune --no-auto-gc
      (retry with brief backoff on a transient ref-lock abort from a concurrent fetch —
       that is retryable, not corruption; never --prune=now, never auto-gc.)
+  1b. Framework freshness. If the fetched trunk changed the framework relative to the
+      checkout (`git -C <checkout> diff --stat HEAD origin/<main> -- .kiro/steering
+      .kiro/agents .kiro/hooks-bin` is non-empty), the steering, phases, agents and hooks
+      this run is using were replaced. The ONE sanctioned move of the shared main checkout
+      applies: when `git -C <checkout> status --porcelain` prints nothing AND
+      `git -C <checkout> merge-base --is-ancestor HEAD origin/<main>` holds, run
+      `git -C <checkout> merge --ff-only origin/<main>` (reversible via the reflog; moves
+      no one else's branch), then read `.kiro/hooks-bin/REVISION_NOTICE.md` and apply it
+      to the work in flight. If either condition fails, ask the operator in the five-line
+      shape and continue. (Kiro has no Stop-time handshake to enforce this; the step is
+      the enforcement.)
   2. The only branch you integrate is THIS run's issue branch in <target>. Rebase it onto
      the freshly-fetched origin/<main>:  git -C <target> rebase origin/<main>.
      (Before the worktree exists — the iteration-start sync — there is nothing to rebase;

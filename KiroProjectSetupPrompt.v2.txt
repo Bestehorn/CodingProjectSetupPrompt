@@ -2815,6 +2815,13 @@ licence to skip this classification.
   clone, a run NEVER `git checkout main`s or fast-forwards local `main`. Fetch and
   base new worktrees on `origin/<main>`, and verify merges with
   `git merge-base --is-ancestor <sha> origin/<main>` instead of advancing local `main`.
+  **The one sanctioned move:** when Remote Sync finds the fetched trunk changed the
+  framework (`.kiro/steering`, `.kiro/agents`, `.kiro/hooks-bin`) relative to the
+  checkout, and `git status --porcelain` in the checkout prints nothing, and HEAD is an
+  ancestor of the trunk ref, run `git merge --ff-only <remote>/<main>` there. A
+  fast-forward of a clean, strictly-behind checkout is reversible via the reflog and moves
+  no one else's branch; it is how the steering, agents and hooks every session on this
+  machine reads become current. If either condition fails, ask the operator instead.
 - Never leave a detached HEAD, half-finished rebase/merge, or orphaned worktree.
 
 ## Concurrency-safe maintenance
@@ -3536,6 +3543,7 @@ cp cli-agents/spec-workflow/hooks/kiro-loop-gate.sh              .kiro/hooks-bin
 cp cli-agents/spec-workflow/hooks/kiro-claim-before-worktree.sh  .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-issue-filing-gate.sh      .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro-continuous-work-reinject.sh .kiro/hooks-bin/
+cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md          .kiro/hooks-bin/   # printed at spawn while valid
 cp cli-agents/spec-workflow/hooks/red-for-right-reason.sh        .kiro/hooks-bin/
 chmod +x .kiro/hooks-bin/*.sh
 ```
@@ -3553,7 +3561,12 @@ wiring is needed beyond the copy):
   THIS run's recorded place in the work — phase, current issue, branch, worktree, PR,
   `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's `resume_state.md` located
   through the registry (then `runs/<first-8-of-session_id>/`) — and flags an uncommitted tree
-  as work-in-progress rather than a stopping point.
+  as work-in-progress rather than a stopping point. It also prints
+  `.kiro/hooks-bin/REVISION_NOTICE.md` while that file's `Valid-until:` date has not
+  passed — the framework-revision notice telling a relaunched run that the phases it was
+  spawned with were replaced and what to do with the work in flight (paths translated to
+  `.kiro/`). Because Kiro has no compaction hook, a run that is never relaunched learns of a
+  revision through the orchestrator's Remote Sync step 1b instead.
   Read-only and fail-quiet: with no state it prints the contract alone. **Its last rung is
   NOT session-keyed:** when neither of those resolves it takes the most recently touched
   `runs/*/`, so in a clone with a concurrent run it can present a SIBLING's issue, branch,

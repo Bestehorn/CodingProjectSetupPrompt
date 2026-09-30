@@ -38,6 +38,13 @@ often (`ci-owns-the-test-suite.md`) is not a licence to skip this classification
   depend on it. Fetch and base worktrees on `origin/<main>`; verify merges with
   `git merge-base --is-ancestor <sha> origin/<main>`. (A solo workflow may sync local
   `main`, but branch-off-origin is always safe and is the default.)
+  **The one sanctioned move:** when the loop gate or the session-start hook reports the
+  checkout's framework as STALE (the fetched trunk carries a newer
+  `.claude/hooks/CONTRACT_VERSION`), and `git status --porcelain` in the checkout prints
+  nothing, and HEAD is an ancestor of the trunk ref, run `git merge --ff-only <remote>/<main>`
+  there. A fast-forward of a clean, strictly-behind checkout is reversible via the reflog and
+  moves no one else's branch; it is how the hooks, rules and agents every session on this
+  machine reads become current. If either condition fails, ask the operator instead.
 - Never leave a detached HEAD, a half-finished rebase/merge, or an orphaned worktree. If
   a git operation is interrupted, restore a clean known state before anything else.
 

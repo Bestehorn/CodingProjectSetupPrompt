@@ -89,6 +89,29 @@ Spec directories already committed under `.claude/specs/` stay where they are: t
 history, they are not loaded, and moving them would break the citations in merged work.
 Exclude them from any repository-wide scan that reads their contents.
 
+## Reaching the sessions already running
+
+You do nothing to a running session; the merged update reaches it through the hooks, and
+your job is to leave the two channels intact:
+
+- `.claude/hooks/REVISION_NOTICE.md` (Kiro: `.kiro/hooks-bin/`) is installed as-is, and
+  `.claude/hooks/CONTRACT_VERSION` is the framework's current value. Every registered run on
+  a machine whose checkout has the new files is refused once at its next turn-end, receives
+  the notice inside the contract handshake, acknowledges, and continues under the new
+  phases; every session receives it again at its next compaction.
+- On every OTHER machine the checkout is stale until it is fast-forwarded, and the
+  orchestrator never moves it. The hooks' freshness check handles that: as soon as a clone
+  there fetches the trunk with your merge, each registered run is told once to fast-forward
+  its clean, strictly-behind checkout (`git merge --ff-only <remote>/<main>`, the one
+  sanctioned move of local main) or to ask the operator if the checkout holds work. So the
+  merge is the rollout; list in the PR body only what a fast-forward cannot do (clone-wide
+  config, venv additions).
+
+Verify after the merge on this machine: `tail .claude/agent-state/issue-work-orchestrator/
+.hook-decisions/*.log` shows `contract unacknowledged` refusals followed by acks for each
+live run (or `FRAMEWORK_AUTO_ACK` for a run at its cap). The notice retires itself on its
+`Valid-until` date; do not delete it early.
+
 ## Deliverable
 
 A merged PR with green CI. The PR body carries the setup report in the setup prompt's

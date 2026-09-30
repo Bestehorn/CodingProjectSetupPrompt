@@ -201,6 +201,51 @@ check "wave header '1.1' does NOT cover task '1.10' -> BLOCK" 2 "$(run_hook spec
 
 echo ""
 echo "=============================================================================================="
+echo "issue-loop-gate.sh — FRAMEWORK FRESHNESS handshake (a fetched trunk carries a newer framework)"
+echo "=============================================================================================="
+# A git fixture: the checkout's CONTRACT_VERSION is OLD while refs/remotes/origin/main carries a NEWER one —
+# the state of every clone on a machine nobody has pulled on after the framework revision merged.
+check_text() { # $1 = label, $2 = yes|no (expected), $3 = substring, $4 = file
+    local has=no; grep -qF "$3" "$4" 2>/dev/null && has=yes
+    check "$1" "$2" "$has"
+}
+FW="$(mktemp -d 2>/dev/null || echo "/tmp/gatefw.$$")"
+FWORCH="$FW/.claude/agent-state/issue-work-orchestrator"
+git_q() { git -C "$FW" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+git_q init -q -b main . || { git_q init -q .; git_q checkout -q -b main; }
+mkdir -p "$FW/.claude/hooks"
+printf '2000.01.01-contract-1\n' > "$FW/.claude/hooks/CONTRACT_VERSION"
+git_q add -A; git_q commit -q -m checkout
+printf '9999.12.31-contract-9\n' > "$FW/.claude/hooks/CONTRACT_VERSION"
+git_q add -A; git_q commit -q -m trunk
+git_q update-ref refs/remotes/origin/main HEAD      # stands in for a fetch: the tracking ref is what is read
+git_q reset -q --hard HEAD~1                        # the checkout stays on the OLD framework
+git_q remote add origin "$FW"                       # the scan walks `git remote`; a name is all it needs
+mkdir -p "$FWORCH/runs/$RUN8"
+printf '{"%s":{"session_id":"%s","run_id":"%s","state_dir":"runs/%s/"}}' "$SID" "$SID" "$RUN8" "$RUN8" \
+    > "$FWORCH/registry.json"
+printf 'SESSION_ID: %s\nRUN_ID: %s\nStatus: IN_PROGRESS\nPhase: FIX\nCURRENT_ISSUE: 999\nAWAITING_USER: none\nWORKABLE_ISSUES_REMAIN: yes\n' \
+    "$SID" "$RUN8" > "$FWORCH/runs/$RUN8/resume_state.md"
+printf 'test ack\n' > "$FWORCH/runs/$RUN8/contract-ack-2000.01.01-contract-1"   # the contract handshake is done
+FWPAYLOAD="$(printf '{"session_id":"%s","cwd":"%s","hook_event_name":"Stop"}' "$SID" "$FW")"
+fw_run() { ( cd "$FW" && printf '%s' "$FWPAYLOAD" | bash "$HOOKS/issue-loop-gate.sh" 2>"$FW/err.txt" >/dev/null ); printf '%s' "$?"; }
+
+check      "stale framework, not yet told -> BLOCK"                         2   "$(fw_run)"
+check_text "the refusal names the trunk's framework version"               yes "FRAMEWORK REVISION 9999.12.31-contract-9" "$FW/err.txt"
+check_text "the refusal gives the sanctioned fast-forward"                 yes "merge --ff-only origin/main" "$FW/err.txt"
+check_text "the refusal names the ack file to create"                      yes "framework-ack-9999.12.31-contract-9" "$FW/err.txt"
+printf 'ack\n' > "$FWORCH/runs/$RUN8/framework-ack-9999.12.31-contract-9"
+check      "told once -> falls through to the brake on unfinished work -> BLOCK" 2 "$(fw_run)"
+check_text "a run already told is NOT told again"                          no  "FRAMEWORK REVISION" "$FW/err.txt"
+check_text "the brake, not the handshake, refuses the acked run"           yes "records itself as UNFINISHED" "$FW/err.txt"
+git_q update-ref refs/remotes/origin/main HEAD      # trunk == checkout: nothing is stale
+rm -f "$FWORCH/runs/$RUN8"/framework-ack-*
+fw_run >/dev/null
+check_text "trunk at the checkout's own version -> no freshness refusal"   no  "FRAMEWORK REVISION" "$FW/err.txt"
+rm -rf "$FW" 2>/dev/null || true
+
+echo ""
+echo "=============================================================================================="
 echo "FAIL-CLOSED on a broken library (both gates)"
 echo "=============================================================================================="
 

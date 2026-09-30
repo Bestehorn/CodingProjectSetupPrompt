@@ -304,6 +304,8 @@ THE CONTRACT, in force from now on for this run:
     message — and a pipeline is awaited with the wrapper's blocking wait as a BACKGROUND task, never with
     sleep. The operator's time is the scarce resource.
 
+$(hook_revision_notice "$(dirname "$lib")" || true)
+
 ACKNOWLEDGE AND CONTINUE — two steps, then carry on with the work:
 
   1. Create this file so this message does not repeat:
@@ -316,6 +318,56 @@ ACKNOWLEDGE AND CONTINUE — two steps, then carry on with the work:
 Then RESUME the task. Do not end the turn to report having read this.
 MSG
         exit 2
+    fi
+fi
+
+# ---------------------------------------------------------------------------------------------------------
+# THE FRAMEWORK FRESHNESS HANDSHAKE. A trunk this clone has FETCHED carries a newer framework (its
+# .claude/hooks/CONTRACT_VERSION) than the checkout these hooks run from. On a machine nobody has pulled on,
+# every live run keeps working under the replaced rules, phases and agents until that checkout moves — and the
+# orchestrator is main-checkout-free, so nothing moves it. This delivers the update instruction ONCE per run
+# and version. Like the contract handshake above, it never stands the gate down at the cap: it auto-acks and
+# FALLS THROUGH to the brake, so a migration convenience cannot spend the brake's budget.
+# ---------------------------------------------------------------------------------------------------------
+proj_dir="$(hook_project_dir)"
+if stale="$(hook_framework_stale "$proj_dir")"; then
+    stale_ref="${stale%% *}"; stale_v="${stale##* }"
+    fw_ack="$(hook_framework_ack_file "$run_dir" "$stale_v")"
+    if [[ ! -f "$fw_ack" ]]; then
+        if at_cap; then
+            printf 'auto-acknowledged after %s blocks; the framework notice was delivered but never acknowledged\n' "$blocks" \
+                > "$fw_ack" 2>/dev/null || true
+            hook_decision_log "$base" "issue-loop-gate" "FRAMEWORK_AUTO_ACK" \
+                "run=${sid:0:8} trunk=$stale_v blocks=$blocks; falling through to the brake"
+        else
+            block_or_stand_down "framework stale local=$(hook_contract_version) trunk=$stale_v run=${sid:0:8}" "framework stale"
+            cat >&2 <<MSG
+issue-loop-gate: REFUSING the stop — $stale_ref carries FRAMEWORK REVISION $stale_v; this checkout runs
+$(hook_contract_version). The rules, phase fragments, agents and hooks this session works under were REPLACED
+on the trunk, and they are read from this checkout, which nobody has moved.
+
+UPDATE THE CHECKOUT NOW, then continue the work:
+
+  1. The sanctioned move — when BOTH of these hold:
+         git -C "$proj_dir" status --porcelain                          # prints nothing: no work to disturb
+         git -C "$proj_dir" merge-base --is-ancestor HEAD $stale_ref    # strictly behind: nothing to lose
+     run
+         git -C "$proj_dir" merge --ff-only $stale_ref
+     A fast-forward of a clean, strictly-behind checkout is reversible (the reflog keeps the old tip) and
+     moves no one else's branch; every hook re-reads its script from disk on its next call, so this session
+     is on the new framework from that moment. This is the ONE case in which a run may move the shared
+     local main (keep-git-clean.md).
+  2. Otherwise the checkout holds work that is not yours to disturb: ask the operator in the five-line
+     shape to update it, append \`AWAITING_USER: waiting for the checkout to be updated to framework
+     $stale_v\` to this run's resume_state.md, and continue every part of the work that does not depend on it.
+  3. Then read .claude/hooks/REVISION_NOTICE.md and act on it, and create this file so this message does
+     not repeat:
+         $fw_ack
+
+Do not end the turn to report having read this.
+MSG
+            exit 2
+        fi
     fi
 fi
 

@@ -202,9 +202,9 @@ terminal-value agreement this project had to adjudicate twice:
 ```bash
 bash claude-agents/spec-workflow/hooks/tests/test_crlf_hygiene.sh    # 11 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_hook_state_lib.sh  # 64 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_tdd_gate.sh        # 42 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_reinject.sh        # 23 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_stop_gates.sh      # 24 passed, 0 failed
+bash claude-agents/spec-workflow/hooks/tests/test_tdd_gate.sh        # 44 passed, 0 failed
+bash claude-agents/spec-workflow/hooks/tests/test_reinject.sh        # 26 passed, 0 failed
+bash claude-agents/spec-workflow/hooks/tests/test_stop_gates.sh      # 35 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_gate_overblock.sh  # 50 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_unpinned_fixes.sh  # 32 passed, 0 failed
 bash claude-agents/spec-workflow/hooks/tests/test_scoped_temp.sh     # 26 passed, 0 failed
@@ -274,6 +274,7 @@ cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DE
 cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
+cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md   .claude/hooks/   # live-session notice; self-retires via Valid-until
 mkdir -p .claude/hooks/tests
 cp claude-agents/spec-workflow/hooks/tests/*.sh           .claude/hooks/tests/ \
   && chmod +x .claude/hooks/tests/*.sh
