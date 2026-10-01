@@ -80,9 +80,9 @@ of this in the same PR, in this order, and record the before/after sizes:
    wait` / `wait-run`, per the template) if absent. Where the project deploys, confirm the
    pipeline has a post-deploy job that runs the committed end-to-end script; add the job
    if the project has end-to-end scripts that only an agent used to run by hand.
-7. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes
+7. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes
    in full; `python scripts/memory_compile.py report` exits 0; the eight hook suites pass;
-   grep `.claude/` and `.kiro/` for `Type1`/`Type2` and for `sleep` — a survivor is an old
+   grep `.claude/` and `.kiro/` for `Type1`/`Type2` (outside the issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an old
    copy preserved over the new one.
 
 Spec directories already committed under `.claude/specs/` stay where they are: they are

@@ -16,8 +16,9 @@ your lane file), `use-doc-mcp-servers.md`, `no-guessing.md`, `no-output-shorteni
 
 1. List the external technologies the CHANGE touches — not the ones the surrounding
    codebase uses. For tier S this is usually one API or none.
-2. For each non-trivial choice, consult the relevant MCP documentation server; fall back
-   to official web documentation, recording URL and date.
+2. For each non-trivial choice, consult the relevant MCP documentation server (AWS
+   documentation, AWS IaC/CDK, Strands Agents, Bedrock AgentCore); fall back to official
+   web documentation, recording URL and date.
 3. Compare the design's choice against the guidance. Report: deprecated or unsupported
    APIs and constructs (A), a documented anti-pattern or missing safeguard with a concrete
    consequence for this change (B), a better-supported alternative (C).

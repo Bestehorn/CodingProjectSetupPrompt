@@ -20,6 +20,10 @@ the standards that apply to every artefact:
 
 - **Under the cap, first time.** Measure before you return. If the artefact cannot state
   the ask under the cap, say so in your summary with the reason — do not exceed it.
+- **External facts are looked up, not recalled.** Before a design relies on AWS, CDK,
+  Strands Agents, Bedrock AgentCore or another external technology, consult its MCP
+  documentation server (`use-doc-mcp-servers.md`), falling back to the official web
+  documentation, and cite the source beside the claim.
 - **Behaviour, not measurements.** Cite symbols and paths; no line numbers, byte counts,
   durations, record counts or other figures. Measurements are evidence, not spec text.
 - **Every criterion testable, every test traceable.** `AC-n`/`UB-n` ids everywhere they

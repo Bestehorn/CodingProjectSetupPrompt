@@ -27,6 +27,9 @@ with no IaC, deploy or runtime effect is `CLEAN` in one line. Where the design s
 
 # Checklist (apply what the change touches)
 
+Check the CDK and AWS facts the change relies on against the AWS IaC and AWS documentation
+MCP servers (`use-doc-mcp-servers.md`) before raising a finding, and cite the page.
+
 Infrastructure changes go through CDK; IAM scoped to the specific resources; account,
 region and profile from `aws_config`; the change deploys incrementally and can be rolled
 back; new failure modes are logged with correlation ids and, where they matter to

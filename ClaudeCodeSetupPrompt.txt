@@ -1617,7 +1617,7 @@ scripts/memory_compile.py report`, then `/compile-memory` (or its steps by hand:
 dated incident sections out of the rules with `extract-rule-incidents --apply`, archive
 ledger rows and lessons older than six weeks with `archive-ledger --apply` and
 `archive-lessons --apply`, rewrite `forLLMConsumption.md` as a map with the detail moved
-to topic docs), until `python scripts/run_tests.py test/test_instruction_corpus_budget.py`
+to topic docs), until `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=`
 passes. Report the before/after sizes.
 
 ### The CI capacity-fallback guide (INSTALL IT, always)
@@ -1824,14 +1824,14 @@ this prompt (leave any existing one alone).
     or a missing doc, means the ladder was dropped and the project will fall
     back to local execution as its FIRST move.
 13. Memory budget and proportionality (Part 9, Part 12) —
-    `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes in full and
+    `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes in full and
     `python scripts/memory_compile.py report` exits 0; `.claude/rules/proportionality.md`
     and `.claude/rules/parallel-by-default.md` are installed with no `paths:`;
     `.claude/docs/review-contract.md` exists; `/compile-memory` is installed; the wrapper
     implements the blocking wait (`pipeline wait` / `wait-run` — a `NotImplementedError`
     means agents will fall back to `sleep` polling); and where the project deploys, the
     pipeline has a post-deploy job that runs the committed end-to-end script (Part 7 /
-    `always-test-e2e.md`). Grep the installed agents and commands for `Type1`/`Type2`: a
+    `always-test-e2e.md`). Grep the installed agents and commands for `Type1`/`Type2` outside the issue-housekeeping agent, whose text maps them to tiers: a
     survivor means an old copy was preserved over the tiered version.
 12. Issue-filing containment (if any tracker-capable agent was installed) —
     `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no

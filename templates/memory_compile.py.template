@@ -64,7 +64,9 @@ def _read(path: Path) -> str:
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    # `Path.write_text(newline=...)` only exists from Python 3.10; `open()` has had it since 3.0.
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def _append(path: Path, header: str, body: str) -> None:
@@ -134,7 +136,13 @@ def _ledger_rows(text: str) -> tuple[list[str], list[LedgerRow]]:
             continue
         if line.startswith("|"):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            rows.append(LedgerRow(line=line, date=_parse_date(cells[0] if cells else ""), status=(cells[-1] if cells else "")))
+            rows.append(
+                LedgerRow(
+                    line=line,
+                    date=_parse_date(cells[0] if cells else ""),
+                    status=(cells[-1] if cells else ""),
+                )
+            )
         elif line.strip():
             head.append(line)  # stray prose after the table stays with the file
     return head, rows
@@ -155,7 +163,7 @@ def _oldest_first_until_under_cap(rows: list[LedgerRow], cap: int, header_bytes:
     """Pick the oldest non-promoted, non-enforced rows whose removal brings the active ledger under cap."""
     movable = sorted(
         (r for r in rows if r.date is not None and not r.status.lower().startswith(("promoted", "enforced"))),
-        key=lambda r: r.date,
+        key=lambda r: r.date or dt.date.min,
     )
     size = header_bytes + sum(len(r.line.encode("utf-8")) + 1 for r in rows)
     picked: list[LedgerRow] = []
@@ -184,7 +192,7 @@ def archive_ledger(weeks: int, apply: bool, until_under_cap: bool = False) -> in
         return 0
     by_month: dict[str, list[str]] = {}
     for r in aged:
-        by_month.setdefault(r.date.strftime("%Y-%m"), []).append(r.line)
+        by_month.setdefault((r.date or dt.date.min).strftime("%Y-%m"), []).append(r.line)
     for month, lines in sorted(by_month.items()):
         target = ARCHIVE / f"findings-ledger-{month}.md"
         print(f"  -> {target.relative_to(ROOT).as_posix()}: {len(lines)} rows")
@@ -249,7 +257,8 @@ def archive_lessons(weeks: int, apply: bool, until_under_cap: bool = False) -> i
     if until_under_cap:
         size = _size(LESSONS)
         extra: list[Entry] = []
-        for e in sorted((e for e in entries if e.date is not None and not e.enforced and e not in aged), key=lambda e: e.date):
+        candidates = (e for e in entries if e.date is not None and not e.enforced and e not in aged)
+        for e in sorted(candidates, key=lambda e: e.date or dt.date.min):
             if size - sum(len(x.text().encode("utf-8")) for x in aged + extra) <= LESSONS_CAP_BYTES:
                 break
             extra.append(e)
@@ -260,7 +269,7 @@ def archive_lessons(weeks: int, apply: bool, until_under_cap: bool = False) -> i
         return 0
     by_month: dict[str, list[Entry]] = {}
     for e in aged:
-        by_month.setdefault(e.date.strftime("%Y-%m"), []).append(e)
+        by_month.setdefault((e.date or dt.date.min).strftime("%Y-%m"), []).append(e)
     for month, group in sorted(by_month.items()):
         target = ARCHIVE / f"lessons-learned-{month}.md"
         print(f"  -> {target.relative_to(ROOT).as_posix()}: {len(group)} entries")
@@ -315,11 +324,14 @@ def extract_rule_incidents(apply: bool) -> int:
         if not moved:
             continue
         target = ARCHIVE / "rule-incidents" / f"{rule.stem}.md"
-        print(f"{rule.relative_to(ROOT).as_posix()}: {len(moved)} dated section(s) -> {target.relative_to(ROOT).as_posix()}")
+        rel_rule = rule.relative_to(ROOT).as_posix()
+        rel_target = target.relative_to(ROOT).as_posix()
+        print(f"{rel_rule}: {len(moved)} dated section(s) -> {rel_target}")
         moved_total += len(moved)
         if apply:
-            _append(target, f"# {rule.stem} — incident records moved out of the always-loaded rule\n\n", "\n".join(moved))
-            pointer = f"\nIncident records for this rule: `docs/archive/rule-incidents/{rule.stem}.md` (read on demand).\n"
+            header = f"# {rule.stem} — incident records moved out of the always-loaded rule\n\n"
+            _append(target, header, "\n".join(moved))
+            pointer = f"\nIncident records for this rule: `{rel_target}` (read on demand).\n"
             if pointer.strip() not in kept:
                 kept = kept.rstrip("\n") + "\n" + pointer
             _write(rule, kept)
@@ -334,10 +346,19 @@ def extract_rule_incidents(apply: bool) -> int:
 
 
 def report(weeks: int) -> int:
-    corpus = [CLAUDE_MD, *_unscoped_rules()]
-    corpus_size = sum(_size(p) for p in corpus)
-    rows = [
-        ("CLAUDE.md + unscoped rules", corpus_size, CORPUS_CAP_BYTES),
+    # Each host's always-loaded corpus is capped SEPARATELY, exactly as test_instruction_corpus_budget.py
+    # caps them: a dual-host project loads .claude/rules into Claude Code sessions and the always-on steering
+    # into Kiro sessions, never both into one. Summing them reported OVER where the test passed.
+    unscoped = _unscoped_rules()
+    claude_corpus = [CLAUDE_MD, *[p for p in unscoped if p.parent == RULES_DIR]]
+    kiro_corpus = [p for p in unscoped if p.parent == STEERING_DIR]
+    corpus = [*claude_corpus, *kiro_corpus]
+    rows = []
+    if CLAUDE_MD.exists() or RULES_DIR.is_dir():
+        rows.append(("CLAUDE.md + unscoped rules", sum(_size(p) for p in claude_corpus), CORPUS_CAP_BYTES))
+    if STEERING_DIR.is_dir():
+        rows.append(("Kiro always-on steering", sum(_size(p) for p in kiro_corpus), CORPUS_CAP_BYTES))
+    rows += [
         ("docs/forLLMConsumption.md", _size(FOR_LLM), FOR_LLM_CAP_BYTES),
         ("docs/lessons-learned.md", _size(LESSONS), LESSONS_CAP_BYTES),
         ("docs/findings-ledger.md", _size(LEDGER), LEDGER_CAP_BYTES),
@@ -363,7 +384,10 @@ def report(weeks: int) -> int:
     if LEDGER.exists():
         _, ledger_rows = _ledger_rows(_read(LEDGER))
         aged = _aged_rows(ledger_rows, weeks)
-        print(f"\nLedger: {len(ledger_rows)} active rows, {len(aged)} older than {weeks} weeks to promote/enforce/archive")
+        print(
+            f"\nLedger: {len(ledger_rows)} active rows, {len(aged)} older than {weeks} weeks "
+            "to promote/enforce/archive"
+        )
     if LESSONS.exists():
         _, entries = _entries(_read(LESSONS), re.compile(r"^#{2,3}\s"))
         cutoff = _cutoff(weeks)

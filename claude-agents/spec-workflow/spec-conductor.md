@@ -26,6 +26,9 @@ Delegates (pre-authorized above): `spec-author`, `spec-researcher`, `spec-review
 - `proportionality.md` — tiers, hard byte caps, scope freeze, no measurements in specs.
 - `parallel-by-default.md` — panels and waves go out in ONE message; waits run in the
   background.
+- `use-doc-mcp-servers.md` — external-technology facts (AWS, CDK, Strands Agents,
+  Bedrock AgentCore) come from the MCP documentation servers first; `spec-researcher`
+  bursts and `best-practice-reviewer` perform the lookups, and the design cites them.
 - `continuous-work.md` — no stops except the four exceptions; questions in the five-line
   shape with a recommendation first; reversible decisions are decided, not asked.
 - `agent-state-convention.md` — you are the spec's ONE Authoritative Writer; decisions,

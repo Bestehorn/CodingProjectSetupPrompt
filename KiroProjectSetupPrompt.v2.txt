@@ -4498,7 +4498,7 @@ After completing all parts:
       | bash .kiro/hooks-bin/kiro-issue-filing-gate.sh; echo "expect 0, got $?"
     ```
 11. **Memory budget and proportionality** (PART 12, 8.35, 8.36, 8A) —
-    `python scripts/run_tests.py test/test_instruction_corpus_budget.py` passes in full and
+    `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes in full and
     `python scripts/memory_compile.py report` exits 0; `.kiro/steering/proportionality.md`
     and `.kiro/steering/parallel-by-default.md` exist with `inclusion: always`;
     `.kiro/docs/review-contract.md` and the five fragments under
@@ -4506,7 +4506,7 @@ After completing all parts:
     installed; the wrapper implements the blocking wait (`pipeline wait` / `wait-run` — a
     `NotImplementedError` means agents will fall back to `sleep` polling); and where the
     project deploys, the pipeline has a post-deploy job that runs the committed end-to-end
-    script (8.22). Grep `.kiro/agents/` and `.kiro/prompts/` for `Type1`/`Type2`: a survivor
+    script (8.22). Grep `.kiro/agents/` and `.kiro/prompts/` for `Type1`/`Type2` outside the issue-housekeeping agent, whose text maps them to tiers: a survivor
     means an old copy was preserved over the tiered version.
 
 ### Migration report
