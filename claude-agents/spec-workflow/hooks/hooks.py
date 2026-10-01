@@ -286,6 +286,41 @@ def selftest() -> int:
         )
         return _report(results)
     results.append(("`python` resolves on PATH", True, python))
+    # The resolved `python` must be a REAL interpreter. The Microsoft Store alias (`WindowsApps\python.exe`)
+    # has the same failure shape the bash hooks had: it resolves, it spawns, and it exits without running
+    # anything — a non-blocking error the harness proceeds past. Name it, and name the remedy.
+    try:
+        probe = subprocess.run(
+            [python, "-c", "import sys; print(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        probe_rc, probe_out, probe_err = (
+            probe.returncode,
+            probe.stdout.strip(),
+            probe.stderr.strip(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        probe_rc, probe_out, probe_err = 1, "", str(exc)
+    is_alias = "WindowsApps" in python
+    works = probe_rc == 0 and bool(probe_out) and not is_alias
+    remedy = (
+        " — this is the Microsoft Store alias. Disable it under Settings > Apps > Advanced app settings > "
+        "App execution aliases, or put a real Python installation ahead of it on PATH. Every exec-form hook "
+        "AND every `python` command the agent runs resolves the same way, so nothing works until it is fixed."
+        if is_alias
+        else ""
+    )
+    results.append(
+        (
+            "`python` on PATH is a working interpreter",
+            works,
+            f"{python} -> exit {probe_rc}: {probe_err[:160] or probe_out}{remedy}",
+        )
+    )
+    if not works:
+        return _report(results)
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp)
         (project / ".claude" / "hooks").mkdir(parents=True)
