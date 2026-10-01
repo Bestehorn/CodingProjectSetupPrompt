@@ -17,7 +17,9 @@ compile the project's accumulated memory so that a session pays only for what it
    framework repository's recent git log tells you what changed; record the framework
    commit you update from.
 2. Isolate. Fetch the latest remote state and work in a git worktree on a new branch named
-   framework-update-<YYYYMMDD>, based on the remote default branch. Other workers share this
+   framework-update-<YYYYMMDD> (add `-2`, `-3`, ... when a branch of that name already exists
+   locally or on the remote — a second update on the same day is normal), based on the remote
+   default branch. Other workers share this
    clone and this machine; nothing you do may disturb them. Two things are clone-wide and
    therefore off-limits from the worktree: `pip install -e .` (it re-points the shared
    editable install at a worktree that will be removed; add missing tools by name instead)
