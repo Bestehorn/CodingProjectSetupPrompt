@@ -50,8 +50,8 @@ once per framework update.
 
 `auto-work` depends on the Part 8A advanced fleet (`issue-work-orchestrator`, the
 spec-workflow specialists, `code-merge-reviewer`) and the Part 8A.2 gate scripts in
-`.kiro/hooks-bin/` — in particular `kiro-loop-gate.sh`, the `stop` hook that mechanically
-holds the agent in the backlog loop, and `kiro-claim-before-worktree.sh`, which blocks
+`.kiro/hooks-bin/` — in particular the `issue-loop-gate` gate, the `stop` gate that mechanically
+holds the agent in the backlog loop, and the `claim-before-worktree` gate, which blocks
 creating a worktree for an unclaimed issue. Like every orchestrator run, it ends with the
 agent definition's fixed Completion Block (`ISSUE WORK FINISHED | BLOCKED | FAILED` over a
 per-issue table), never a free-form summary.

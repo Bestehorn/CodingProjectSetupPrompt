@@ -421,8 +421,8 @@ B2 (CODE-BUG) findings are the one category this agent cannot fix itself, and
 the historical failure mode is filing one issue per finding — which converts a
 documentation pass into a backlog generator. Route them per
 `.claude/rules/issue-filing-discipline.md` (definitions of the fix-first
-branches and the ledger format live there; the PreToolUse hook
-`issue-filing-gate.sh` enforces the provenance lines mechanically):
+branches and the ledger format live there; the PreToolUse gate
+`issue-filing-gate` enforces the provenance lines mechanically):
 
   8b.1 Discard non-defects. A B2 finding qualifies only if the ≥2 affirmative
        evidence items DEMONSTRATE the deviation (wrong value, wrong behavior,

@@ -122,7 +122,7 @@ This agent cannot change code, which makes it structurally prone to the
 failure mode `.claude/rules/issue-filing-discipline.md` exists to stop:
 converting every observation into tracker state. That rule is always
 loaded and defines the fix-first branches, the provenance fields, and
-the findings-ledger format; the PreToolUse hook `issue-filing-gate.sh`
+the findings-ledger format; the PreToolUse gate `issue-filing-gate`
 enforces the provenance lines mechanically. Before ANY class-B or
 class-C filing, for each shortlisted candidate, record the gate outcome
 in `issue_actions.md`:
@@ -716,7 +716,7 @@ Filing-rationale: RESEARCH | DESIGN-OPTIONS | OUT-OF-SCOPE | HUMAN-REQUEST — <
 
 (`Spawned-from:` is omitted — this agent's filings are sweeps, not
 spawns.) These lines are mandatory: the PreToolUse gate
-`.claude/hooks/issue-filing-gate.sh` blocks a create call without them.
+`issue-filing-gate` blocks a create call without them.
 Prefer delegating the filing to the issue-intake agent when it is
 available to you; it emits the same block and repeats the duplicate check.
 

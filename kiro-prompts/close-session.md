@@ -29,7 +29,7 @@ untracked file whose fate is the user's call.
 
 **Running this prompt is not permission to stop.** If any work remains unfinished, close-out
 is not what comes next — the work is. Per the `continuous-work` steering rule, an accurate
-close-out report over unfinished work is a disguised check-in, and `kiro-loop-gate.sh` will
+close-out report over unfinished work is a disguised check-in, and the `issue-loop-gate` gate will
 refuse the turn-end anyway.
 
 **Scope: THIS session only.** Consider only your own worktree, branch, lock, claim markers,
@@ -37,11 +37,13 @@ files and temp residue. Do not inspect, enumerate, or mention other sessions' wo
 branches, locks or issues — they are not your business and reporting them is noise. Resolve
 your own scope from `.kiro/agent-state/issue-work-orchestrator/registry.json` → your entry's
 `state_dir` → `resume_state.md` and its `CURRENT_ISSUE` / `CURRENT_WORKTREE` /
-`CURRENT_BRANCH` / `CURRENT_PR` fields. `kiro-session-register.sh` records identity but does
-NOT seed the state files, so a missing `resume_state.md` is normal on a fresh run: create it
-at exactly the path the registry names, never a readable label of your own devising (a state
-file under an invented name is read by NOTHING, including the stop gate). With no registry
-entry at all, your scope is the current working tree.
+`CURRENT_BRANCH` / `CURRENT_PR` fields. The `session-register` gate (run by `kiro_hooks.py`
+at agentSpawn) seeds `resume_state.md` and `workflow_state.md` at the path the registry names;
+if that file is nevertheless missing, create it at exactly that path, never under a readable
+label of your own devising (a state file under an invented name is found only through its
+`SESSION_ID:` line, and a run the registry declares but cannot read is refused by the stop
+gates until it is repaired). With no registry entry at all, your scope is the current working
+tree.
 
 **The reply is a FIXED FORM, not a write-up.** Everything you find lands in one cell of the
 nine-row table in "Output" — one row per step below, in that order, with a ✅/❌ and at most
@@ -108,11 +110,13 @@ the deciding number).
         hold. Re-acquire its local lock if you released one.
      2. **Re-arm the brake in the same breath:** APPEND to this run's `resume_state.md`
         `Status: IN_PROGRESS`, `WORKABLE_ISSUES_REMAIN: yes`, `AWAITING_USER: none`, plus
-        `CURRENT_ISSUE: <N>` and the `Phase` you are resuming. The first three ARE the
-        block condition `kiro-loop-gate.sh` evaluates, and every field read takes the LAST
-        occurrence — so a `Status: COMPLETED` recorded earlier in this session is exactly
-        what would let the turn end over the work you just reopened. This is what makes
-        finishing mandatory rather than merely intended.
+        `CURRENT_ISSUE: <N>` and the `Phase` you are resuming. The `issue-loop-gate` (the
+        `stop` hook `kiro_hooks.py` runs) holds the turn while the run has CLAIMED tracked
+        work — a non-placeholder `CURRENT_ISSUE` is the claim — and records no release: an
+        idle `Status`, a terminal `Phase`, or a SUBSTANTIVE `AWAITING_USER`. Every field read
+        takes the LAST occurrence — so a `Status: COMPLETED` or `Phase: DONE` recorded earlier
+        in this session is exactly what would let the turn end over the work you just
+        reopened. This is what makes finishing mandatory rather than merely intended.
      3. Post a comment naming every item that was outstanding at the moment of closure and
         stating that they are now being finished. That comment is the durable record; chat is
         not (`issue-tracking`).

@@ -47,19 +47,20 @@ registry — never invented; see the next section).
 new block at the END of the file.** The hooks read the LAST occurrence of each field, and a
 bold `**Name:** value` spelling matches NOTHING — it is invisible to the hook, not merely
 out-competed. A value edited at the top of the file is what a human reads and what no hook
-reads. (The exact read expressions, with script line numbers, are a maintainer note in this
-agent's README.)
+reads. (`hooklib.parse_state` is the one reader every gate uses; this agent's README
+summarises the shared gate semantics.)
 
-**On this host `WORKABLE_ISSUES_REMAIN` is part of the stop hook's block condition, so
-setting it to `no` while an issue is unfinished switches the gate off for the rest of the
-run.** MEASURED from the shipped script: `kiro-loop-gate.sh` blocks only while
-`Status` matches `IN_PROGRESS` AND `AWAITING_USER` is `none`/`-`/empty AND
-`WORKABLE_ISSUES_REMAIN` matches `^(yes|true)$`; it does not read `Phase` at
-all. So set `WORKABLE_ISSUES_REMAIN: no` ONLY at DONE, together with a non-`IN_PROGRESS`
-`Status` — never mid-issue, and never as a way to be allowed to stop. (The corrected Claude
-Code sibling gate works differently on all three counts, and NONE of that is ported here —
-the comparison is a maintainer note in this agent's README.) Record `Phase:` regardless:
-it is what a resuming run and a human read.
+**The `stop` hook (`issue-loop-gate`, run by `kiro_hooks.py`) is the SAME gate Claude Code
+runs.** It holds the turn while this run has CLAIMED tracked work — a non-placeholder
+`CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an orchestrator mode —
+and has recorded no release: an idle `Status` (`NOT_STARTED` and its synonyms), a terminal
+`Phase` or `Status` (`DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CLOSED`, `ABANDONED`,
+`ESCALATED`, whole-value), or a SUBSTANTIVE `AWAITING_USER` (a placeholder, an
+angle-bracketed token or a one-word answer is rejected). Its polarity is inverted: a `Status`
+it does not recognise as idle is work in flight. `WORKABLE_ISSUES_REMAIN` gates NOTHING — it
+selects the refusal's wording — so set it to `no` at DONE for the reader's sake, never as a
+way to be allowed to stop. Record `Phase:` at every transition: it is one of the two fields
+whose terminal value releases the brake, and it is what a resuming run and a human read.
 
 The agent root and everything under it lives in the run's own checkout/worktree-visible
 `.kiro/agent-state/` (gitignored). Under concurrency each run writes its OWN
@@ -71,9 +72,9 @@ cross-run notes, and spec-context decisions go to the active spec's
 
 **The binding identity contract is the always-loaded steering file
 `.kiro/steering/agent-state-convention.md`** — per-run namespacing, the registry the
-agentSpawn hook `kiro-session-register.sh` writes keyed by the stdin `session_id`, how
-far each hook's state resolution holds and its fallbacks, and the `jq` caveat. What
-follows is only what the ORCHESTRATOR adds to it.
+agentSpawn gate `session-register` writes keyed by the stdin `session_id`, and the
+session-keyed resolution every gate shares (`hooklib.py`; no fallback to the most recently
+touched state). What follows is only what the ORCHESTRATOR adds to it.
 
 Each run has a stable `RUN_ID`, and **you do not choose it.** Your run id and state dir
 are the values your registry entry ALREADY HOLDS — take `state_dir` VERBATIM (relative to
@@ -98,22 +99,21 @@ and the resolved `state_dir` into `environment.md`, so the identification is don
 from evidence. **Keep `SESSION_ID:` intact thereafter** — it is the field by which a hook
 or a later session can attribute this run's state. Never remove or change it.
 
-**Two orchestrator-owned mechanics the hook does NOT do for you:**
+**Two things to know about the registration:**
 
-  - **You create the state files, the hook does not.** `kiro-session-register.sh` never
-    creates `runs/<run-id>/` and never writes any state file: create
-    `<agent root>/<state_dir>` and write `resume_state.md` and `workflow_state.md` there
-    — at that exact path, once, and never a second run directory beside it.
-  - **On a host without `jq` the hook records NO ENTRY AT ALL** (the steering file
-    documents why), and the session id reaches you only through that registry — so **no
-    directory name can make the loop gate visible in this state**, and that is not a
-    licence to fabricate a per-run label. Instead: record the condition explicitly in
-    `environment.md` and as the Completion Block's `State` caveat (operator-fixable —
-    install `jq`, or port the hook), put your state in the FIXED directory
-    `runs/unregistered/` and use it
-    consistently, and work on the understanding that the continuous-work contract is the
-    only thing holding you (never rely on the spec gate's `ls -t` fallback as the brake —
-    the steering file's RESIDUAL note).
+  - **The `session-register` gate SEEDS the state files.** At agentSpawn it creates
+    `runs/<run-id>/` with `resume_state.md` and `workflow_state.md` carrying every field the
+    gates branch on, then writes the registry entry. Your job is to UPDATE those files at
+    that exact path — append corrections at the END; never a second run directory beside it,
+    never a readable label of your own (a state file under an invented name is found only
+    through its `SESSION_ID:` line).
+  - **If there is NO registry entry for this session**, the agentSpawn hook did not run
+    (not wired, or `python` did not resolve on this host). Every gate then treats the
+    session as UNREGISTERED — a deliberate no-op — so the continuous-work contract is the
+    only thing holding you. Record the condition in `environment.md` and as the Completion
+    Block's `State` caveat (operator-fixable: wire `kiro_hooks.py agentSpawn`, run
+    `python .kiro/hooks-bin/hooks.py selftest`), put your state in the FIXED directory
+    `runs/unregistered/`, and do not fabricate a per-run label to "fix" it.
 
 Update your registry entry's `status`, `current_issue`, and `last_heartbeat` at every
 checkpoint. This registry — plus the per-run state subtree — is what lets any observer
@@ -222,7 +222,7 @@ D0. **Identity + resume check.** Read `registry.json` to find YOUR entry (the
     `SESSION_ID`, `RUN_ID`, `CWD`, `Status`, `Phase`, `CURRENT_ISSUE`, `AWAITING_USER`,
     `WORKABLE_ISSUES_REMAIN` as plain `Name: value` lines) and `workflow_state.md` there, and
     start fresh — one run directory, at that path, never a second one beside it. (No
-    registry entry for this spawn — the `jq`-less case — → the FIXED path
+    registry entry for this spawn — the agentSpawn hook did not run — → the FIXED path
     `runs/unregistered/` per "Run identity & registry"; never a fabricated label.)
 D1. **Topology + venv + one-time git prerequisites.** Identify source/test layout;
     detect/create the venv (use-venv); establish the test command
@@ -331,7 +331,7 @@ ladder, in order, and record the branch taken as a `DL-NNN` entry:
   4. **None of the above?** → one row in `docs/findings-ledger.md`, then continue.
 
 **A run that resolved five issues and filed zero new ones is the expected shape of a good
-run**, and the `preToolUse` gate `.kiro/hooks-bin/kiro-issue-filing-gate.sh` blocks any
+run**, and the `preToolUse` gate `issue-filing-gate` blocks any
 create call whose body lacks the provenance lines above.
 
 ## LOAD_ISSUES
@@ -428,11 +428,10 @@ Issue X is already locked locally and claimed on the tracker from SELECT.
 4. Mirror the FIX state into the `workflow_state.md` inside THIS run's registry-derived
    `<state_dir>` — APPEND a block carrying `CURRENT_SPEC: <worktree>/.kiro/specs/<slug>` and
    `Phase: FIX` as plain `Name: value` lines — so the session-identity hooks judge this run's
-   active workflow. Put it anywhere else (or in a bold spelling) and the loop gate is inert
-   while the spec gate's `ls -t` fallback judges you against whichever run touched its state
-   last — routinely a SIBLING's (fallback semantics: `agent-state-convention.md`). Writing to
-   the registry-derived path is what makes that fallback unreachable. Refresh your registry
-   heartbeat.
+   active workflow. Put it anywhere else (or in a bold spelling) and the gates cannot see it:
+   a run the registry declares but whose state they cannot read is refused as `BROKEN` at
+   every turn-end until the file exists at the registry-derived path (resolution semantics:
+   `agent-state-convention.md`). Refresh your registry heartbeat.
 
 ## CLASSIFY (the tier — `proportionality.md`)
 Decide the tier from the ASK — what the issue requests — never from what the analysis
@@ -513,7 +512,7 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    including the CI end-to-end check where runtime behaviour changes, one wave of tasks).
    Run `spec-review-agent` in COMBINED mode (all lenses; max 2 iterations). Dispatch the
    wave's TEST tasks together, run them, confirm RED-FOR-THE-RIGHT-REASON
-   (`.kiro/hooks-bin/red-for-right-reason.sh`); dispatch the IMPL tasks together, run the
+   (`python .kiro/hooks-bin/red_for_right_reason.py`); dispatch the IMPL tasks together, run the
    wave's tests GREEN via `python scripts/run_tests.py <paths>`, capture both to
    `evidence/` with `# tasks:` headers, COMMIT once. The regression verdict is the CI run
    after the single push (`ci-owns-the-test-suite.md`). Run `adversarial-verifier` once

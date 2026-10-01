@@ -23,10 +23,10 @@ Every documentation quote below is from the Claude Code hooks reference
 | Change | Reaches a LIVE session? | Basis |
 |---|---|---|
 | **Editing an already-registered hook SCRIPT** | **YES — at its next invocation, guaranteed** | The registration names the interpreter and the script PATH, never the script's contents, so each invocation spawns a fresh interpreter that reads the file from disk. Observed, not documented — see §5. |
-| **Editing a file a registered hook READS** (`CONTRACT_VERSION`, `hook-state-lib.sh`, state files) | **YES** | Same reason, one level down: the hook reads it at invocation time. |
+| **Editing a file a registered hook READS** (`CONTRACT_VERSION`, `hooklib.py`, state files) | **YES** | Same reason, one level down: the hook reads it at invocation time. |
 | **Registering a NEW hook in `settings.json`** | **USUALLY, but on the new hook's own event cadence** | "Direct edits to hooks in settings files are normally picked up automatically by the file watcher." So the registration itself lands mid-session. **When it then FIRES depends on the event** — see the two rows below. |
 | → a new **`Stop`** hook | **YES, at the next turn-end attempt** | `Stop` fires on every attempt to end a turn, so a reloaded registration is exercised almost immediately. |
-| → a new **`SessionStart`** hook | **Only at the next SessionStart EVENT** | It will not fire in the middle of a turn. With `matcher: "compact|resume|startup"` it does fire again on a compaction — **observed**: this project's `continuous-work-reinject.sh` fired as `SessionStart:compact` in a long-running session. But the timing is not yours to choose. |
+| → a new **`SessionStart`** hook | **Only at the next SessionStart EVENT** | It will not fire in the middle of a turn. With `matcher: "compact|resume|startup"` it does fire again on a compaction — **observed**: this project's `continuous-work-reinject` fired as `SessionStart:compact` in a long-running session. But the timing is not yours to choose. |
 | **Adding a file under `.claude/rules/`** | **NO, not by itself** | Rules enter context by being loaded. A live session's context already exists; a new file on disk does not walk into it. |
 | **Editing an always-loaded rule the session already loaded** | **PARTIALLY** | Root `CLAUDE.md` and always-loaded rules are re-injected on compaction/resume, so an edit lands at the *next* compaction — unpredictable timing, not a mechanism. |
 | **Adding a slash command** | **NO** | Requires the user to invoke it, which is not "the session picks it up". |
@@ -38,8 +38,8 @@ can — but because that is the only channel whose **timing is guaranteed and se
 fires precisely when the agent attempts the act you are trying to change, in every session,
 without waiting for a compaction that may never come.
 
-That is why this design has one library (`hook-state-lib.sh`) sourced by all five hooks, and why
-the contract text is compiled into `issue-loop-gate.sh`'s refusal message rather than being read
+That is why this design has one library (`hooklib.py`) sourced by all five hooks, and why
+the contract text is compiled into `issue-loop-gate`'s refusal message rather than being read
 out of the rules directory. A rules file is a *hope* that the agent loaded it. A gate's stderr is
 a *fact* about what is in its context.
 
@@ -82,7 +82,7 @@ Two constraints that follow from the same section:
   log only, never the transcript, and Claude never sees it." The message rides on the block, and
   only on the block. A gate that "warns" without blocking communicates with nobody.
 - **The harness itself stops after 8 consecutive blocks:** "Claude Code overrides the hook and
-  ends the turn after 8 consecutive blocks." That is the vendor-side twin of `HOOK_BLOCK_CAP`,
+  ends the turn after 8 consecutive blocks." That is the vendor-side twin of `the block cap`,
   whose default of 8 matches it deliberately rather than by coincidence — so a gate that tried to
   block indefinitely would be overridden anyway, and the counter exists to make the give-up
   *say so* rather than to invent a limit.
@@ -102,19 +102,19 @@ as facts (`Phase: IMPLEMENT`, `Issue: 574`).
 
 `CONTRACT_VERSION` holds one line, e.g. `2026.08.30-continuous-work-1`.
 
-On every `Stop` event, `issue-loop-gate.sh` checks for
+On every `Stop` event, `issue-loop-gate` checks for
 `runs/<run-id>/contract-ack-<version>`:
 
 - **Present** → the run has ingested this contract. Proceed to the normal gate logic.
 - **Absent** → **block once (exit 2)**, print the full contract to stderr, and instruct the agent
-  to create the ack file and continue. The block is counted against `HOOK_BLOCK_CAP`, so a run
+  to create the ack file and continue. The block is counted against `the block cap`, so a run
   that cannot write the file is never wedged.
 
 Three properties make this safe to deploy under running load:
 
 1. **Idempotent and self-clearing.** Once acked, silence. The agent pays one blocked turn-end,
    ever, per contract version.
-2. **Fresh sessions never see it.** `session-register.sh` pre-writes the ack when it seeds the
+2. **Fresh sessions never see it.** `session-register` pre-writes the ack when it seeds the
    run, so only pre-deployment sessions are interrupted. Deployment cost scales with the number of
    *stale* sessions, not with traffic.
 3. **Bumping the version re-migrates everyone.** To push a revised contract to every live run,
@@ -130,9 +130,9 @@ same turn (create one file, carry on), never to send the agent looking for docum
 A contract bump tells a live run how to *stop*; a framework revision changes how it *works* —
 tiers, caps, the review contract, waves. The run's agent definition and command body were fixed at
 spawn and its rules return only at the next compaction, so the revision has to be delivered where
-the run cannot miss it. `hooks/REVISION_NOTICE.md` is that delivery: `hook_revision_notice` prints
+the run cannot miss it. `hooks/REVISION_NOTICE.md` is that delivery: `revision_notice` prints
 it inside the loop gate's contract handshake (once per run, keyed on `CONTRACT_VERSION`) and in
-`continuous-work-reinject.sh` at every compaction, resume and startup. Its first line
+`continuous-work-reinject` at every compaction, resume and startup. Its first line
 `Valid-until: YYYY-MM-DD` retires it, so a notice cannot outlive its rollout and load into every
 session forever. Bumping `CONTRACT_VERSION` alongside the notice is what makes every live run see
 it exactly once. Replace the body at the next revision; never let two notices accumulate.
@@ -141,11 +141,11 @@ it exactly once. Replace the body at the next revision; never let two notices ac
 
 Everything above assumes the hooks on disk are the new ones. On a machine where nobody has pulled,
 they are not — and the orchestrator is main-checkout-free, so **nothing there ever moves the
-checkout the hooks are read from**. `hook_framework_stale` closes that gap: it compares the
+checkout the hooks are read from**. `framework_stale` closes that gap: it compares the
 checkout's `CONTRACT_VERSION` with the one in every fetched trunk ref (`<remote>/main|master`,
 every remote, local refs only — the orchestrator's Remote Sync fetches keep them current). When the
 trunk is newer, the loop gate refuses once per run and version (`runs/<run-id>/framework-ack-<v>`)
-with the update instruction, and `continuous-work-reinject.sh` says the same at session start:
+with the update instruction, and `continuous-work-reinject` says the same at session start:
 
 - **The one sanctioned move of local main** (`keep-git-clean.md`): if `git status --porcelain` in
   the checkout prints nothing and HEAD is an ancestor of the trunk ref, `git merge --ff-only
@@ -166,24 +166,24 @@ sessions (`UNREGISTERED`) are told only at session start and never refused.
 
 ```
 1. Copy the hooks into <project>/.claude/hooks/:
-       hook-state-lib.sh   CONTRACT_VERSION   MIGRATION.md   REVISION_NOTICE.md
-       session-register.sh issue-loop-gate.sh
-       spec-stop-gate.sh   spec-tdd-gate.sh   continuous-work-reinject.sh
-       tests/
+       hooks.py  hooklib.py  gate_*.py  red_for_right_reason.py
+       CONTRACT_VERSION  MIGRATION.md  REVISION_NOTICE.md  tests/
+   and delete any *.sh predecessor there (a bash registration left behind is the inert hook).
 2. Copy rules/continuous-work.md into <project>/.claude/rules/ and reference it from CLAUDE.md.
-3. Register the hooks in <project>/.claude/settings.json (see ClaudeCodeSetupPrompt.txt).
-4. Run the eight suites in tests/ (§7). Do NOTHING to the running sessions.
+3. Register the three exec-form `python` entries in <project>/.claude/settings.json
+   (ClaudeCodeSetupPrompt.txt Part 12.2), replacing every `"command": "bash"` entry.
+4. Run the suites and the self-test (§7). Do NOTHING to the running sessions.
 ```
 
 **Steps 1–3 are safe to perform while agents are working.** Every file is read at invocation time,
-and a partially-copied library **fails closed**: the gates verify `hook_task_selftest`
-(deliberately the last definition in the library) and refuse the stop if it is missing. The failure
-mode of a mid-copy Stop event is one spurious refusal, not a silent hole.
+and a partially-copied library **fails closed**: the dispatcher refuses the stop when `hooklib.py`
+cannot be imported or lacks `selftest` (deliberately its last definition), or when a Stop gate
+raises. The failure mode of a mid-copy Stop event is one spurious refusal, not a silent hole.
 
 ### Which live sessions actually acquire a working brake
 
 **Loading the new code is not the same as engaging.** A pre-change session's fate is decided by
-what the OLD `session-register.sh` left on disk, because that is what the identity verdict reads:
+what the OLD `session-register` left on disk, because that is what the identity verdict reads:
 
 | What the old registrar left | Verdict | What happens at the next Stop |
 |---|---|---|
@@ -239,7 +239,7 @@ not affirmatively released, so a seed has to satisfy both halves:
   a `CURRENT_SPEC`, or a `MODE` beginning `ISSUE_LOOP`/`SINGLE_ISSUE`/`SPEC`/`BACKLOG`/`AUTO`
   (hyphens normalised to underscores, so `single-issue` matches too).
 - `CURRENT_ISSUE: <N>` — substitute the real issue number. **Until you do, this line claims
-  nothing**: `hook_field_is_placeholder` rejects any angle-bracketed value, along with `none`,
+  nothing**: `is_placeholder` rejects any angle-bracketed value, along with `none`,
   `unset`, `unknown`, `tbd`, `n/a` and the rest of that vocabulary. That is exactly why the `MODE`
   line above is literal — pasted as written, the seed still arms.
 - `Status: IN_PROGRESS` — any value OUTSIDE the idle vocabulary
@@ -260,7 +260,7 @@ not affirmatively released, so a seed has to satisfy both halves:
 self-announcing: pasted verbatim, bash parses `<first-8-of-session-id>` as a redirection and dies
 with `syntax error near unexpected token`, so nothing is created and you know at once. The FIELD
 values are the quiet ones, and they are why this recipe previously seeded an UNARMED run. MEASURED
-by driving `issue-loop-gate.sh` against the seed: with no `MODE` line and `CURRENT_ISSUE` left as
+by driving `issue-loop-gate` against the seed: with no `MODE` line and `CURRENT_ISSUE` left as
 the literal `<N>`, the run resolved `OWNED` and the gate exited **0** on every turn-end, acked or
 not — a well-formed state file that looked exactly like a working brake with nothing to hold. With
 the `MODE` line above, the same paste exits **2**. Leaving `<full-session-id>` verbatim is milder
@@ -303,7 +303,7 @@ reach. So the evidence class of each load-bearing claim is stated explicitly.
   seconds: hold one invocation constant, edit the script between two calls, and the second call
   reflects the edit. Treat it as demonstrable rather than as guaranteed.
 - **OBSERVED — a `SessionStart` hook fires mid-session on compaction.** With
-  `matcher: "compact|resume|startup"`, this project's `continuous-work-reinject.sh` fired as
+  `matcher: "compact|resume|startup"`, this project's `continuous-work-reinject` fired as
   `SessionStart:compact` in a long-running session. The reference describes `SessionStart` as
   running "when a session begins or resumes"; the compaction case is what makes a
   newly-registered SessionStart hook eventually reachable, at timing you do not control.
@@ -313,7 +313,7 @@ reach. So the evidence class of each load-bearing claim is stated explicitly.
 - **VERSION-DEPENDENT.** Several documented behaviours carry client-version floors. Check the
   reference for the release you are on rather than trusting this file.
 
-### Three invariants of `continuous-work-reinject.sh`, so a future edit cannot break them silently
+### Three invariants of `continuous-work-reinject`, so a future edit cannot break them silently
 
 1. **It must `exit 0`.** For `SessionStart`, exit 2 "Shows stderr to user only" and "Claude doesn't
    see it". A SessionStart hook that signalled by stderr and a non-zero exit would deliver nothing
@@ -341,7 +341,7 @@ reach. So the evidence class of each load-bearing claim is stated explicitly.
   undeclared stop is refused) but not a judgement of the reason's quality.
 - **A determined agent can delete a hook.** Both gates are file-editable. Defence in depth, not a
   boundary.
-- **The cap is a real exit.** After `HOOK_BLOCK_CAP` consecutive blocks the gate allows the stop,
+- **The cap is a real exit.** After `the block cap` consecutive blocks the gate allows the stop,
   saying the work is not done — and the harness ends the turn after 8 consecutive blocks in any
   case. The gates bound spurious stops; they do not eliminate them.
 
@@ -350,25 +350,30 @@ reach. So the evidence class of each load-bearing claim is stated explicitly.
 ## 7. Verifying a deployment
 
 ```bash
-# 1. Both Stop gates load their library and reach a decision.
+# 1. The REGISTERED launch form executes on THIS machine and every event decides. This is the check
+#    that would have caught the WSL-launcher incident: it resolves `python` on PATH as the harness
+#    does and spawns the dispatcher with no shell.
+python .claude/hooks/hooks.py selftest
+
+# 2. Both Stop gates load their library and reach a decision.
 printf '{"session_id":"probe","cwd":"%s","hook_event_name":"Stop"}' "$PWD" \
-  | bash .claude/hooks/issue-loop-gate.sh; echo "exit $?"      # expect 0 (unregistered probe)
+  | python .claude/hooks/hooks.py stop; echo "exit $?"          # expect 0 (unregistered probe)
 
-# 2. The library fails CLOSED, not open. Expect exit 2 — never 0, never 1.
-mkdir -p /tmp/gp/hooks && cp .claude/hooks/issue-loop-gate.sh /tmp/gp/hooks/
-( cd /tmp/gp && printf '{"session_id":"x","cwd":"."}' | bash hooks/issue-loop-gate.sh ); echo "exit $?"
+# 3. The library fails CLOSED, not open. Expect exit 2 — never 0, never 1.
+mkdir -p /tmp/gp/hooks && cp .claude/hooks/hooks.py .claude/hooks/gate_*.py /tmp/gp/hooks/
+( cd /tmp/gp && printf '{"session_id":"x","cwd":"."}' | python hooks/hooks.py stop ); echo "exit $?"
 
-# 3. The eight suites. A registered run with NO state file must BLOCK; if it exits 0 the
-#    deployment is inert. All eight must be green. Read each suite's own TOTAL line rather
-#    than trusting the counts below.
-bash .claude/hooks/tests/test_crlf_hygiene.sh     # 11 — a CR smuggled through a line protocol
-bash .claude/hooks/tests/test_hook_state_lib.sh   # 64 — identity, parsing, counters, cap validation
-bash .claude/hooks/tests/test_stop_gates.sh       # 35 — Stop gate exit codes + the framework freshness handshake
-bash .claude/hooks/tests/test_tdd_gate.sh         # 44 — push gate, both directions
-bash .claude/hooks/tests/test_reinject.sh         # 26 — no cross-run adoption + delivery invariants + revision notice
-bash .claude/hooks/tests/test_gate_overblock.sh   # 50 — the OVER-block direction: turns that must be ALLOWED
-bash .claude/hooks/tests/test_unpinned_fixes.sh   # 32 — handshake BLOCK by text, evidence, mtime, cross-gate
-bash .claude/hooks/tests/test_scoped_temp.sh      # 26 — the self-writing settings.local.json env block
+# 4. The eight pytest modules. A registered run with NO state file must BLOCK; if it is allowed the
+#    deployment is inert. Zero failures is the criterion.
+python -m pytest .claude/hooks/tests -q -p no:cacheprovider
+#   test_crlf_hygiene       a CR smuggled through a payload, a state file, a version file, a capture
+#   test_hook_state_lib     identity, parsing, counters, cap validation
+#   test_stop_gates         Stop gate decisions, wave captures, the freshness handshake, fail-closed
+#   test_tdd_gate           push gate, both directions, CI-outage mode
+#   test_reinject           no cross-run adoption, delivery invariants, the revision notice
+#   test_gate_overblock     the OVER-block direction: turns that must be ALLOWED
+#   test_unpinned_fixes     handshake BLOCK by text, evidence substance, mtime, cross-gate
+#   test_scoped_temp        the self-writing settings.local.json env block
 
 # 4. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
 #    blocking path, so its absence across many sessions means never-blocked.
@@ -386,8 +391,8 @@ only possible if neither gate had ever blocked a turn-end.
 
 ### Why the library has a suite of its own, and not just the gate suite
 
-`test_hook_state_lib.sh` exists because an end-to-end suite can pass over a broken library.
-`hook_resolve_run_dir` contained
+`test_hook_state_lib.py` exists because an end-to-end suite can pass over a broken library.
+`resolve_run_dir` contained
 
 ```bash
 local base="$1" ... orch="$base/$HOOK_ORCHESTRATOR_DIRNAME"
@@ -414,7 +419,7 @@ so this section is what stops a future editor "simplifying" a constraint whose r
 cannot see. Append new incidents here; never delete one.
 
 ## Incident `invented-run-label` (the 189-session inert-gate failure)
-`session-register.sh` wrote `state_dir: "runs/<sid8>/"` into `registry.json` but created
+`session-register` wrote `state_dir: "runs/<sid8>/"` into `registry.json` but created
 nothing on disk. The agent, told by its command to "derive `RUN_ID`", invented a readable
 label (`run-issue574-20260828T194800Z`) and wrote well-formed state there. Both Stop gates
 resolved state from the registry, found nothing, and exited 0 — inert from turn one.
@@ -429,7 +434,7 @@ Three hooks each hand-rolled a registry read guarded by `command -v jq` with an
 `ls -t … | head -1` fallback. jq was absent on the development host, so all three resolved
 "the most recently touched run" — which handed one session a sibling's issue number,
 branch, and worktree as its own (reproduced live), and gated one session's push on a
-stranger's task ids. Fix: `hook-state-lib.sh` is the ONE resolver, every rung
+stranger's task ids. Fix: `hooklib.py` is the ONE resolver, every rung
 session-keyed, no mtime rung. Add no fourth copy.
 
 ## Incident `seven-synonyms` (the brake armed on one magic string)
@@ -459,11 +464,11 @@ shape test and the word test.
 The substance test on `AWAITING_USER` exists because measured releases included the
 literal `<reason>` — the placeholder the gate itself used to print, so an agent copying
 the instruction verbatim disarmed the brake with the gate's own string. Both gates now
-apply the same `hook_is_substantive_escalation` test; the evidence gate previously
+apply the same `is_substantive_escalation` test; the evidence gate previously
 released on any non-placeholder value, a fail-open wherever it was the only Stop hook.
 
 ## Incident `duty-cycle` (the block cap reset itself into a cycle)
-While reaching `HOOK_BLOCK_CAP` merely reset the counter, MEASURED over eleven
+While reaching `the block cap` merely reset the counter, MEASURED over eleven
 consecutive Stop events: attempts 1-8 refused, attempt 9 released and reset, attempts
 10-11 refusing again — eight forced continuations, one exit, eight more, forever. Fix:
 reaching the cap writes a durable `.capped` marker; only a genuine release on the merits
@@ -479,6 +484,30 @@ line that read like a decision. Fix: an unrecognised verdict is normalised to `B
 Before fence tracking, a `Status:` line inside a fenced code block was read as the run's
 Status, and last-occurrence-wins made a late example beat the real record. Fix: fields
 inside fences are ignored.
+
+## Incident `wsl-launcher` (every hook inert on a Windows host, for three months)
+The hooks were bash scripts registered in exec form (`"command": "bash"`, the script in
+`args`). Exec form resolves the command on PATH and spawns it with NO shell, and on a Windows
+host the first `bash` on the Machine+User PATH was `WindowsApps\bash.exe`, the WSL launcher
+alias (Git's `bash.exe` lives in `Git\bin`, which is not on PATH — only `Git\cmd` is). With no
+WSL distribution installed the launcher exited 1 with "Windows Subsystem for Linux has no
+installed distributions", which the harness treats as a NON-BLOCKING error: the action
+proceeds and the transcript shows a one-line notice nobody reads. MEASURED in one clone
+(2,367 transcripts, 2026-07-17 to 2026-09-25): 399,278 of 400,015 recorded project-hook runs
+were that exit 1, the rest timeouts and other non-blocking errors, and ZERO blocks — every
+`.hook-decisions` line in that clone had been written by an agent running a hook by hand.
+Six-hour stalls and 28 operator `/continue-work` resumes followed. A sibling clone on the same
+machine whose settings used SHELL form (`"command": "bash \"<script>\""`, run through Git
+Bash) had 112 real blocks: the registration form alone decided whether a project was gated.
+Behind it sat a second defect: the gates read the command with `jq`, else with a pattern that
+stops at the first `"`, and `jq` was absent, so 99.5 percent of commands were unreadable to
+the two command gates even where the scripts ran.
+Fix: the hooks are Python (standard library only), registered in exec form through `python`,
+which every project already depends on; one dispatcher per event; the payload parsed once as
+JSON; and `hooks.py selftest`, which spawns the dispatcher exactly as the harness does and
+fails when any event cannot start or does not decide — so a hook that cannot start no longer
+looks like an allow. A shell-form registration was rejected because it would make every gate
+depend on a Git Bash installation and its start-up cost.
 
 ## Incidents `hour-long-commits`, `pytest-n-auto-host-death`, `fail-fast-cycles`
 The three measured failures of the per-commit-test-suite arrangement, recorded in full in

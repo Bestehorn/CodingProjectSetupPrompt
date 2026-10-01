@@ -114,7 +114,7 @@ the issue's scope goes to `issue-intake` as ONE gated issue (`Origin: spawned-di
 `Spawned-from: #X`). Everything else becomes a row in `docs/findings-ledger.md`. A run
 that resolves issues and files none is the expected shape of a good run — see
 [`../spec-workflow/rules/issue-filing-discipline.md`](../spec-workflow/rules/issue-filing-discipline.md),
-mechanically backed by `hooks/issue-filing-gate.sh`.
+mechanically backed by the `issue-filing-gate` gate.
 
 ## Why it embeds the spec engine (and does not call `spec-conductor`)
 
@@ -197,7 +197,7 @@ If X turns out to be closed or claimed elsewhere, it reports and stops rather th
 a different issue, recording a terminal `Phase` with the reason, since the gate judges the state
 file rather than the report.
 
-### What actually holds and releases the `issue-loop-gate.sh` Stop hook
+### What actually holds and releases the `issue-loop-gate` Stop gate
 
 The gate BLOCKS a turn-end while **both** halves hold: this run has CLAIMED tracked work, **and**
 it has not AFFIRMATIVELY released. Getting either half wrong is how a run ends up ungated, so
@@ -268,7 +268,7 @@ This agent is designed for long autonomous runs and performs real remote operati
   `.claude/agent-state/issue-work-orchestrator/runs/<run-id>/` — `resume_state.md` (master
   state machine), `workflow_state.md` (mirrors the active FIX phase so the TDD hooks fire),
   `issue_queue.md`, `iteration_log.md`, `environment.md`, `decision-log.md`. `<run-id>` is
-  computed by the `session-register.sh` SessionStart hook and published as `state_dir` in
+  computed by the `session-register` SessionStart gate and published as `state_dir` in
   `registry.json`; the agent reads that value verbatim and never invents a label of its own.
   An invented label is what caused the original incident: the gates looked for the registry's
   path, the agent had written its state under a readable name of its own, the two namespaces

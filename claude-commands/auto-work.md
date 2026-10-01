@@ -74,7 +74,7 @@ Set `MODE: AUTO`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
 `WORKABLE_ISSUES_REMAIN: yes` in this run's `resume_state.md`, and keep that last field `yes`
 for as long as any open, not-in-progress, unlocked issue exists.
 
-**What actually enforces non-negotiable #2.** `issue-loop-gate.sh` blocks turn-end while
+**What actually enforces non-negotiable #2.** The `issue-loop-gate` gate blocks turn-end while
 this run has CLAIMED tracked work and has not affirmatively released — and `MODE: AUTO`
 (that exact spelling) is the claim that holds the brake in the window BETWEEN two issues,
 when `CURRENT_ISSUE` may momentarily name nothing. `WORKABLE_ISSUES_REMAIN` only chooses the

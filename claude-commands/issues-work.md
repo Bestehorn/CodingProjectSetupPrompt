@@ -35,7 +35,7 @@ it holds only the seeded `Status: NOT_STARTED`, start fresh by appending to that
 ## Scope, and what does NOT let you stop
 
 If $ARGUMENTS names a specific issue number, prioritize that issue first; otherwise work the
-whole backlog by impact/urgency/severity. Either way, `issue-loop-gate.sh` blocks turn-end
+whole backlog by impact/urgency/severity. Either way, the `issue-loop-gate` gate blocks turn-end
 while this run has CLAIMED tracked work and has not AFFIRMATIVELY released. Record
 `MODE: ISSUE_LOOP` alongside `Status` at the start of the run, so the claim holds across the
 window between two issues as well as during one.

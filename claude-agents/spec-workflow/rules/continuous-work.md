@@ -60,8 +60,8 @@ the active spec before acting, then resume the recorded step.
 
 ## Enforcement
 
-`issue-loop-gate.sh` and `spec-stop-gate.sh` refuse a turn-end while this run records
-itself unfinished; `continuous-work-reinject.sh` restores the contract and your place
+The `issue-loop-gate` and `spec-stop-gate` gates refuse a turn-end while this run records
+itself unfinished; the `continuous-work-reinject` gate restores the contract and your place
 after a compaction; `/goal <condition>` hands the "am I done?" call to an independent
 evaluator. The release vocabulary is `.claude/docs/run-identity.md`. Outside their reach
 this text is the only brake; behave as though nothing is watching.

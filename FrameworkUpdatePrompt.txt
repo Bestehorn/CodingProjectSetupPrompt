@@ -76,12 +76,24 @@ of this in the same PR, in this order, and record the before/after sizes:
    a "line-count-neutral edit" rule, a corpus size pinned to an exact figure) is removed
    with its rule, because `proportionality.md` forbids measurements in specs and the
    citation form is now symbol-and-path. Record each retirement in the PR.
+5b. **The hooks are Python.** Install `hooklib.py`, `hooks.py`, every `gate_*.py`,
+   `red_for_right_reason.py` and `tests/` into `.claude/hooks/` (Kiro: the same modules plus
+   `kiro_hooks.py` into `.kiro/hooks-bin/`), replace the `hooks` block of
+   `.claude/settings.json` with the three exec-form `python` registrations of Part 12.2
+   (Kiro: the agents' JSON `hooks` already name `kiro_hooks.py`), and DELETE the `.sh` hooks
+   and their bash suites — a surviving bash registration is the defect this revision
+   removes: on a Windows host the bare `bash` the harness resolves was the WSL launcher and
+   every gate was inert. A project-specific hook of its own (a `ruff-on-stop`, say) is
+   re-registered through `python` or retired; never through `bash`.
 6. **Wrapper and CI.** Implement the blocking wait in the project's wrapper (`pipeline
    wait` / `wait-run`, per the template) if absent. Where the project deploys, confirm the
    pipeline has a post-deploy job that runs the committed end-to-end script; add the job
    if the project has end-to-end scripts that only an agent used to run by hand.
 7. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes
-   in full; `python scripts/memory_compile.py report` exits 0; the eight hook suites pass;
+   in full; `python scripts/memory_compile.py report` exits 0; the hook suites pass
+   (`python -m pytest .claude/hooks/tests -q`) and `python .claude/hooks/hooks.py selftest`
+   passes — it spawns the dispatcher exactly as the harness does, so a hook that cannot
+   start on this host is caught here and not in a transcript;
    grep `.claude/` and `.kiro/` for `Type1`/`Type2` (outside the issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an old
    copy preserved over the new one.
 

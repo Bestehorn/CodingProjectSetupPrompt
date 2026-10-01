@@ -70,29 +70,18 @@
   "hooks": {
     "agentSpawn": [
       {
-        "command": "bash .kiro/hooks-bin/kiro-session-register.sh"
+        "command": "python .kiro/hooks-bin/kiro_hooks.py agentSpawn"
       }
     ],
     "preToolUse": [
       {
-        "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
-        "matcher": "execute_bash"
-      },
-      {
-        "command": "bash .kiro/hooks-bin/kiro-claim-before-worktree.sh",
-        "matcher": "execute_bash"
-      },
-      {
-        "command": "bash .kiro/hooks-bin/kiro-issue-filing-gate.sh",
+        "command": "python .kiro/hooks-bin/kiro_hooks.py preToolUse",
         "matcher": "execute_bash"
       }
     ],
     "stop": [
       {
-        "command": "bash .kiro/hooks-bin/kiro-stop-gate.sh"
-      },
-      {
-        "command": "bash .kiro/hooks-bin/kiro-loop-gate.sh"
+        "command": "python .kiro/hooks-bin/kiro_hooks.py stop"
       }
     ]
   },

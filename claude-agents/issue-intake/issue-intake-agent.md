@@ -433,7 +433,7 @@ before the Drafting Phase, every time, and record the branch you took in
 `filing_gate.md` with the evidence that decided it. This is the applied
 form of the gate (definitions:
 `.claude/rules/issue-filing-discipline.md`, enforced mechanically by the
-PreToolUse hook `issue-filing-gate.sh`).
+PreToolUse gate `issue-filing-gate`).
 
   G.1 OBSERVED-DEFECT BAR. Is the observation a defect you can
       demonstrate from the evidence in `code_evidence.md` — a wrong

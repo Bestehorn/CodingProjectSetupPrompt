@@ -41,7 +41,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      claim matches), `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
      `WORKABLE_ISSUES_REMAIN: no`.
    - **`WORKABLE_ISSUES_REMAIN: no` gates NOTHING** (`run-identity.md` §5): it only chooses
-     the WORDING of an `issue-loop-gate.sh` refusal. What lets this command finish after ONE
+     the WORDING of an `issue-loop-gate` refusal. What lets this command finish after ONE
      issue is reaching a terminal `Phase` on X and not selecting another, not this field.
    - Autonomy still applies WITHIN the issue: do not stop mid-lifecycle to report progress
      or ask whether to continue. The only permitted pauses are a genuine escalation, a
@@ -110,7 +110,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - `git worktree add .claude/worktrees/issue-<X> -b issue-<X>-<slug> origin/<main>`
      with an EXPLICIT descriptive `<slug>` (e.g. `issue-77-invoke-grant`). Never accept an
      auto-generated `claude/<name>` branch; never put claude/ai/bot in the name
-     (`no-ai-attribution.md`). The `claim-before-worktree.sh` PreToolUse hook independently
+     (`no-ai-attribution.md`). The `claim-before-worktree` PreToolUse gate independently
      blocks this call until X's claim is visible on the remote — if it blocks, your Step 2
      claim did not land: fix the claim, do not work around the hook.
    - Record the ABSOLUTE worktree path as `WORKTREE` and the branch as
@@ -174,7 +174,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
 **Step 6: Implement, prove, document**
    - `spec-phase-implement.md`, per WAVE: dispatch all the wave's TEST tasks in ONE
      message → run the wave's tests once → `evidence/red/wave-N.txt` with a `# tasks:`
-     header, confirmed RED-FOR-THE-RIGHT-REASON via `.claude/hooks/red-for-right-reason.sh`
+     header, confirmed RED-FOR-THE-RIGHT-REASON via `python .claude/hooks/red_for_right_reason.py`
      → dispatch all the wave's IMPL tasks in ONE message → run once →
      `evidence/green/wave-N.txt` → ONE commit per wave. Tier S is a single wave. Then run
      `adversarial-verifier` once and produce `evidence/REPORT.md` (≤ 8,000 bytes).

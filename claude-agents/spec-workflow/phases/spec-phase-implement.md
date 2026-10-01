@@ -28,7 +28,7 @@ For each wave in `tasks.md` order (tier S: the single wave in `change.md`):
    worktree path. When they return, the conductor runs the wave's tests ONCE:
    `python scripts/run_tests.py <the wave's test files>` → `evidence/red/wave-N.txt`,
    first line `# tasks: <every TEST task id of the wave>`.
-   Assert **red for the right reason** (`.claude/hooks/red-for-right-reason.sh` on the
+   Assert **red for the right reason** (`python .claude/hooks/red_for_right_reason.py` on the
    capture): assertion failures or Hypothesis falsifications, not import, collection,
    syntax or fixture errors. Wrong-red or green → re-dispatch only the offending tasks.
 2. **GREEN — all IMPL tasks of the wave, ONE dispatch.** One `spec-implementer` per IMPL
@@ -88,7 +88,7 @@ message to the operator is the table and the PR link, nothing more.
 
 ## Push gating (commits are not gated)
 
-`spec-tdd-gate.sh` blocks `git push` when a `[x]` task has no capture that declares it,
+The `spec-tdd-gate` gate blocks `git push` when a `[x]` task has no capture that declares it,
 when the newest green capture is red or contains skip/xfail, or when a CI outage is
 declared with no green full-suite capture. It bans `--no-verify` on commit and push.
 Commits themselves need no evidence.

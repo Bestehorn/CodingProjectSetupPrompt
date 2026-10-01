@@ -51,7 +51,7 @@ findings sharing a root cause = ONE issue that removes the cause).
 Delegate the filing to the **issue-intake agent** (it investigates, dedupes, and writes
 the structured body); call the wrapper's `create-issue` yourself only when intake is
 unavailable — producing the same body. Every filed body carries these lines near the top
-(the `PreToolUse` gate `.claude/hooks/issue-filing-gate.sh` blocks a create call missing
+(the `PreToolUse` gate `issue-filing-gate` blocks a create call missing
 them):
 
 ```

@@ -18,49 +18,36 @@ These details were moved out of the agent definition to keep its always-loaded f
 small. They are load-bearing for MAINTAINING the hooks, not for running the agent — the
 definition states the behavioral consequences and points here.
 
-### Script line citations (as shipped)
+### The gates are the Claude Code gates
 
-- `kiro-loop-gate.sh` reads each state field with
-  `grep -iE "^[*-]?[[:space:]]*<Name>:" | tail -1`
-  (`cli-agents/spec-workflow/hooks/kiro-loop-gate.sh:75`) — hence LAST occurrence wins
-  and a bold `**Name:** value` spelling matches nothing.
-- Its block condition (`kiro-loop-gate.sh:78-96`): block only while `Status` matches
-  `IN_PROGRESS` AND `AWAITING_USER` is `none`/`-`/empty AND `WORKABLE_ISSUES_REMAIN`
-  matches `^(yes|true)$`. It does not read `Phase`.
-- It resolves state from the registry's `state_dir`, else
-  `runs/<first-8-of-session_id>/` (`kiro-loop-gate.sh:62-67`), and at line 73 it
-  **exits 0 — a silent no-op — when that `resume_state.md` is absent**.
-- `kiro-session-register.sh` derives identity mechanically from the stdin `session_id`
-  (`run_id = ${session_id:0:8}` at `kiro-session-register.sh:43`,
-  `state_dir = "runs/$run_id/"` at `:54`), and performs its entire registry upsert
-  inside `if command -v jq >/dev/null 2>&1` with no fallback (lines 49-62) — on a host
-  without `jq` it creates `registry.json` as `{}` and records no entry. It never creates
-  `runs/<run-id>/` and never writes a state file (unlike the Claude Code
-  `session-register.sh`, which seeds both state files).
-- `kiro-stop-gate.sh` falls back to `ls -t` over every `workflow_state.md` in the clone
-  (`kiro-stop-gate.sh:65`), so with concurrent runs it can judge a run against a
-  SIBLING's state instead of going quiet.
+Since the 2026-10-01 rewrite the Kiro hooks are Python and SHARED with Claude Code:
+`kiro_hooks.py` runs `hooklib.py` and the `gate_*.py` modules from
+`claude-agents/spec-workflow/hooks/` with the Kiro host (`.kiro/agent-state/`,
+`.kiro/steering/`, `.kiro/hooks-bin/`). Everything the previous section of this file
+recorded as "not ported" is therefore in force on Kiro too, and the bash-era citations are
+gone with the scripts:
 
-### How the corrected Claude Code loop gate differs (NOT ported here)
+- State fields are the LAST plain `Name: value` line outside a fenced block, trimmed,
+  case-insensitive; a bold `**Name:** value` spelling matches nothing (`hooklib.parse_state`).
+- The `issue-loop-gate` holds the turn while the run has CLAIMED tracked work — a
+  non-placeholder `CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an
+  orchestrator mode — and releases only on an explicitly idle `Status`, a terminal `Phase`
+  **or** `Status` (whole-value), or a substantive `AWAITING_USER`. Its polarity is inverted:
+  an unrecognised `Status` is work in flight. `WORKABLE_ISSUES_REMAIN` selects the refusal's
+  wording and gates nothing.
+- Identity resolves through three session-keyed rungs (the registry's `state_dir`,
+  `runs/<first-8-of-session_id>/`, a `runs/*/resume_state.md` recording this `SESSION_ID`).
+  A registered session with no state file is `BROKEN` and the Stop gates fail CLOSED on it;
+  an unregistered session is a deliberate no-op. There is no `ls -t` fallback anywhere.
+- The `session-register` gate SEEDS `runs/<run-id>/resume_state.md` + `workflow_state.md`
+  before writing the registry entry, and the registry is read and written as JSON by the
+  interpreter — nothing depends on `jq`.
+- Each Stop gate keeps a per-run consecutive-block counter (default 8,
+  `KIRO_STOP_BLOCK_CAP`) that resets on progress and writes a durable give-up marker at the
+  cap; a Kiro block is `{"decision":"block","reason":"..."}` on stdout with exit 0.
 
-The Claude Code sibling gate (`issue-loop-gate.sh`) was corrected after measured
-incidents, and now works differently in three ways rather than one:
-
-1. `WORKABLE_ISSUES_REMAIN` selects only the refusal's WORDING — it gates nothing.
-2. The block turns on whether the run has CLAIMED tracked work — a non-placeholder
-   `CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an orchestrator
-   mode — and is released only by an explicitly idle `Status`, a terminal `Phase` **or**
-   `Status` (whole-value), or a substantive `AWAITING_USER`.
-3. Its polarity is INVERTED: a `Status` it does not recognise as idle counts as work in
-   flight, not as nothing to hold.
-
-NONE of that is ported to the Kiro gate: it still tests the literal `IN_PROGRESS`, still
-tests `WORKABLE_ISSUES_REMAIN`, and still ignores `Phase` entirely. The agent definition
-states the Kiro behavior and this difference rather than assuming the port. On the Claude
-Code gate `Phase` is one of the two fields whose terminal value releases the brake, and
-the seeded `SESSION_ID:` line is used as a recovery rung — two more reasons the
-definition tells runs to record `Phase` and keep `SESSION_ID` intact even though the
-local gate reads neither.
+The behaviour is pinned by the shared pytest modules under
+`claude-agents/spec-workflow/hooks/tests/` (installed to `.kiro/hooks-bin/tests/`).
 
 The measured incident behind the never-invent-a-run-label rule happened on the Claude
 Code sibling: an agent told to "derive RUN_ID" wrote its state under a tidy self-chosen

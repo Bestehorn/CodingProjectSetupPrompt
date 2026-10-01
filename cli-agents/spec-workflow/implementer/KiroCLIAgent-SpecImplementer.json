@@ -29,7 +29,7 @@
   "hooks": {
     "preToolUse": [
       {
-        "command": "bash .kiro/hooks-bin/kiro-tdd-gate.sh",
+        "command": "python .kiro/hooks-bin/kiro_hooks.py preToolUse",
         "matcher": "execute_bash"
       }
     ]

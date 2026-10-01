@@ -124,8 +124,8 @@ defects in parallel, implement it in waves, prove it, report the table and the P
 - The phase fragments live at `.kiro/specs/_workflow/phases/` and the review contract at
   `.kiro/docs/review-contract.md` (both installed by the setup prompt, PART 8A). If a
   fragment is absent that is a blocker to report, never a procedure to improvise.
-- Hook-enforced gates: `.kiro/hooks-bin/kiro-tdd-gate.sh` (`preToolUse`, exit 2 blocks a
-  push that is not proven; accepts per-task and wave captures), `kiro-stop-gate.sh` and
-  `kiro-loop-gate.sh` (`stop` hooks that block by writing `{"decision":"block","reason":…}`
-  to STDOUT), `kiro-session-register.sh` (`agentSpawn`). Respect them; never work around
+- Hook-enforced gates, all run by `python .kiro/hooks-bin/kiro_hooks.py <event>`: `spec-tdd-gate` (`preToolUse`, exit 2 blocks a
+  push that is not proven; accepts per-task and wave captures), `spec-stop-gate` and
+  `issue-loop-gate` (`stop` gates that block by writing `{"decision":"block","reason":…}`
+  to STDOUT), `session-register` (`agentSpawn`). Respect them; never work around
   them.

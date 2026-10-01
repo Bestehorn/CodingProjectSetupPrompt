@@ -88,11 +88,11 @@ convention is `rules/agent-state-convention.md`. The gates are in `hooks/`.
 
 **Where tests run.** Per WAVE the conductor runs only the wave's tests and commits once;
 a wave capture's `# tasks:` header names every task it proves, and both gates resolve a
-task's evidence through `hook_capture_for_task`, so a per-task file and a wave capture are
+task's evidence through `capture_for_task`, so a per-task file and a wave capture are
 equivalent. Per task, in the older per-task shape, the conductor runs only the PAIRED tests;
 commits are cheap (the pre-commit hook is lint + security) and are meant to be frequent.
 The whole-suite regression verdict comes from ONE CI run over the finished batch after a
-single push. `spec-tdd-gate.sh` therefore gates the PUSH, not the commit — the evidence
+single push. `spec-tdd-gate` therefore gates the PUSH, not the commit — the evidence
 requirement used to sit on `git commit`, which made every task cost a full suite run and
 drove agents to one giant commit per feature. `rules/ci-owns-the-test-suite.md` is the
 rule; the exception is a declared CI outage, where the `pre-push` hook runs the suite
@@ -102,23 +102,23 @@ locally with bounded workers.
 
 | File | Event | Does |
 |---|---|---|
-| `hook-state-lib.sh` | — (sourced) | The ONE identity/state library. Resolves "which run owns this session" through three rungs, all keyed on the session id: the registry's `state_dir`, `runs/<first-8-of-session-id>/`, then a scan of `runs/*/resume_state.md` for a matching `SESSION_ID:`. **No most-recently-modified rung, ever.** Exposes the `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, plain-`Name: value` field reads (last occurrence wins), bounded block counters, the decision log, and the contract handshake. |
+| `hooklib.py` | — (imported) | The ONE identity/state library. Resolves "which run owns this session" through three rungs, all keyed on the session id: the registry's `state_dir`, `runs/<first-8-of-session-id>/`, then a scan of `runs/*/resume_state.md` for a matching `SESSION_ID:`. **No most-recently-modified rung, ever.** Exposes the `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, plain-`Name: value` field reads (last occurrence wins), bounded block counters, the decision log, and the contract handshake. |
 | `CONTRACT_VERSION` | — (data) | One line naming the deployed continuous-work contract. A run acknowledges it by creating `contract-ack-<version>` in its run dir; that is how a LIVE session picks up a newly deployed contract without restarting. |
-| `session-register.sh` | SessionStart | Upserts `registry.json` **and SEEDS** `runs/<run-id>/resume_state.md` + `workflow_state.md`, so the gates are reachable from turn one. Pre-acknowledges the current contract. Has a python rung for the registry write because `jq` is absent on some hosts and the previous jq-only upsert wrote no entry at all there. Non-blocking. |
-| `continuous-work-reinject.sh` | SessionStart (`compact\|resume\|startup`) | Re-injects the continuous-work contract plus THIS session's recorded place (phase, issue, branch, worktree, PR). When identity is unresolvable it SAYS SO rather than guessing — the predecessor borrowed the most recently touched run directory and handed one session another run's issue number. |
-| `issue-loop-gate.sh` | Stop | The PRIMARY brake. Blocks while the run has CLAIMED tracked work (`CURRENT_ISSUE`/`CURRENT_SPEC`/an orchestrator `MODE`) and has NOT affirmatively said it is idle, finished, or escalated. Polarity is inverted on purpose: an UNRECOGNISED `Status` means work in flight, because arming on the single literal `IN_PROGRESS` let `WORKING`, `ACTIVE`, `in progress` and four other plausible words each disable it. `WORKABLE_ISSUES_REMAIN` gates NOTHING: it chooses the refusal's wording and feeds the progress fingerprint. `AWAITING_USER` is checked for SUBSTANCE, not presence — a placeholder, an angle-bracketed token, or a one-word answer is rejected. Fails CLOSED on a `BROKEN` identity, an unrecognised verdict, and a missing or partially-sourced library. |
-| `spec-stop-gate.sh` | Stop | The evidence gate. Blocks on a `[x]` task with no capture, a capture that shows no PASSING result (existence was being read as proof — two zero-byte files were accepted as evidence), a failing latest capture, a real skip/xfail counter, an unparseable checked task line, and an ABSENT `tasks.md` **or** `CURRENT_SPEC` at phase IMPLEMENT/VERIFY — both are the mandatory-artifact case the gate exists for. Honours `AWAITING_USER`, resolves a spec inside a per-issue WORKTREE, and matches runner counters rather than bare words so a test NAME containing "skipped" cannot force the agent to edit its own evidence. |
-| `spec-tdd-gate.sh` | PreToolUse(Bash) | Bans `git commit --no-verify`/`-n` and `git push --no-verify` outright, and blocks a PUSH during IMPLEMENT/VERIFY when a checked task has no evidence capture, the newest green capture is red or skip-ridden, or CI-OUTAGE MODE is declared with no green full-suite capture. Commits carry no evidence requirement — commit early, commit often (`rules/ci-owns-the-test-suite.md`). Resolves identity through `hook-state-lib.sh`. Its internal ORDER is load-bearing: the bypass bans and the non-push exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a PUSH but never a commit or an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
-| `red-for-right-reason.sh` | — | Helper for the RED-phase audit (a test must fail for the reason the task predicts). |
+| `gate_session_register.py` (`session-register`) | SessionStart, via `hooks.py` | Upserts `registry.json` **and SEEDS** `runs/<run-id>/resume_state.md` + `workflow_state.md`, so the gates are reachable from turn one. Pre-acknowledges the current contract. Reads and writes the registry as JSON; nothing depends on `jq` (the bash predecessor's jq-only upsert wrote no entry at all on hosts without it). Non-blocking. |
+| `gate_reinject.py` (`continuous-work-reinject`) | SessionStart, sources compact/resume/startup, via `hooks.py` | Re-injects the continuous-work contract plus THIS session's recorded place (phase, issue, branch, worktree, PR). When identity is unresolvable it SAYS SO rather than guessing — the predecessor borrowed the most recently touched run directory and handed one session another run's issue number. |
+| `gate_issue_loop.py` (`issue-loop-gate`) | Stop, via `hooks.py` | The PRIMARY brake. Blocks while the run has CLAIMED tracked work (`CURRENT_ISSUE`/`CURRENT_SPEC`/an orchestrator `MODE`) and has NOT affirmatively said it is idle, finished, or escalated. Polarity is inverted on purpose: an UNRECOGNISED `Status` means work in flight, because arming on the single literal `IN_PROGRESS` let `WORKING`, `ACTIVE`, `in progress` and four other plausible words each disable it. `WORKABLE_ISSUES_REMAIN` gates NOTHING: it chooses the refusal's wording and feeds the progress fingerprint. `AWAITING_USER` is checked for SUBSTANCE, not presence — a placeholder, an angle-bracketed token, or a one-word answer is rejected. Fails CLOSED on a `BROKEN` identity, an unrecognised verdict, and a missing or partially-sourced library. |
+| `gate_spec_stop.py` (`spec-stop-gate`) | Stop, via `hooks.py` | The evidence gate. Blocks on a `[x]` task with no capture, a capture that shows no PASSING result (existence was being read as proof — two zero-byte files were accepted as evidence), a failing latest capture, a real skip/xfail counter, an unparseable checked task line, and an ABSENT `tasks.md` **or** `CURRENT_SPEC` at phase IMPLEMENT/VERIFY — both are the mandatory-artifact case the gate exists for. Honours `AWAITING_USER`, resolves a spec inside a per-issue WORKTREE, and matches runner counters rather than bare words so a test NAME containing "skipped" cannot force the agent to edit its own evidence. |
+| `gate_tdd.py` (`spec-tdd-gate`) | PreToolUse(Bash), via `hooks.py` | Bans `git commit --no-verify`/`-n` and `git push --no-verify` outright, and blocks a PUSH during IMPLEMENT/VERIFY when a checked task has no evidence capture, the newest green capture is red or skip-ridden, or CI-OUTAGE MODE is declared with no green full-suite capture. Commits carry no evidence requirement — commit early, commit often (`rules/ci-owns-the-test-suite.md`). Resolves identity through `hooklib.py`. Its internal ORDER is load-bearing: the bypass bans and the non-push exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a PUSH but never a commit or an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
+| `red_for_right_reason.py` | — | Helper for the RED-phase audit (a test must fail for the reason the task predicts). |
 | `MIGRATION.md` | — (docs) | How to deploy all of this to a project whose agents are ALREADY RUNNING: what a live session can and cannot pick up, why the delivery channel is a blocking Stop hook's stderr rather than the tidier JSON `decision` form, and which live sessions the contract handshake does NOT reach. |
-| `tests/` | — (suites) | EIGHT self-contained suites, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.sh` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.sh` is the counterpart of `test_stop_gates.sh`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.sh` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
+| `tests/` | — (pytest) | EIGHT pytest modules, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.py` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.py` is the counterpart of `test_stop_gates.py`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.py` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
 
 Neither Stop gate reads the harness's `stop_hook_active` field any more: honouring it made a
 POLICY gate block at most ONCE per continuation chain, so the agent was nudged once and then
 free to stop on unfinished work. Loop safety is each gate's own consecutive-block counter —
-`HOOK_BLOCK_CAP`, default 8 to match the ceiling the harness itself enforces, overridable per
-project with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` and validated into `[1, 64]` by
-`hook_resolve_block_cap`, so a typo like `abc` or a `0` cannot silently disable the brake.
+`the block cap`, default 8 to match the ceiling the harness itself enforces, overridable per
+project with `CLAUDE_CODE_STOP_the block cap` and validated into `[1, 64]` by
+`resolve_block_cap`, so a typo like `abc` or a `0` cannot silently disable the brake.
 
 Reaching the cap allows the stop while stating that the work is not done — and writes a
 DURABLE `.capped` marker beside the counter, so it is a one-way stand-down rather than a duty
@@ -132,8 +132,7 @@ and the name and size of every capture under it. So a run that advances every tu
 reaches the cap, and the stand-down message's claim that nothing changed is something the gate
 actually measured rather than assumed.
 
-`hooks/tests/test_stop_gates.sh` is the suite that proves this: **24 cases, each asserting an
-EXIT CODE** (0 = allow the turn to end, 2 = block), driven against synthetic payloads in a
+`hooks/tests/test_stop_gates.py` is the module that proves this: every case asserts a DECISION (0 = allow the turn to end, 2 = block), driven against synthetic payloads in a
 throwaway project tree. Exit codes are the whole contract, so the assertions are the point —
 a gate that "looks right" but returns 0 where it must return 2 is exactly the defect class
 these gates were found to have. It covers the identity verdicts (including state written
@@ -141,12 +140,12 @@ under an agent-invented directory name, recovered via `SESSION_ID`), the block c
 evidence and vacuous-green rules, the absent-`tasks.md` block, and fail-closed behaviour for
 both gates against a missing and a partially-sourced library. What it CANNOT prove on its own is
 which gate fired: several of its cases seed a state the primary brake also blocks, so an observed
-exit 2 is consistent with more than one cause. That gap is what `test_unpinned_fixes.sh` closes
+exit 2 is consistent with more than one cause. That gap is what `test_unpinned_fixes.py` closes
 below, by asserting on the refusal TEXT.
 
-`hooks/tests/test_hook_state_lib.sh` (**64 cases**) tests the library by calling its functions
+`hooks/tests/test_hook_state_lib.py` tests the library by calling its functions
 DIRECTLY, and it is separate from the gate suite for a reason worth internalising: an end-to-end
-suite can pass over a broken unit. `hook_resolve_run_dir` contained
+suite can pass over a broken unit. `resolve_run_dir` contained
 `local base="$1" … orch="$base/…"`, and bash expands every assignment word in one `local` BEFORE
 creating the locals — so `$base` resolved to the CALLER's global of that name. Both gates hold a
 global called `base`, so all 24 gate assertions passed while the function, called from anywhere
@@ -157,14 +156,14 @@ the unit.** This suite therefore defines no global named `base`, `session`, `orc
 `UNREGISTERED` (an entry with an absent, empty, absolute or path-traversing `state_dir`, and a
 malformed registry), the counter's clamping and base-10 handling, and the field-parsing contract.
 
-`hooks/tests/test_tdd_gate.sh` (**42 cases**) covers the push gate in BOTH directions, which are
+`hooks/tests/test_tdd_gate.py` covers the push gate in BOTH directions, which are
 asymmetric: it must never refuse a non-push command — commits included, which carry no evidence
 requirement — even when its own library is broken, and it must always refuse a push it cannot
 justify. It pins the measured fail-open where a capture reading `3 failed, 5 passed` was ALLOWED
 because the old escape clause matched "5 passed", while `0 failed, 5 passed` must still pass, plus
 the CI-outage rung (a push with no CI run behind it owes a green full-suite capture).
 
-`hooks/tests/test_reinject.sh` covers the SessionStart re-injector with 23 substring
+`hooks/tests/test_reinject.py` covers the SessionStart re-injector with substring
 assertions over its emitted text, because that hook's contract is what it SAYS rather than an
 exit code: that the continuous-work contract is always injected; that an `OWNED` session is
 told its OWN issue and branch; that a `BROKEN` one is named the exact path to create, warned
@@ -175,7 +174,7 @@ sibling run — that the output leaks none of its issue, branch or run dir, on e
 including recovery and the no-session-id path — because leaking exactly that was the original
 defect, and only a negative assertion can prove a fallback is gone rather than merely unused.
 
-`hooks/tests/test_unpinned_fixes.sh` (**32 cases**) exists because a mutation pass over the
+`hooks/tests/test_unpinned_fixes.py` exists because a mutation pass over the
 shipped hooks found three fixes that were REAL IN THE CODE and guarded by nothing — every other
 suite stayed green while each was reverted — and an unpinned fix is one that regresses silently,
 which is precisely how the original incident happened. It pins those three, plus the cross-gate
@@ -200,25 +199,24 @@ terminal-value agreement this project had to adjudicate twice:
   gate refused it.
 
 ```bash
-bash claude-agents/spec-workflow/hooks/tests/test_crlf_hygiene.sh    # 11 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_hook_state_lib.sh  # 64 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_tdd_gate.sh        # 44 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_reinject.sh        # 26 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_stop_gates.sh      # 35 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_gate_overblock.sh  # 50 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_unpinned_fixes.sh  # 32 passed, 0 failed
-bash claude-agents/spec-workflow/hooks/tests/test_scoped_temp.sh     # 26 passed, 0 failed
+cd claude-agents/spec-workflow/hooks
+python -m pytest tests -q -p no:cacheprovider   # the eight modules: crlf hygiene, library, tdd gate,
+                                                #   reinject, stop gates, over-block, unpinned fixes, scoped temp
+python hooks.py selftest                        # the REGISTERED launch form: `python hooks.py <event>` as the
+                                                #   harness spawns it, against a scratch project
 ```
 
-272 assertions in total. Take each number from the `TOTAL:` line the suite itself prints rather
-than from this file — a count quoted in prose and never re-measured is how the library suite came
-to be described as "30 cases" in one paragraph while the runnable block above said 64.
+Take the counts from pytest's own summary rather than from prose — a count quoted in prose and
+never re-measured is how the library suite came to be described as "30 cases" in one paragraph
+while the runnable block said 64. The self-test exists because a suite can only prove the gates
+decide correctly WHEN THEY RUN; whether the harness can START them on this machine is a separate
+question, and the measured answer for the bash predecessors on a Windows host was no.
 
-All seven are read-only with respect to the repository — all state lives in a temp tree they
-create and destroy — so they are safe to run in any clone. Run them after any edit to a hook or
-to `hook-state-lib.sh`: a gate regression is otherwise SILENT, which is the property that let the
+All eight are read-only with respect to the repository — all state lives in a temp tree they
+create and destroy — so they are safe to run in any clone. Run them after any edit to a gate or
+to `hooklib.py`: a gate regression is otherwise SILENT, which is the property that let the
 original defect persist for 189 sessions. They install alongside the hooks, but only because the
-recipe below copies `tests/` explicitly — the `hooks/*.sh` glob does not descend into it.
+recipe below copies `tests/` explicitly — the `hooks/*.py` glob does not descend into it.
 
 ## Slash commands (in `claude-commands/`)
 
@@ -271,19 +269,20 @@ cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DE
                                                                          # read by registered runs at start —
                                                                          # a rules/ file with no paths: would
                                                                          # load into EVERY session
-cp claude-agents/spec-workflow/hooks/*.sh                 .claude/hooks/ && chmod +x .claude/hooks/*.sh
+cp claude-agents/spec-workflow/hooks/*.py                 .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
+                                                                         # red_for_right_reason.py
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md   .claude/hooks/   # live-session notice; self-retires via Valid-until
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.sh           .claude/hooks/tests/ \
-  && chmod +x .claude/hooks/tests/*.sh
+cp claude-agents/spec-workflow/hooks/tests/*.py           .claude/hooks/tests/
+rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                        # the bash predecessors, if any
 ```
 
-Three of those lines exist because the `hooks/*.sh` glob does not reach what they copy, and each
+Three of those lines exist because the `hooks/*.py` glob does not reach what they copy, and each
 omission is silent:
 
-- **`CONTRACT_VERSION`** is data, not a script, and `hook-state-lib.sh` reads it from
+- **`CONTRACT_VERSION`** is data, not code, and `hooklib.py` reads it from
   `.claude/hooks/CONTRACT_VERSION` by that exact path. Omit it and the version resolves to
   `unversioned` — the handshake still functions, but it can no longer distinguish one deployed
   contract from the next.
@@ -298,16 +297,14 @@ Then register the hooks in `.claude/settings.json`:
 
 | Event | Hook | Note |
 |---|---|---|
-| SessionStart | `session-register.sh` | must run — it seeds the state the gates read |
-| SessionStart | `scoped-temp-init.sh` | creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing (effective next session) |
-| SessionStart (`compact\|resume\|startup`) | `continuous-work-reinject.sh` | |
-| Stop | `issue-loop-gate.sh` | the primary brake |
-| Stop | `spec-stop-gate.sh` | the evidence gate |
-| PreToolUse(Bash) | `spec-tdd-gate.sh` | the push/evidence gate (commits carry no evidence requirement) |
-| PreToolUse(Bash) | `claim-before-worktree.sh` | blocks a per-issue worktree until the claim is visible on the remote |
-| PreToolUse(Bash) | `issue-filing-gate.sh` | blocks an issue-create call whose body carries no filing rationale |
+| SessionStart | `python .claude/hooks/hooks.py session-start` | ONE exec-form entry, no matcher: runs `session-register` (seeds the state the gates read), `scoped-temp-init` (creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing) and, for sources compact/resume/startup, `continuous-work-reinject` |
+| PreToolUse (`Bash`) | `python .claude/hooks/hooks.py pre-tool-use` | runs `no-env-vars`, `spec-tdd-gate`, `claim-before-worktree`, `issue-filing-gate`; the first block wins |
+| Stop | `python .claude/hooks/hooks.py stop` | runs `spec-stop-gate` (the evidence gate) and `issue-loop-gate` (the primary brake); either refusal blocks |
+| PreToolUse(Bash) | `spec-tdd-gate` | the push/evidence gate (commits carry no evidence requirement) |
+| PreToolUse(Bash) | `claim-before-worktree` | blocks a per-issue worktree until the claim is visible on the remote |
+| PreToolUse(Bash) | `issue-filing-gate` | blocks an issue-create call whose body carries no filing rationale |
 
-Registering the Stop gates without `session-register.sh` is the configuration that produced
+Registering the Stop gates without `session-register` is the configuration that produced
 the measured failure: with nothing seeding `runs/<run-id>/`, both gates resolved no state and
 exited 0 on every turn-end for 189 sessions. Add to root `CLAUDE.md`:
 "All agents follow `.claude/rules/agent-state-convention.md` for state and decision
@@ -334,7 +331,7 @@ pass)."
 .claude/agent-state/<agent>/       # per-agent resume_state.md + logs (gitignored)
 .claude/agent-state/spec-conductor/workflow_state.md   # master phase machine (single-run layout)
 .claude/agent-state/issue-work-orchestrator/
-  registry.json                    # session_id -> run identity (written by session-register.sh)
+  registry.json                    # session_id -> run identity (written by session-register)
   runs/<run-id>/                   # ONE run's state; run-id comes from the registry VERBATIM
     resume_state.md  workflow_state.md  contract-ack-<version>
   .hook-decisions/<date>.log       # every hook decision — read this to see if the gates are live

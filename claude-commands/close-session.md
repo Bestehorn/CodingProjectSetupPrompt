@@ -21,7 +21,7 @@ the user's call.
 
 **Running this command is not permission to stop.** If any work remains unfinished, close-out
 is not what comes next — the work is. Per `.claude/rules/continuous-work.md`, an accurate
-close-out report over unfinished work is a disguised check-in, and `issue-loop-gate.sh` will
+close-out report over unfinished work is a disguised check-in, and the `issue-loop-gate` gate will
 refuse the turn-end anyway.
 
 **Scope: THIS session only.** Consider only your own worktree, branch, lock, claim markers,
@@ -171,7 +171,7 @@ deciding number).
       anything it reports as skipped or failed is named in that same cell, never expanded.
    3. If `tmp/os-temp` is not configured as this tree's `TMPDIR`/`TEMP`/`TMP`, row 5's Detail
       says `unscoped temp` — the reaper then falls back to pattern matching in the shared temp
-      dir, which is best-effort. `scoped-temp-init.sh` self-writes the env block at session
+      dir, which is best-effort. The `scoped-temp-init` gate self-writes the env block at session
       start (effective the NEXT session), so persistent absence means the hook is not wired or
       the settings file does not parse — name which in that same cell.
 
@@ -213,7 +213,7 @@ deciding number).
 **Step 9 — A terminal `Phase` recorded**
    APPEND a block at the END of this run's `resume_state.md` carrying `Status: COMPLETED` and
    a terminal `Phase` (`DONE`/`COMPLETED`/`ABANDONED`/`ESCALATED`) — **that terminal value is
-   what releases `issue-loop-gate.sh`**, and it must be the WHOLE value of the field
+   what releases the `issue-loop-gate` gate**, and it must be the WHOLE value of the field
    (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`; vocabulary: `run-identity.md` §5). Do
    NOT record a terminal `Phase` to end a turn on work that is not finished: that is the
    failure the gate exists to catch, and the state file is the record someone will trust

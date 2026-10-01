@@ -27,7 +27,7 @@
   },
   "hooks": {
     "preToolUse": [
-      { "command": "bash .kiro/hooks-bin/kiro-issue-filing-gate.sh", "matcher": "execute_bash" }
+      { "command": "python .kiro/hooks-bin/kiro_hooks.py preToolUse", "matcher": "execute_bash" }
     ]
   },
   "mcpServers": {},

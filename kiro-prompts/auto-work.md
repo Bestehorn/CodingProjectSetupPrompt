@@ -38,7 +38,7 @@ six-reviewer design panel in waves of at most four.
    same backlog in parallel — an unclaimed issue is duplicated work. Never hand-roll the
    claim via `update-issue --labels` (whole-set replace; it silently drops other labels).
    If the claim fails, release the lock and select the next candidate. The
-   `kiro-claim-before-worktree.sh` `preToolUse` hook blocks worktree creation for an
+   `claim-before-worktree` `preToolUse` gate blocks worktree creation for an
    unclaimed issue, so a skipped claim is caught mechanically.
 4. **ALWAYS WORK ON THE LATEST CODE.** Other agents are merging while you work. Fetch and
    integrate at all six Remote Sync points: Discovery, before each SELECT, after creating
@@ -60,8 +60,8 @@ six-reviewer design panel in waves of at most four.
 # Setup, then the loop
 
 Run Discovery D0–D5 from the agent definition: establish identity from
-`.kiro/agent-state/issue-work-orchestrator/registry.json` (the `kiro-session-register.sh`
-hook keys it by session); resume THIS run's `runs/<run-id>/resume_state.md` if it shows
+`.kiro/agent-state/issue-work-orchestrator/registry.json` (the `session-register`
+gate keys it by session); resume THIS run's `runs/<run-id>/resume_state.md` if it shows
 `Status: IN_PROGRESS`; detect the venv, the test command
 (`python scripts/run_tests.py` — bounded workers, no fail-fast; never `pytest -n auto`)
 and the local full-check command (`python scripts/run_checks.py`, the same one CI runs);
@@ -70,13 +70,17 @@ apply the one-time concurrency-safe git config (`gc.auto 0`, `maintenance.auto f
 fatal: exit 3 below); record the in-progress convention and merge authority; then
 `git fetch origin --prune --no-auto-gc`.
 
-Set `Status: IN_PROGRESS`, `AWAITING_USER: none`, and **`WORKABLE_ISSUES_REMAIN: yes`** in
-this run's `resume_state.md`, and keep that field `yes` for as long as any open,
-not-in-progress, unlocked issue exists. This is not bookkeeping: `kiro-loop-gate.sh` is the
-Kiro CLI `stop` hook that BLOCKS turn-end while it is `yes`, which is what mechanically
-enforces non-negotiable #2. Only DONE (SELECT finds no workable issue) sets it to `no`.
-Note the gate has a deliberate loop-safety cap — after `LOOP_BLOCK_CAP` CONSECUTIVE blocks
-it allows the stop so a session cannot wedge, and the run must be re-launched to continue.
+Set `Status: IN_PROGRESS`, `AWAITING_USER: none`, `MODE: ISSUE_LOOP` and
+**`WORKABLE_ISSUES_REMAIN: yes`** in this run's `resume_state.md`, and keep that field `yes`
+for as long as any open, not-in-progress, unlocked issue exists. This is not bookkeeping: the
+`issue-loop-gate` (the Kiro CLI `stop` hook `kiro_hooks.py` runs) BLOCKS turn-end while the
+run has claimed tracked work — `MODE: ISSUE_LOOP` or a real `CURRENT_ISSUE` — and has recorded
+no release (an idle `Status`, a terminal `Phase`, or a substantive `AWAITING_USER`), which is
+what mechanically enforces non-negotiable #2; `WORKABLE_ISSUES_REMAIN: yes` makes its refusal
+say "select the next issue yourself". Only DONE (SELECT finds no workable issue) records
+`Phase: DONE` and sets it to `no`. Note the gate has a deliberate loop-safety cap — after
+eight CONSECUTIVE blocks with no change in the recorded fields (`KIRO_STOP_BLOCK_CAP`) it
+allows the stop so a session cannot wedge, and the run must be re-launched to continue.
 Do not treat that cap as a licence to idle: it exists for a wedged agent, and the only way
 you should ever reach it is if you keep trying to stop when you should be working.
 

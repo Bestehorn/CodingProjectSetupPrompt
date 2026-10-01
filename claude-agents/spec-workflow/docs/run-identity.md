@@ -21,13 +21,13 @@ which multiple instances may run concurrently in one clone (notably
   .stop-gate-counters/          # <gate>-<first-8-of-session-id>.count, .capped, .fingerprint (§6)
   .hook-decisions/<date>.log    # one line per hook invocation: allow / block / why (§6)
   runs/<run-id>/                # ONE run's private state subtree
-    resume_state.md             # SEEDED by session-register.sh — see §3
-    workflow_state.md           # SEEDED by session-register.sh — see §3
+    resume_state.md             # SEEDED by the session-register gate — see §3
+    workflow_state.md           # SEEDED by the session-register gate — see §3
     contract-ack-<version>      # existence = this run has ingested that contract version
     environment.md  issue_queue.md  iteration_log.md
 ```
 
-Run identity is established by the SessionStart hook `session-register.sh`, which writes
+Run identity is established by the `session-register` SessionStart gate, which writes
 `registry.json` keyed by the harness `session_id` and derives `run_id` from it. Agent and
 gate hooks both resolve "which run owns this session" via that registry — no environment
 variable carries identity. A LIVE run = an active `status` plus a fresh `last_heartbeat`;
@@ -39,15 +39,15 @@ key; which issue a run claimed lives ONLY in `runs/<run-id>/resume_state.md` as
 do not "correct" it. `status` and `last_heartbeat` are stamped at SessionStart and are the
 AGENT's to maintain after that.
 
-All five hooks resolve a session's run through the shared `hooks/hook-state-lib.sh`,
+All five hooks resolve a session's run through the shared `hooks/hooklib.py`,
 every rung of which is keyed on the session id; none has a most-recently-modified rung.
 The resolver is a shared LIBRARY because the mtime defect was found independently in
 THREE hand-rolled copies (MEASURED — Incident `mtime-borrow`). Add no fourth copy: a new
-hook sources the library.
+gate imports the library.
 
 ## 2. The run id is REGISTRY-DERIVED. An agent-authored label is a DEFECT.
 
-`session-register.sh` computes `run_id` from the `session_id` and writes the resulting
+The `session-register` gate computes `run_id` from the `session_id` and writes the resulting
 `state_dir` into `registry.json`. **Use that value verbatim.** Do not derive your own, do
 not make it "readable", do not append an issue number or timestamp. MEASURED (Incident
 `invented-run-label`): an agent wrote its state under a tidy self-chosen label
@@ -58,7 +58,7 @@ inside; a well-formed state file in a nicely named directory is what this failur
 like while it is happening. If a hook says your run state is missing, create the path IT
 names, verbatim — never reconcile in the other direction.
 
-## 3. `session-register.sh` SEEDS the state, so the gates are reachable from turn one
+## 3. The `session-register` gate SEEDS the state, so the gates are reachable from turn one
 
 The hook creates `runs/<run-id>/` and writes both state files if absent (never
 overwrites), so every field a gate branches on holds a real value before your first

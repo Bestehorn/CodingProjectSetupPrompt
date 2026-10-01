@@ -59,7 +59,7 @@ No hedge words outside the verbatim quote.>
   - The provenance lines are present and consistent with the gate: `Origin:`, `Subject:`,
     `Spawned-from:` (only when Origin is `spawned-*`), `Filing-rationale:` naming one of
     RESEARCH / DESIGN-OPTIONS / OUT-OF-SCOPE / HUMAN-REQUEST, and `Tier:`. The PreToolUse
-    gate `.claude/hooks/issue-filing-gate.sh` blocks the create call without the first four.
+    gate `issue-filing-gate` blocks the create call without the first four.
   - The body is at most 4,000 bytes. Measure it. Over → cut, do not summarize into denser
     prose.
   - The title is concise, imperative, and specific.

@@ -74,13 +74,13 @@ the gate verdicts; state written to a path or spelling of your own devising is r
 NOTHING (MEASURED: Incident `invented-run-label`, `.claude/hooks/MIGRATION.md` — one
 self-chosen readable label left every Stop gate inert across 189 registered sessions).
 
-The SessionStart hook `session-register.sh` has already written your `registry.json`
+The `session-register` SessionStart gate has already written your `registry.json`
 entry (keyed by this session's `session_id`), created `runs/<run-id>/`, and SEEDED
 `resume_state.md` and `workflow_state.md` there. Your state dir is that entry's
 `state_dir`, VERBATIM (no `state_dir` → `runs/<run_id>/` from the same entry); your job
 is to UPDATE the seeded files, never to decide where they live. Two harness-written
 sources print the path verbatim: the `## Your recorded place in the work` block from
-`continuous-work-reinject.sh`, and any Stop-gate REFUSAL message. Construct it yourself
+the `continuous-work-reinject` gate, and any Stop-gate REFUSAL message. Construct it yourself
 ONLY if those hooks are not installed on this host, and then only mechanically: run id =
 first 8 characters of the `session_id`, state dir = `runs/<that>/`. If the directory is
 missing, create exactly the registry-derived path — never a second run directory beside
@@ -200,7 +200,7 @@ D0. **Identity + resume check.** Read `registry.json` to find YOUR entry (the
     validate the snapshot (your recorded worktree/branch/PR still exist; git is reachable)
     and RESUME at the recorded outer phase for your `CURRENT_ISSUE` — do not restart the
     backlog. If `COMPLETED`, archive and start fresh. Otherwise the file is the one
-    `session-register.sh` seeded (`Status: NOT_STARTED`): start fresh by APPENDING to THAT
+    the `session-register` gate seeded (`Status: NOT_STARTED`): start fresh by APPENDING to THAT
     file — never by creating a second run directory beside it. Either way, APPEND
     `MODE: ISSUE_LOOP` in that first block, replacing the seeded `MODE: unset`: it is the claim
     that keeps the loop gate armed in the windows where no `CURRENT_ISSUE` is recorded yet.
@@ -314,7 +314,7 @@ ladder, in order, and record the branch taken as a `DL-NNN` entry:
   4. **None of the above?** → one row in `docs/findings-ledger.md`, then continue.
 
 **A run that resolved five issues and filed zero new ones is the expected shape of a good
-run**, and the PreToolUse gate `.claude/hooks/issue-filing-gate.sh` blocks any create
+run**, and the PreToolUse gate `issue-filing-gate` blocks any create
 call whose body lacks the provenance lines above.
 
 ## LOAD_ISSUES
@@ -398,14 +398,14 @@ Issue X is already locked locally and claimed on the tracker from SELECT.
    `-b <descriptive>` off
    `origin/<main>` (not off the local `main`). Resolve and record the ABSOLUTE worktree
    path as `WORKTREE`, the branch as `BRANCH` (and in your registry
-   entry) — those exact field names, the ones `session-register.sh` seeds and the hooks read.
-   `spec-stop-gate.sh` reads `WORKTREE` to locate a spec that lives inside this worktree, so a
+   entry) — those exact field names, the ones the `session-register` gate seeds and the hooks read.
+   The `spec-stop-gate` gate reads `WORKTREE` to locate a spec that lives inside this worktree, so a
    `CURRENT_WORKTREE` spelling is invisible to it rather than merely untidy. The unique
    `issue-<X>-<slug>` branch is owned by exactly this worktree, so it
    never collides with a sibling run's branch.
 3. If this project executes code/CDK from the worktree, provision the worktree's OWN venv
    now per `.claude/rules/per-worktree-venv.md` (do NOT reuse/repoint the shared venv).
-4. Mirror the FIX state into the `workflow_state.md` that `session-register.sh` seeded inside
+4. Mirror the FIX state into the `workflow_state.md` that the `session-register` gate seeded inside
    THIS run's registry-derived `<state_dir>` — APPEND a block carrying
    `CURRENT_SPEC: <worktree>/.claude/specs/<slug>` and `Phase: FIX` as plain `Name: value`
    lines — so the session-identity hooks judge this run's active workflow. Written anywhere
@@ -491,7 +491,7 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    including the CI end-to-end check where runtime behaviour changes, one wave of tasks).
    Run `spec-review-agent` in COMBINED mode (all lenses; max 2 iterations). Dispatch the
    wave's TEST tasks together, run them, confirm RED-FOR-THE-RIGHT-REASON
-   (`.claude/hooks/red-for-right-reason.sh`); dispatch the IMPL tasks together, run the
+   (`python .claude/hooks/red_for_right_reason.py`); dispatch the IMPL tasks together, run the
    wave's tests GREEN via `python scripts/run_tests.py <paths>`, capture both to
    `evidence/` with `# tasks:` headers, COMMIT once. The regression verdict is the CI run
    after the single push (`ci-owns-the-test-suite.md`). Run `adversarial-verifier` once
@@ -753,7 +753,7 @@ worktree/branch/PR and re-acquiring/refreshing your issue lock + registry heartb
 - between issues → resume at LOAD_ISSUES.
 Never duplicate a completed step; verify actual state (git/worktree/PR/lock) against the
 recorded state and reconcile if they differ (the real state wins). A NEW session whose
-`resume_state.md` holds only what `session-register.sh` seeded (`Status: NOT_STARTED`) is a
+`resume_state.md` holds only what the `session-register` gate seeded (`Status: NOT_STARTED`) is a
 fresh run, not a resume — it picks an unlocked issue, appending its own state to that same
 file.
 

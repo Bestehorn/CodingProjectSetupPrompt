@@ -55,6 +55,14 @@
 #   - Memory is compiled, not accumulated: `test/test_instruction_corpus_budget.py` caps the
 #     always-loaded corpus and the memory docs; `scripts/memory_compile.py` and
 #     `/compile-memory` archive, enforce or promote what is older than six weeks.
+#   - 2026-10-01: THE HOOKS ARE PYTHON (standard library only). One dispatcher per event,
+#     registered in exec form through `python` (`python .claude/hooks/hooks.py
+#     session-start | pre-tool-use | stop`); `hooklib.py` and the `gate_*.py` modules are
+#     shared with the Kiro hooks; the suites are pytest; `hooks.py selftest` proves the
+#     registered launch form executes. The bash hooks were inert on a Windows host for three
+#     months because the bare `bash` the harness resolved was the WSL launcher (Part 6,
+#     MIGRATION.md incident `wsl-launcher`), and they depended on `jq`. Neither dependency
+#     remains, and no Git Bash installation is required.
 
 ---
 
@@ -420,7 +428,7 @@ What runs where:
 
 Local hooks are fast feedback but BYPASSABLE (`git commit --no-verify`) and
 ABSENT on a clone that has not run `setup-hooks.sh` — so CI MUST mirror these
-checks as the authoritative gate (see Part 7). `spec-tdd-gate.sh` (Part 12.2)
+checks as the authoritative gate (see Part 7). `spec-tdd-gate` (Part 12.2)
 blocks `--no-verify` on both commit and push for agent sessions. Optionally also
 add a Claude Code `Stop` hook (Part 6) that runs ruff, but the tracked git hooks
 remain the local source of truth.
@@ -678,7 +686,7 @@ command — `issue start <iid>` — NOT a hand-rolled `issue update --labels`
 `issue start` adds the label additively, assigns the working identity, then
 re-reads and verifies both took effect, exiting non-zero if not — so an agent
 can never believe it claimed when it didn't. As a mechanical backstop, install
-the `claim-before-worktree.sh` PreToolUse hook (Part 6.2): it runs
+the `claim-before-worktree` PreToolUse hook (Part 6.2): it runs
 `issue claim-check <N>` when the agent tries to create the `issue-<N>` worktree
 and BLOCKS if the issue is still open+unclaimed, so a skipped claim is caught at
 the exact moment work would start.
@@ -718,7 +726,7 @@ The `env` block sets variables "for every session and its subprocesses", and a s
 value overrides the shell's, so this reaches the Bash tool and everything it spawns. The
 path must be ABSOLUTE (a relative `TMPDIR` breaks tools that chdir) and the directory must
 EXIST — Python and Node do not create a missing `TMPDIR`; they fail or silently fall back
-to the global temp dir, which is the leak returning unnoticed. `scoped-temp-init.sh`
+to the global temp dir, which is the leak returning unnoticed. `scoped-temp-init`
 (SessionStart, Part 12.2) guarantees it exists on every session AND self-writes this env
 block into `settings.local.json` when none is configured (merged, atomic, effective from
 the next session) — so a fresh clone or worktree needs NO manual step; write the block at
@@ -909,7 +917,7 @@ it is as load-bearing as the steps). Nine steps, and the early ones can change t
      **The reopen also re-arms the brake**, which is what turns "finish them" from an
      intention into an obligation: it appends `Status: IN_PROGRESS` + the resumed `Phase` +
      `CURRENT_ISSUE` to this run's `resume_state.md`, so the terminal `Phase` recorded
-     earlier in the session stops being the last occurrence and `issue-loop-gate.sh` holds
+     earlier in the session stops being the last occurrence and `issue-loop-gate` holds
      the turn again (Part 12.2a; `run-identity.md` §4–§5).
    One carve-out keeps the gate from wedging legitimate triage: an issue closed
    ADMINISTRATIVELY (duplicate, obsolete, already resolved elsewhere, won't-do) is outside
@@ -937,7 +945,7 @@ it is as load-bearing as the steps). Nine steps, and the early ones can change t
    such.
 9. **A terminal `Phase` recorded** — appended at the END of this run's registry-derived
    `resume_state.md` (never a self-invented path, whole-value `Phase: DONE`): that is what
-   releases `issue-loop-gate.sh`, and recording it over unfinished work is the failure the
+   releases `issue-loop-gate`, and recording it over unfinished work is the failure the
    gate exists to catch.
 
 The remediation in steps 5–7 and 9, plus the step-2 reopen, is MANDATORY, not a request —
@@ -1024,20 +1032,9 @@ could only request:
         "hooks": [
           {
             "type": "command",
-            "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/no-env-vars.sh"],
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/ruff-on-stop.sh"]
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "pre-tool-use"],
+            "timeout": 30
           }
         ]
       }
@@ -1046,13 +1043,25 @@ could only request:
 }
 ```
 
-Create the referenced scripts under `.claude/hooks/` (make them executable):
-- `no-env-vars.sh`: reads the hook JSON on stdin, and if the Bash command
-  matches `export `, `setx `, or `$env:` for AWS_*/GITHUB_TOKEN/GITLAB_TOKEN,
-  exits with code 2 (blocks the call) and prints why. This enforces
-  `no-environment-vars.md`.
-- `claim-before-worktree.sh` (PreToolUse: Bash; ships in
-  `claude-agents/spec-workflow/hooks/`): when the Bash command creates a
+Every framework hook is PYTHON (standard library only), and every event is served by ONE
+dispatcher process: `python .claude/hooks/hooks.py <session-start|pre-tool-use|stop>`
+runs the event's gates in order, in-process, against the payload read once. The
+registration is exec form (`"command": "python"` plus `args`), so no shell is involved:
+`python` is resolved on PATH and spawned directly. It is `python` and not `bash` for a
+measured reason — registered as `"command": "bash"`, the harness resolved `bash` on the
+Windows PATH and found the WSL launcher alias, so on every host without a WSL distribution
+each hook exited 1 before its first line (a non-blocking error, visible only in the
+transcript) and every gate was inert: 399,278 of 400,015 recorded hook runs in one clone.
+A shell-form registration would have made every gate depend on a Git Bash installation
+instead. Python is already a dependency of every project this prompt sets up.
+`python .claude/hooks/hooks.py selftest` spawns the dispatcher exactly as the harness does
+and proves each event blocks — run it after installing, on every machine.
+
+The gates the PreToolUse dispatcher runs (all ship in `claude-agents/spec-workflow/hooks/`):
+- `no-env-vars` (`gate_no_env_vars.py`): if the Bash command sets AWS_*/GITHUB_TOKEN/
+  GITLAB_TOKEN through `export`, `setx`, `set` or `$env:`, it blocks (exit 2) and prints
+  why. This enforces `no-environment-vars.md`.
+- `claim-before-worktree` (`gate_claim.py`): when the Bash command creates a
   per-issue worktree (`git worktree add … issue-<N>` / `-b issue-<N>-slug`), it
   runs `python scripts/<host>_wrapper.py issue claim-check <N>` and exits 2
   (blocks) ONLY when claim-check reports the issue is open+unclaimed (exit 3).
@@ -1062,7 +1071,7 @@ Create the referenced scripts under `.claude/hooks/` (make them executable):
   claim (Part 5.3): an agent that skipped `issue start` is stopped at the moment
   it tries to start work. Install it for projects that use the
   issue-work-orchestrator.
-- `issue-filing-gate.sh` (PreToolUse: Bash; ships in
+- `issue-filing-gate` (PreToolUse: Bash; ships in
   `claude-agents/spec-workflow/hooks/`): recognizes an issue-CREATE call
   (`create-issue`, `issue create`, `gh/glab issue create`) and exits 2 (blocks)
   when the body is provably missing the provenance lines required by
@@ -1344,7 +1353,7 @@ For the five "hard" rules (`no-environment-vars`, `tests-must-not-fail`,
 keep the rule TEXT and ALSO back them with the `permissions.deny` rules
 (Part 5.1) and `PreToolUse` hooks (Part 6.2 / Part 12.2) so the prohibition is
 enforced, not merely requested. For `issue-filing-discipline` the mechanical
-half is `issue-filing-gate.sh`, which blocks an issue-create call whose body
+half is `issue-filing-gate`, which blocks an issue-create call whose body
 carries no filing rationale.
 
 ### Part 8.2a — `continuous-work.md`: the anti-stopping contract (install this)
@@ -1364,23 +1373,25 @@ cross-platform behavioral contract and not a per-tool preference. Three things d
   record it as an `AWAITING_USER` line in this run's `resume_state.md` and states the substance
   test the loop gate applies to it. **The Kiro twin carries no such instruction** — it stops at
   "record it durably" on the issue or in `qa_log.md`. That is a GAP, not a host difference:
-  `kiro-loop-gate.sh` reads the field (it blocks only while
+  `issue-loop-gate` reads the field (it blocks only while
   `Status=IN_PROGRESS AND WORKABLE_ISSUES_REMAIN=yes AND AWAITING_USER is none`) and
-  `kiro-continuous-work-reinject.sh` reads it too, so on that host the field is load-bearing
+  `kiro-continuous-work-reinject` reads it too, so on that host the field is load-bearing
   while the only place an agent is told to SET it is the gate's own refusal message — which it
   sees only after it has already tried to stop. (The re-inject hook mentions the field, but
   only to say how to CLEAR a wait that has been answered.) Do not close it by copying
   Claude's wording across: the
   vocabularies are not interchangeable (next bullet), and an agent told to satisfy a substance
   test its gate does not apply is following a rule about the wrong mechanism.
-- **The Enforcement sections describe DIFFERENT gates, correctly.** Kiro's blocks while
-  `WORKABLE_ISSUES_REMAIN=yes` and yields after `LOOP_BLOCK_CAP`; Claude's `issue-loop-gate.sh`
-  blocks on CLAIMED tracked work with an INVERTED `Status` polarity, and treats
-  `WORKABLE_ISSUES_REMAIN` as wording only (Part 13.3). The Claude rule's Enforcement section
-  carries only the load-bearing facts (inverted polarity, durable block caps) and points at
-  `.claude/docs/run-identity.md` for the full release vocabulary and verdicts. Never state one
-  host's condition as if it held on both — that is the specific error this note exists to
-  prevent.
+- **The Enforcement sections describe the SAME gate since 2026-10-01.** Both hosts run
+  `issue-loop-gate` from the shared Python modules: it blocks on CLAIMED tracked work with an
+  INVERTED `Status` polarity, treats `WORKABLE_ISSUES_REMAIN` as wording only (Part 13.3), and
+  stands down after a durable, progress-aware block cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` /
+  `KIRO_STOP_BLOCK_CAP`, default 8). The Claude rule's Enforcement section carries only the
+  load-bearing facts (inverted polarity, durable block caps) and points at
+  `.claude/docs/run-identity.md` for the full release vocabulary and verdicts; the Kiro
+  steering says the same in Kiro's terms (a block is stdout JSON, delivered at the next turn).
+  Before the rewrite the two gates differed and this note warned against copying one host's
+  condition to the other; keep the two texts in step now that they describe one mechanism.
 - **`AskUserQuestion` appears only on the Claude side**, since it is a Claude Code tool.
 
 **Why it exists.** Agents halt on their own initiative far more than users interrupt them.
@@ -1476,17 +1487,17 @@ start of a user message):
 
 **Also back it mechanically at the settings level.** `/goal` is per-session and
 user-initiated; these apply to every session:
-- The Stop-hook gates from Part 12.2 (`issue-loop-gate.sh`, `spec-stop-gate.sh`). Exit code 2
+- The Stop-hook gates from Part 12.2 (`issue-loop-gate`, `spec-stop-gate`). Exit code 2
   on a `Stop` hook "prevents Claude from stopping, continues the conversation"; exit 1 does
   NOT block, so a policy gate must use `exit 2`.
 - `disallowed-tools: AskUserQuestion` in any command meant to run unattended — it removes the
   "shall I continue?" affordance for the turn instead of merely forbidding it. Of the two
   commands shipped here, `/continue-work` declares it and **`/auto-work` does not**; both
   omit `AskUserQuestion` from their `allowed-tools` allowlist, so `/auto-work` relies on that
-  omission plus its five front-loaded non-negotiables and `issue-loop-gate.sh`. Adding the
+  omission plus its five front-loaded non-negotiables and `issue-loop-gate`. Adding the
   explicit denial to `auto-work.md` as well is the belt-and-braces option, and nothing in the
   lifecycle needs the tool.
-- `continuous-work-reinject.sh` as a `SessionStart` hook with matcher `compact|resume|startup`
+- `continuous-work-reinject` as a `SessionStart` hook with matcher `compact|resume|startup`
   — installed and wired by Part 12.2. Its stdout is injected as context, and it echoes the
   contract plus the run's recorded phase/issue/branch/worktree/PR, so the moment most likely
   to produce a spurious stop — the first turn after a compaction — starts with both the rule
@@ -1530,7 +1541,7 @@ subagents.)
 
 If ANY of `issue-intake`, `issue-housekeeping`, `product-management`,
 `doc-review`, or `dead-code` is installed, also install
-`.claude/rules/issue-filing-discipline.md` and `.claude/hooks/issue-filing-gate.sh`
+`.claude/rules/issue-filing-discipline.md` and `.claude/hooks/issue-filing-gate`
 (Part 12.1 / 12.2). Those five are the agents that can create tracker issues, and
 without the rule + gate they file by default — the measured cause of a backlog
 that grows on its own.
@@ -1678,7 +1689,7 @@ instead of splitting). The three rungs, as the doc must state them:
    new-occurrence comment instead; a closed-as-rejected one means the project has
    decided against it). The filing is pre-authorised against
    `issue-filing-discipline.md` as OUT-OF-SCOPE + HUMAN-REQUEST and still carries
-   the `Origin:`/`Subject:`/`Filing-rationale:` lines `issue-filing-gate.sh`
+   the `Origin:`/`Subject:`/`Filing-rationale:` lines `issue-filing-gate`
    checks, so it passes the gate rather than being blocked by it.
 3. **Not implemented but already filed → run the pipeline locally**, completely,
    as a disclosed workaround with the gaps named.
@@ -1776,8 +1787,8 @@ this prompt (leave any existing one alone).
 7. Settings — `.claude/settings.json` parses; permissions + any hooks valid. If Part 12
    was installed, confirm the `hooks` object is the UNION of Part 6.2's and Part 12.2's
    entries (a second `"hooks"` key replaces rather than merges), that all THREE
-   SessionStart hooks are registered, and that `hook-state-lib.sh` /
-   `red-for-right-reason.sh` / `CONTRACT_VERSION` are present on disk but registered as
+   SessionStart hooks are registered, and that `hooklib.py` /
+   `red_for_right_reason.py` / `CONTRACT_VERSION` are present on disk but registered as
    hooks NOWHERE.
 7a. Gate reachability — do not assume it, observe it. Start a fresh session and confirm
    `.claude/agent-state/issue-work-orchestrator/registry.json` gained an entry for it AND
@@ -1799,7 +1810,7 @@ this prompt (leave any existing one alone).
     `.kiro/agents/` and `.claude/agents/` are present.
 11b. Temp-leak containment (Part 5.4) — `scripts/reap_agent_temp.py` exists;
     `.claude/settings.local.json` sets `TMPDIR`/`TEMP`/`TMP` to this tree's ABSOLUTE
-    `tmp/os-temp`; `.claude/hooks/scoped-temp-init.sh` is wired as a SessionStart hook
+    `tmp/os-temp`; `.claude/hooks/scoped-temp-init` is wired as a SessionStart hook
     and the directory exists. (The hook self-writes that env block wherever it is
     missing — fresh clones and worktrees need no manual step — so a missing block here
     means the hook is not wired, not that a setup step was skipped.) Prove the reaper is safe before trusting it with `--apply`:
@@ -1836,13 +1847,13 @@ this prompt (leave any existing one alone).
 12. Issue-filing containment (if any tracker-capable agent was installed) —
     `.claude/rules/issue-filing-discipline.md` exists and is always-loaded (no
     `paths:`); `docs/findings-ledger.md` exists with its table header;
-    `.claude/hooks/issue-filing-gate.sh` is executable and wired as a
-    `PreToolUse` Bash hook. Verify the gate both blocks and allows:
+    `python .claude/hooks/hooks.py pre-tool-use` is wired as the `PreToolUse` Bash hook (it
+    runs the `issue-filing-gate`). Verify the gate both blocks and allows:
     ```bash
-    printf '%s' '{"tool_input":{"command":"python scripts/github_wrapper.py create-issue --title X --body \"broken\""}}' \
-      | bash .claude/hooks/issue-filing-gate.sh; echo "expect 2, got $?"
-    printf '%s' '{"tool_input":{"command":"python scripts/github_wrapper.py list-issues"}}' \
-      | bash .claude/hooks/issue-filing-gate.sh; echo "expect 0, got $?"
+    printf '%s' '{"tool_name":"Bash","tool_input":{"command":"python scripts/github_wrapper.py create-issue --title X --body \"broken\""}}' \
+      | python .claude/hooks/hooks.py pre-tool-use; echo "expect 2, got $?"
+    printf '%s' '{"tool_name":"Bash","tool_input":{"command":"python scripts/github_wrapper.py list-issues"}}' \
+      | python .claude/hooks/hooks.py pre-tool-use; echo "expect 0, got $?"
     ```
 
 ### Report
@@ -1993,60 +2004,77 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   on demand by registered runs before their first state write —
   `agent-state-convention.md` §1a is what sends them there. Its incident narratives live in
   `hooks/MIGRATION.md` §Incident record, not in any always-loaded file.
-- **Hook scripts** → `.claude/hooks/` (make the `*.sh` executable):
-  - `hook-state-lib.sh` — the ONE identity-and-state library, sourced by ALL FIVE hook scripts:
-    `session-register.sh`, `continuous-work-reinject.sh`, `issue-loop-gate.sh`,
-    `spec-stop-gate.sh` and `spec-tdd-gate.sh`. It provides session-keyed run resolution, the
-    `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, the `Name: value` state-field reader, bounded
-    block counters, a decision log, and the contract-version handshake. NOT a hook itself —
-    register nothing for it.
-    Every gate sources it for one reason: the defect it exists to prevent — resolving state by
+- **Hooks** → `.claude/hooks/` (Python, standard library only, Python 3.9+; no shell, no
+  `jq`, no Git Bash dependency — see Part 6 for why):
+  - `hooks.py` — the ONE dispatcher, and the only thing registered in `settings.json`:
+    `python .claude/hooks/hooks.py session-start | pre-tool-use | stop` runs that event's
+    gates in order in one interpreter, against the payload parsed once as JSON. Decision
+    semantics: SessionStart concatenates the gates' stdout as context and always exits 0;
+    PreToolUse stops at the first block and skips a gate that raises (fail OPEN on an
+    ordinary command — the push gate fails closed on a push itself); Stop runs BOTH gates,
+    delivers every block message, and treats a gate that raises as a refusal (fail CLOSED).
+    `python .claude/hooks/hooks.py selftest` spawns the dispatcher exactly as the harness
+    does and asserts that SessionStart injects and logs, PreToolUse blocks a bypass and reads
+    a quoted command, and Stop refuses a registered unfinished run.
+  - `hooklib.py` — the ONE identity-and-state library every gate imports: session-keyed run
+    resolution, the `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, the `Name: value` state-field
+    reader (last occurrence wins, fences ignored, bold invisible, trimmed, case-insensitive),
+    bounded block counters, the decision log, the contract-version handshake, the revision
+    notice, the trunk-freshness check and the wave-capture resolver (`capture_for_task`).
+    Every gate imports it for one reason: the defect it exists to prevent — resolving state by
     "most recently touched" instead of by session — was found INDEPENDENTLY in THREE separate
-    hooks. Three copies of a resolver meant three chances to get it wrong, and all three took
-    it. Keep the resolution logic here and nowhere else.
-  - `session-register.sh` (SessionStart) — establishes this session's run identity ON DISK:
-    it upserts `registry.json` AND creates `runs/<run-id>/` with a seeded `resume_state.md`
-    + `workflow_state.md`, which is what makes the gates reachable from turn one (Part 12.2a).
-  - `continuous-work-reinject.sh` (SessionStart, matcher `compact|resume|startup`) — puts the
-    continuous-work contract and THIS session's recorded place back into context at the
-    moments an agent is likeliest to have lost them; when identity is unresolvable it says so
-    instead of guessing.
-  - `issue-loop-gate.sh` (Stop) — the primary brake: blocks turn-end while this session's own
-    run has CLAIMED tracked work and has recorded no affirmative release (Part 13.3).
-  - `spec-stop-gate.sh` (Stop) — blocks turn-end on implementation work that is not proven.
-    A task is proven by its own capture OR by a WAVE capture whose `# tasks:` header names
-    it (`hook_capture_for_task` in the library; both gates resolve evidence through it, so
-    they cannot disagree). Waves are how concurrently implemented tasks share one test run.
-  - `spec-tdd-gate.sh` (PreToolUse/Bash) — gates the PUSH, not the commit: blocks `git push`
-    while a checked task has no capture, the newest paired-test capture is red or full of
-    skips, or CI-OUTAGE MODE is declared with no green full-suite capture; bans `--no-verify`
-    on commit and push (a commit itself carries no evidence requirement —
-    `ci-owns-the-test-suite.md`). Its internal ORDER is load-bearing, not stylistic: the
-    `--no-verify` bans and the non-push early exit run ABOVE any library code, and the
-    fail-closed trap is installed only after them. So a broken library can refuse a PUSH but
-    can never refuse an ordinary Bash command — the proportionate direction for a gate that
-    sees every command. Its green-evidence predicate matches a NON-ZERO failure count
-    (`[1-9][0-9]* failed`); an earlier version's escape clause was satisfied by any passing
-    count, so a capture reading `3 failed, 5 passed` was allowed, which real pytest output
-    almost always looks like.
-  - `claim-before-worktree.sh` (PreToolUse/Bash) — blocks per-issue worktree creation until the
-    issue is verifiably claimed in-progress on the remote: the mechanical enforcement of the
-    deterministic claim (Part 5.3 / 6.2). STANDALONE — it does not source `hook-state-lib.sh`,
-    because it asks the tracker a question rather than resolving run identity.
-  - `issue-filing-gate.sh` (PreToolUse/Bash) — blocks an issue-CREATE call whose body carries no
-    `Origin:`/`Subject:`/`Filing-rationale:` lines: the mechanical enforcement of
-    `issue-filing-discipline.md`. Also standalone, and it FAILS OPEN when the body is
-    unreadable — the opposite direction from the Stop gates, and deliberately so: refusing an
-    unparseable filing would block legitimate work over a quoting accident, whereas a Stop gate
-    that fails open loses the whole guarantee.
-  - `red-for-right-reason.sh` — a helper the conductor invokes to confirm a failing test fails
-    on an assertion rather than an import/collection error. Not registered as a hook.
+    hooks. Keep the resolution logic here and nowhere else. `selftest()` is deliberately its
+    last definition: a truncated copy fails closed in the gates that must fail closed.
+  - `gate_session_register.py` — `session-register` (SessionStart): establishes this session's
+    run identity ON DISK: it SEEDS `runs/<run-id>/` with `resume_state.md` +
+    `workflow_state.md`, then upserts `registry.json` (only once the state it points at
+    exists), then pre-acknowledges the current contract. Part 12.2a.
+  - `gate_scoped_temp.py` — `scoped-temp-init` (SessionStart): creates `tmp/os-temp` and
+    self-writes the TMPDIR/TEMP/TMP env block into `.claude/settings.local.json` when none is
+    configured (merged atomically; effective next session).
+  - `gate_reinject.py` — `continuous-work-reinject` (SessionStart, sources compact | resume |
+    startup; the dispatcher applies the matcher): puts the continuous-work contract, the
+    revision notice, the freshness warning and THIS session's recorded place back into context
+    at the moments an agent is likeliest to have lost them; when identity is unresolvable it
+    says so instead of guessing.
+  - `gate_issue_loop.py` — `issue-loop-gate` (Stop): the primary brake: blocks turn-end while
+    this session's own run has CLAIMED tracked work and has recorded no affirmative release
+    (Part 13.3). Carries the contract handshake and the freshness handshake.
+  - `gate_spec_stop.py` — `spec-stop-gate` (Stop): blocks turn-end on implementation work that
+    is not proven. A task is proven by its own capture OR by a WAVE capture whose `# tasks:`
+    header names it (`capture_for_task` in the library; both gates resolve evidence through
+    it, so they cannot disagree). Waves are how concurrently implemented tasks share one run.
+  - `gate_tdd.py` — `spec-tdd-gate` (PreToolUse/Bash): gates the PUSH, not the commit: blocks
+    `git push` while a checked task has no capture, the newest paired-test capture is red or
+    full of skips, or CI-OUTAGE MODE is declared with no green full-suite capture; bans
+    `--no-verify` on commit and push (a commit itself carries no evidence requirement —
+    `ci-owns-the-test-suite.md`). Its ORDER is load-bearing: the `--no-verify` bans and the
+    non-push early exit run before any state is touched, and only the push judgement fails
+    closed. So a defect in the state code can refuse a PUSH but never an ordinary Bash
+    command — the proportionate direction for a gate that sees every command. Its failure
+    predicate matches a NON-ZERO counter (`[1-9][0-9]* failed`), so `3 failed, 5 passed` is
+    never read as a pass.
+  - `gate_no_env_vars.py` — `no-env-vars` (PreToolUse/Bash): blocks setting
+    AWS_*/GITHUB_TOKEN/GITLAB_TOKEN in the shell (Part 6).
+  - `gate_claim.py` — `claim-before-worktree` (PreToolUse/Bash): blocks per-issue worktree
+    creation until the issue is verifiably claimed in-progress on the remote: the mechanical
+    enforcement of the deterministic claim (Part 5.3 / 6.2). It asks the tracker a question
+    rather than resolving run identity, and fails open on any infrastructure trouble.
+  - `gate_filing.py` — `issue-filing-gate` (PreToolUse/Bash): blocks an issue-CREATE call whose
+    body carries no `Origin:`/`Subject:`/`Filing-rationale:` lines: the mechanical enforcement
+    of `issue-filing-discipline.md`. It FAILS OPEN when the body is unreadable — the opposite
+    direction from the Stop gates, and deliberately so: refusing an unparseable filing would
+    block legitimate work over a quoting accident, whereas a Stop gate that fails open loses
+    the whole guarantee.
+  - `red_for_right_reason.py` — a helper the conductor invokes
+    (`python .claude/hooks/red_for_right_reason.py <capture>`) to confirm a failing test
+    fails on an assertion rather than an import/collection error. Not a hook.
   - `CONTRACT_VERSION` — a one-line version string for the continuous-work contract. The hooks
     key a per-run acknowledgement file (`runs/<run-id>/contract-ack-<version>`) on it, so
     bumping it makes the loop gate deliver the new contract to an ALREADY-RUNNING run whose
     identity RESOLVES, once, and stop as soon as that run writes the ack file. Sessions started
-    after the bump are pre-acked by `session-register.sh` and never see it. Not a script — copy
-    it as-is, and bump it only when the contract text itself changes. The "whose identity
+    after the bump are pre-acked by the `session-register` gate and never see it. Not code —
+    copy it as-is, and bump it only when the contract text itself changes. The "whose identity
     resolves" qualifier is load-bearing: a live session with no registry entry resolves
     `UNREGISTERED` and is NOT reached by the handshake — see Part 12.2b.
   - `MIGRATION.md` — the reference for deploying all of this to a project whose agents are
@@ -2055,20 +2083,22 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   - `REVISION_NOTICE.md` — the live-session migration notice for a framework revision: what
     changed and what a run in flight does about it (re-tier, freeze scope, materiality gate,
     waves, no sleep, no manual E2E). The loop gate prints it inside the contract handshake and
-    `continuous-work-reinject.sh` prints it at every compaction/resume/startup, so a running
+    the `continuous-work-reinject` gate prints it at every compaction/resume/startup, so a running
     agent whose definition was fixed at spawn still learns the phases changed. Its first line
     `Valid-until: YYYY-MM-DD` retires it automatically. Data, not a script — copy it as-is;
     replace its body when the framework is next revised.
-    The same two hooks also run the FRESHNESS check (`hook_framework_stale`): when a fetched
+    The same two gates also run the FRESHNESS check (`framework_stale` in the library): when a fetched
     trunk's `.claude/hooks/CONTRACT_VERSION` is newer than the checkout's, the loop gate refuses
     once per run with the update instruction — fast-forward a clean, strictly-behind checkout
     (`git merge --ff-only <remote>/<main>`, the one sanctioned move of local main per
     `keep-git-clean.md`), otherwise ask the operator — and `framework-ack-<version>` stops the
     repeat. This is how a revision merged on the trunk reaches live sessions on OTHER machines,
     where nobody has pulled and the orchestrator never moves the checkout.
-  - `tests/` — EIGHT self-contained suites, 288 assertions, asserting the gates' EXIT CODES
-    (and, where an exit code cannot distinguish two causes, the REFUSAL TEXT). The acceptance
-    criterion for this Part.
+  - `tests/` — EIGHT pytest modules (plus `conftest.py`), driving the real gates in-process and
+    the dispatcher as a subprocess against synthetic project trees, asserting the gates'
+    decisions (exit code 0 or 2) and, where an exit code cannot distinguish two causes, the
+    REFUSAL TEXT. Together with `hooks.py selftest` they are the acceptance criterion for this
+    Part.
 
 Install command (run from this repo, targeting the project root):
 ```bash
@@ -2095,32 +2125,37 @@ cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, 
                                                                # read by registered runs at start —
                                                                # a rules/ file with no paths: would
                                                                # load into EVERY session
-cp claude-agents/spec-workflow/hooks/*.sh      .claude/hooks/ && chmod +x .claude/hooks/*.sh
+cp claude-agents/spec-workflow/hooks/*.py      .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
+                                                               # red_for_right_reason.py
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md .claude/hooks/
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.sh .claude/hooks/tests/   # all EIGHT suites
+cp claude-agents/spec-workflow/hooks/tests/*.py .claude/hooks/tests/   # all EIGHT modules + conftest.py
+rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                      # the bash predecessors, if any
 ```
-NOTE: `CONTRACT_VERSION` has no `.sh` suffix, so the glob above does NOT pick it up — copy
+NOTE: `CONTRACT_VERSION` has no `.py` suffix, so the glob above does NOT pick it up — copy
 it explicitly. When it is absent the hooks fall back to the version string `unversioned`,
 which still works but keys every run's acknowledgement on that one name, so a later
 contract bump can no longer be distinguished from the original.
 NOTE: the `tests/` subdirectory is not optional decoration — it is the only way to prove the
 gates are ARMED rather than merely installed, which is the exact failure this whole part
-exists to prevent. Run all EIGHT after installing, from the project root:
+exists to prevent. Run them after installing, from the project root, together with the
+self-test that proves the REGISTERED launch form executes on this machine:
 ```bash
-bash .claude/hooks/tests/test_crlf_hygiene.sh     # a CR smuggled through a line protocol
-bash .claude/hooks/tests/test_hook_state_lib.sh   # identity, parsing, counters, cap validation
-bash .claude/hooks/tests/test_stop_gates.sh       # Stop gate exit codes (0=allow, 2=block)
-bash .claude/hooks/tests/test_gate_overblock.sh   # refusals that should have been allows
-bash .claude/hooks/tests/test_tdd_gate.sh         # push gate, both directions
-bash .claude/hooks/tests/test_reinject.sh         # no cross-run adoption + delivery invariants
-bash .claude/hooks/tests/test_unpinned_fixes.sh   # fixes that were real but guarded by nothing
-bash .claude/hooks/tests/test_scoped_temp.sh      # the self-writing settings.local.json env block
+python -m pytest .claude/hooks/tests -q -p no:cacheprovider   # the eight modules
+python .claude/hooks/hooks.py selftest                        # spawns `python hooks.py <event>` as the harness does
 ```
-288 assertions in total (11 + 64 + 35 + 50 + 44 + 26 + 32 + 26, in the order above).
-`test_unpinned_fixes.sh` is the youngest and explains why a green suite is not the same as a
+Both must report zero failures. The modules, and what each pins:
+`test_crlf_hygiene.py` (a CR smuggled through a payload, a state file, a version file or a
+capture), `test_hook_state_lib.py` (identity, parsing, counters, cap validation),
+`test_stop_gates.py` (Stop gate decisions, wave captures, the freshness handshake, fail-closed
+on a truncated library), `test_gate_overblock.py` (turns that must be ALLOWED),
+`test_tdd_gate.py` (push gate, both directions, CI-outage mode), `test_reinject.py` (no
+cross-run adoption, delivery invariants, the revision notice), `test_unpinned_fixes.py` (the
+handshake by TEXT, evidence substance, mtime independence, cross-gate agreement),
+`test_scoped_temp.py` (the self-writing settings.local.json env block).
+`test_unpinned_fixes.py` is the youngest and explains why a green suite is not the same as a
 guarded one: an adversarial pass MUTATED the shipped hooks and re-ran all 193 assertions the
 other six then held, and THREE mutations survived every one of them — the contract handshake's
 block direction (its own case seeds a state the main brake also blocks, so the observed exit 2
@@ -2133,31 +2168,29 @@ control that must ALLOW, so a gate that blocked unconditionally could not pass. 
 section's cases must BOTH block, so its control is instead a pair of negative text assertions
 proving the two refusals are distinguishable at all. An unpinned fix is one that regresses
 silently, which is precisely how the original incident happened.
-`test_tdd_gate.sh` deserves a word too, because its two directions are
-asymmetric and getting either wrong is fatal in a different way: `spec-tdd-gate.sh` runs on EVERY
-Bash command, so it must never refuse a non-push command — commits included, which carry no
-evidence requirement (a gate that blocks all shell work when its library breaks gets deleted by
-the first person it inconveniences) — while it must always refuse a push it cannot justify
+`test_tdd_gate.py` deserves a word too, because its two directions are
+asymmetric and getting either wrong is fatal in a different way: the `spec-tdd-gate` runs on
+EVERY Bash command, so it must never refuse a non-push command — commits included, which carry
+no evidence requirement (a gate that blocks all shell work when its library breaks gets deleted
+by the first person it inconveniences) — while it must always refuse a push it cannot justify
 (including when its own library is broken). That is why the bypass-flag bans and the non-push
-exit sit ABOVE the library section in that script and the fail-closed trap is installed only
-after them. Preserve that ordering if you edit it.
-Each is self-contained: it builds a synthetic project tree in a temp directory, drives the real
-hook scripts, and asserts EXIT CODES. `test_hook_state_lib.sh` is separate from the gate suite
-on purpose — it calls the library functions directly, with no caller globals in scope, because a
-measured fail-open hid in precisely that gap and all 35 of `test_stop_gates.sh`'s end-to-end
-assertions passed over it.
-ALL EIGHT reporting `0 failed` is the acceptance criterion for this Part — `test_stop_gates.sh`
-at `35 passed`, `test_hook_state_lib.sh` at `64`, `test_gate_overblock.sh` at `50`,
-`test_reinject.sh` at `26`, `test_unpinned_fixes.sh` at `32`, `test_tdd_gate.sh` at `44`,
-`test_scoped_temp.sh` at `26`, and `test_crlf_hygiene.sh` at `11` (the wave-capture cases in
-both gate suites pin that a `# tasks:` header covers exactly the ids it names, so `1.1` never
-covers `1.10`; the freshness cases pin that a newer trunk version is refused ONCE per run with
-the fast-forward instruction, that an acked run reaches the brake, and that equal versions
-never refuse; the reinject cases pin that a valid `REVISION_NOTICE.md` is delivered and an
-expired one is withheld). A gate that is installed but exits 0 on a registered run with no
-state file is INERT, and inert is indistinguishable from satisfied without these suites. If a
-count comes back LOWER than the figure above, a suite is not running all of its cases — check
-that before reading the `0 failed` as a pass.
+exit run before any state is read in `gate_tdd.py`, and only the push judgement fails closed.
+Preserve that ordering if you edit it.
+Each module is self-contained: it builds a synthetic project tree in a temp directory, drives
+the real gates, and asserts their decisions. `test_hook_state_lib.py` is separate from the gate
+suites on purpose — it calls the library functions directly, because a measured fail-open hid
+in precisely the gap between a library and its one caller while every end-to-end assertion
+passed over it.
+Zero failures across the eight modules AND the self-test is the acceptance criterion for this
+Part (the wave-capture cases in both gate suites pin that a `# tasks:` header covers exactly
+the ids it names, so `1.1` never covers `1.10`; the freshness cases pin that a newer trunk
+version is refused ONCE per run with the fast-forward instruction, that an acked run reaches
+the brake, and that equal versions never refuse; the reinject cases pin that a valid
+`REVISION_NOTICE.md` is delivered and an expired one is withheld). A gate that is installed but
+exits 0 on a registered run with no state file is INERT, and inert is indistinguishable from
+satisfied without these suites — and a gate that cannot START is inert in exactly the same
+way, which is what the self-test exists to catch: it resolves `python` on PATH as the harness
+does, spawns the dispatcher with no shell, and fails if any event does not decide.
 NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
 `.claude/agents/` — copy the ten agent files explicitly (see
 `claude-agents/spec-workflow/README.md` "Install" for the exact list) rather than a
@@ -2173,21 +2206,9 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-register.sh"] }
-        ]
-      },
-      {
-        "hooks": [
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/scoped-temp-init.sh"] }
-        ]
-      },
-      {
-        "matcher": "compact|resume|startup",
-        "hooks": [
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/continuous-work-reinject.sh"] }
+          { "type": "command", "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "session-start"],
+            "timeout": 30 }
         ]
       }
     ],
@@ -2195,25 +2216,18 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-tdd-gate.sh"],
-            "timeout": 15 },
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/claim-before-worktree.sh"],
-            "timeout": 30 },
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-filing-gate.sh"],
-            "timeout": 15 }
+          { "type": "command", "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "pre-tool-use"],
+            "timeout": 30 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec-stop-gate.sh"] },
-          { "type": "command", "command": "bash",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/issue-loop-gate.sh"] }
+          { "type": "command", "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "stop"],
+            "timeout": 60 }
         ]
       }
     ]
@@ -2221,27 +2235,35 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
 }
 ```
 
-Three details in that block are deliberate rather than stylistic:
+Four details in that block are deliberate rather than stylistic:
 
-- `session-register.sh` sits in its OWN SessionStart group with NO `matcher`, so it runs on
-  every SessionStart source. It is what CREATES this run's state, and a run whose state was
-  never created is a run every gate is inert for — so it must never be scoped to a subset of
-  sources.
-- `continuous-work-reinject.sh` is a SECOND SessionStart group carrying
-  `"matcher": "compact|resume|startup"` (matchers are per-group, exactly as the `"Bash"`
-  matcher is for `PreToolUse`). A group's matcher applies to every hook inside it, which is
-  why the two cannot share one group.
-- `hook-state-lib.sh`, `red-for-right-reason.sh` and `CONTRACT_VERSION` are NOT registered
-  anywhere. The library is sourced by the hooks, the helper is invoked by the conductor, and
-  the version file is read. Registering any of them as a hook is a defect.
+- **One entry per event, exec form, `python`.** Exec form (`command` plus `args`) spawns the
+  executable directly with no shell, so nothing can rewrite an argument and no shell profile
+  can print on stdout. It is `python` because `bash` resolved to the WSL launcher on Windows
+  hosts and left every gate inert (Part 6); a shell-form string would instead have made the
+  gates depend on a Git Bash installation. One entry per event because one interpreter start
+  per event is the whole latency budget — the previous four PreToolUse scripts cost four
+  starts on every shell command.
+- The SessionStart entry has NO `matcher`, so it runs on every SessionStart source: the
+  `session-register` gate is what CREATES this run's state, and a run whose state was never
+  created is a run every gate is inert for. The `continuous-work-reinject` gate's
+  `compact|resume|startup` matcher is applied INSIDE the dispatcher (it reads the payload's
+  `source`), so the two no longer need separate groups.
+- Timeouts are generous on purpose: a timed-out PreToolUse or Stop hook renders NO decision
+  and the action proceeds, so a tight timeout is a fail-open. A cold Windows python start is
+  under a second; the claim gate's tracker call is the only slow path.
+- `hooklib.py`, the `gate_*.py` modules, `red_for_right_reason.py` and `CONTRACT_VERSION` are
+  NOT registered anywhere. The dispatcher imports the gates, the conductor invokes the helper,
+  and the version file is read. Registering any of them is a defect — and so is any remaining
+  `"command": "bash"` entry: delete the `.sh` predecessors when installing.
 
-What each entry does:
+What the dispatcher's gates do:
 
-- `session-register.sh` (SessionStart) records each run's `session_id`→run mapping in
+- `session-register` (SessionStart) records each run's `session_id`→run mapping in
   `registry.json` AND creates `runs/<run-id>/` with seeded state files. Both halves matter:
   the mapping is what makes concurrent orchestrator runs in one clone unambiguous, and the
   seeding is what makes the Stop gates reachable at all (Part 12.2a).
-- `scoped-temp-init.sh` (SessionStart, no matcher) guarantees `tmp/os-temp` exists AND
+- `scoped-temp-init` (SessionStart, no matcher) guarantees `tmp/os-temp` exists AND
   self-writes the `TMPDIR`/`TEMP`/`TMP` env block into `.claude/settings.local.json` when
   none is configured — MERGED atomically (other keys and env vars survive), effective from
   the NEXT session, so no clone or worktree carries a manual setup step (MEASURED: the
@@ -2251,7 +2273,7 @@ What each entry does:
   (Part 5.4). It never fights a custom TMPDIR (any configured value = silent no-op) and
   never touches a settings file that does not parse — it says so instead. Idempotent and
   silent when everything is right; it speaks only when it wrote the block or could not.
-- `continuous-work-reinject.sh` (SessionStart, matcher `compact|resume|startup`) injects the
+- `continuous-work-reinject` (SessionStart, matcher `compact|resume|startup`) injects the
   continuous-work contract plus THIS run's recorded place in the work — phase, current issue,
   branch, worktree, PR, `WORKABLE_ISSUES_REMAIN`, `AWAITING_USER`, read out of the run's
   `resume_state.md` via the registry. `SessionStart` is one of the few events whose plain
@@ -2264,7 +2286,7 @@ What each entry does:
   read-only: with no state it prints the contract alone, and it can never block (exit 2 on
   `SessionStart` only shows stderr to the user). When identity is unresolvable it SAYS SO
   rather than guessing — it has no most-recently-touched fallback.
-- `spec-tdd-gate.sh` gates the PUSH, not the commit. It blocks: `git commit
+- `spec-tdd-gate` gates the PUSH, not the commit. It blocks: `git commit
   --no-verify`/`-n`; `git push --no-verify`; a `git push` while a task marked complete
   has no test capture, or the newest paired-test capture is red or full of skips; and a
   `git push` while CI-OUTAGE MODE is declared with no green full-suite capture. A commit
@@ -2273,7 +2295,7 @@ What each entry does:
   (`ci-owns-the-test-suite.md`). Note the gate does NOT demand a local full-suite run
   before a push: CI runs the suite on the pushed SHA and is authoritative. `-n` is
   banned on commit only, deliberately — on `git push` it means `--dry-run`.
-- `spec-stop-gate.sh` blocks turn-end during implementation/verification. Its full refusal
+- `spec-stop-gate` blocks turn-end during implementation/verification. Its full refusal
   set, because a summary that undersells it invites someone to "simplify" a condition away:
   a task marked `[x]` with NO evidence capture; a checked task line whose id cannot be PARSED
   (unparseable must not mean unrequired — measured, `- [x] **1.1** Write the parser` and
@@ -2303,9 +2325,9 @@ What each entry does:
   test to `AWAITING_USER`, so the two cannot disagree about whether a recorded escalation counts.
   This gate used to accept any non-placeholder value, which was a fail-open wherever it is the
   only Stop hook registered — a spec-only project — because a one-word token then ended a turn.
-- `issue-loop-gate.sh` is the primary brake that keeps the orchestrator working (Part 13.3).
-- **Both Stop gates count their OWN consecutive blocks** (`HOOK_BLOCK_CAP`, default 8,
-  override with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, validated and clamped to `[1, 64]` so a
+- `issue-loop-gate` is the primary brake that keeps the orchestrator working (Part 13.3).
+- **Both Stop gates count their OWN consecutive blocks** (`the block cap`, default 8,
+  override with `CLAUDE_CODE_STOP_the block cap`, validated and clamped to `[1, 64]` so a
   typo cannot disable the brake). Two refinements over a naive counter, each measured: the
   count resets on PROGRESS — a change in the recorded fields — so a run that is actually
   advancing never reaches the cap and the "no progress" message is true when it prints; and
@@ -2316,22 +2338,22 @@ What each entry does:
   block per continuation chain — the agent gets nudged once and is then free to stop on
   unproven work. Claude Code enforces the same 8-block cap itself, so blocking repeatedly up
   to it cannot wedge a session.
-- `issue-filing-gate.sh` blocks an issue-CREATE call whose body carries no
+- `issue-filing-gate` blocks an issue-CREATE call whose body carries no
   `Origin:`/`Subject:`/`Filing-rationale:` line, and hands the agent the fix-first
   evaluation instead. Unlike the other gates it is NOT scoped to an active spec workflow —
   reflex filing happens in ordinary sessions too — and it fails open whenever the body
   cannot be read, so it can only ever stop a provably unjustified filing.
-- `claim-before-worktree.sh` blocks per-issue worktree creation until the issue is verifiably
+- `claim-before-worktree` blocks per-issue worktree creation until the issue is verifiably
   claimed in-progress on the remote, so the claim-before-work ordering is mechanical rather
   than self-policed.
-- `red-for-right-reason.sh` is a helper the conductor invokes to confirm a failing
+- `red_for_right_reason.py` is a helper the conductor invokes to confirm a failing
   test fails on an assertion, not an import/collection error.
 
 These are the machine-enforced floor under the agents' prompt-level discipline — but state
 their REACH accurately in the report, because the floor is conditional:
 
 - **All FIVE state-reading hooks resolve state ONLY through session-keyed rungs** — the five
-  that source `hook-state-lib.sh`; `claim-before-worktree.sh` and `issue-filing-gate.sh` read
+  that source `hooklib.py`; `claim-before-worktree` and `issue-filing-gate` read
   no run state at all — (the registry's `state_dir`
   for this `session_id`; then `runs/<first-8-of-session-id>/`; then a `runs/*/` whose
   `resume_state.md` records this `SESSION_ID`). None of them has a most-recently-modified rung,
@@ -2341,10 +2363,10 @@ their REACH accurately in the report, because the floor is conditional:
   `.claude/agent-state/spec-conductor/workflow_state.md` — a fixed path, never another run's
   per-run state.
 - **They can only fire when this session's state file exists at one of those paths.** That is
-  precisely why `session-register.sh` SEEDS it: a registry entry naming a directory nobody
+  precisely why `session-register` SEEDS it: a registry entry naming a directory nobody
   created leaves every gate with nothing to read. Install the SessionStart hook or the Stop
   gates are decoration.
-- **`spec-tdd-gate.sh` used to be the exception; it no longer is.** Its registry lookup was
+- **`spec-tdd-gate` used to be the exception; it no longer is.** Its registry lookup was
   guarded by `command -v jq` with no fallback, and on failing to resolve it fell back to the most
   recently modified `workflow_state.md` in the clone — so on a host without `jq` (measured: the
   development host) it ALWAYS took that fallback, and with concurrent runs it gated a commit
@@ -2358,7 +2380,7 @@ their REACH accurately in the report, because the floor is conditional:
   (it is what an ordinary chat session looks like), so it loads the new code and still does not
   brake. `hooks/MIGRATION.md` §4 tables that by what the previous registrar left on disk and
   gives the one-command check plus the manual seed. Second, every gate is bounded: after
-  `HOOK_BLOCK_CAP` consecutive blocks it allows the stop while stating that the work is not done
+  `the block cap` consecutive blocks it allows the stop while stating that the work is not done
   — and the harness independently ends the turn after 8 consecutive blocks. Reaching that cap is
   a defect to diagnose, never a sanctioned way to stop.
 - A session with no run at all resolves as `UNREGISTERED` and every gate is a deliberate
@@ -2369,7 +2391,7 @@ their REACH accurately in the report, because the floor is conditional:
 The hooks and the agents must agree on ONE answer to "which run am I, and where is my
 state?". When they disagree, the gates do not fail loudly — they go silent, and the project
 looks configured while nothing is enforced. That is not hypothetical: it is the measured
-failure this contract exists to prevent. A `session-register.sh` that wrote
+failure this contract exists to prevent. A `session-register` that wrote
 `state_dir: "runs/<first-8-of-session-id>/"` into `registry.json` but never CREATED that
 directory, plus an agent that was told to "derive RUN_ID" and reasonably invented a readable
 label like `run-issue574-20260828T194800Z`, produced two namespaces that never met. Both Stop
@@ -2392,7 +2414,7 @@ these clauses bind the AGENT as much as the hooks.
    key on the registry's value, and a label that reads better to a person reads as absent to
    every hook. If you want the issue number visible, put it in a FIELD inside the state file,
    never in the directory name.
-3. **`session-register.sh` SEEDS the state files, so the gates are reachable from turn one.**
+3. **`session-register` SEEDS the state files, so the gates are reachable from turn one.**
    It creates `runs/<run-id>/` and writes `resume_state.md` + `workflow_state.md` with every
    field the gates branch on already present. The agent's job is to UPDATE those files, not to
    decide where they live. A registry entry pointing at a directory nobody created is the
@@ -2428,9 +2450,13 @@ was built for.
 What to know here:
 
 1. **Steps 1–3 of the install are safe to run while agents work.** Every hook file is read at
-   invocation time, and a partially-copied library FAILS CLOSED (the gates check for
-   `hook_task_selftest`, deliberately the last definition in `hook-state-lib.sh`, and refuse the
-   stop when it is absent). The worst case of a mid-copy Stop event is one spurious refusal.
+   invocation time, and a partially-copied library FAILS CLOSED (the dispatcher refuses the
+   stop when `hooklib.selftest`, deliberately the last definition in `hooklib.py`, is absent
+   or any Stop gate raises). The worst case of a mid-copy Stop event is one spurious refusal.
+   Replacing the bash hooks with the Python ones IS such a deployment: the moment the
+   `settings.json` registrations point at `hooks.py`, every live session's next hook event
+   runs the dispatcher — and on a Windows host where the bash registrations never started,
+   that next event is the first time any gate has judged the session at all.
 2. **Put anything that must reach a live session inside an ALREADY-REGISTERED `Stop` hook.** Not
    because a new registration cannot arrive — the vendor documents that "direct edits to hooks in
    settings files are normally picked up automatically by the file watcher", so it normally can —
@@ -2457,7 +2483,7 @@ What to know here:
 5. **Loading is not engaging — and this is the part most likely to be missed.** A live session
    whose registry entry was never written resolves `UNREGISTERED`, which every gate treats as
    benign (it is indistinguishable from an ordinary chat session), so it loads the new code and
-   still does not brake. MEASURED: the previous `session-register.sh` did its registry upsert with
+   still does not brake. MEASURED: the previous `session-register` did its registry upsert with
    a jq-only code path, and `jq` was absent on the development host, so it wrote no entry at all
    there. `MIGRATION.md` §4 tables the outcome by what the previous registrar left on disk and
    gives both the one-command check and the manual seed (a `runs/<sid8>/resume_state.md` carrying
@@ -2617,12 +2643,12 @@ TDD/evidence hooks). Install Part 12 first.
     (Part 6.1, step 2; needs the wrapper's `reopen-issue` / `issue reopen`).
   All five, `/issues-work` included, carry `disable-model-invocation: true`, so an autonomous merge-and-close run can
   never begin because a prompt merely mentioned an issue number.
-- The `session-register.sh` and `continuous-work-reinject.sh` (SessionStart) and
-  `issue-loop-gate.sh` (Stop) hooks — installed and wired by Part 12.2's settings block
+- The `session-register` and `continuous-work-reinject` (SessionStart) and
+  `issue-loop-gate` (Stop) hooks — installed and wired by Part 12.2's settings block
   (which already lists them) — give the orchestrator its per-run identity, seed the state
   the gates read, restore its recorded place after a compaction, and keep it working.
-  `session-register.sh` is not optional here: without the seeded state file the loop gate
-  has nothing to judge and is inert (Part 12.2a). `claim-before-worktree.sh` (PreToolUse),
+  `session-register` is not optional here: without the seeded state file the loop gate
+  has nothing to judge and is inert (Part 12.2a). `claim-before-worktree` (PreToolUse),
   also wired there, makes the claim-before-work ordering mechanical (Part 13.2).
 
 ```bash
@@ -2689,7 +2715,7 @@ Four things differ from the backlog command, and they are the whole point of the
 1. **Claim before anything else.** The local `.locks/issue-<X>.lock` is acquired, then the
    issue is claimed on the tracker with the fail-closed `issue start <X>`, then the remote
    is fetched, then the worktree is created — in that order, so no other worker (human or
-   agent) can pick X up. The `claim-before-worktree.sh` PreToolUse hook enforces the
+   agent) can pick X up. The `claim-before-worktree` PreToolUse hook enforces the
    ordering mechanically.
 2. **Named issue, no substitution.** If X is already closed, or the claim fails because X
    was claimed elsewhere in the race window, the command STOPS and reports with quoted
@@ -2709,7 +2735,7 @@ Four things differ from the backlog command, and they are the whole point of the
 
 Autonomy still holds inside the issue — the command does not stop to report progress or
 ask whether to continue. It ends after X is merged and closed, and the mechanism for that is
-a TERMINAL `Phase` recorded on X, not a field value: `issue-loop-gate.sh` blocks turn-end
+a TERMINAL `Phase` recorded on X, not a field value: `issue-loop-gate` blocks turn-end
 while the run has claimed tracked work and has not recorded an idle `Status`, a terminal
 `Phase`/`Status`, or a substantive `AWAITING_USER`. Single-issue mode also records
 `WORKABLE_ISSUES_REMAIN: no`, but that selects the single-issue WORDING of a refusal and
@@ -2734,7 +2760,7 @@ explicit, front-loaded pressure on the five things that break long unattended ru
    explicitly overrides the model's general habit of offering intermediate summaries,
    proposing next steps, or handing control back — for this run only, and without
    overriding a new instruction the user actually types. Enforced mechanically by
-   `issue-loop-gate.sh`, which blocks turn-end while this run has claimed tracked work and
+   `issue-loop-gate`, which blocks turn-end while this run has claimed tracked work and
    has recorded neither an idle `Status`, a terminal `Phase`/`Status`, nor a substantive
    `AWAITING_USER`. The command also holds `WORKABLE_ISSUES_REMAIN: yes` until DONE, and
    `/work-issue` sets it `no` — but that field only picks the refusal's WORDING (select the
@@ -2842,7 +2868,7 @@ environment and never asks the operator to check anything by hand.
 
 Autonomy is backed by a mechanical brake, and the brake's REACH is worth stating exactly,
 because a gate everyone believes is enforcing is worse than no gate at all. The
-`issue-loop-gate.sh` **Stop hook** blocks turn-end while THIS session's run has CLAIMED
+`issue-loop-gate` **Stop hook** blocks turn-end while THIS session's run has CLAIMED
 tracked work and has not AFFIRMATIVELY released it — so the agent cannot stop to ask "which
 issue next?"; it must select the next one and continue.
 
@@ -2868,7 +2894,7 @@ issue next?"; it must select the next one and continue.
   `DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CLOSED`, `ABANDONED`, `ESCALATED`, `CANCELLED`,
   `CANCELED`. So `Phase: DONE` releases and `Status: COMPLETED (was IN_PROGRESS)` does NOT: a
   progress note must never be a way to end a turn. BOTH Stop gates route this through the
-  library's `hook_phase_is_terminal`, so they cannot disagree — the evidence gate previously
+  library's `phase_is_terminal`, so they cannot disagree — the evidence gate previously
   used a prefix-matching raw grep and released on exactly that narrative form while this gate
   refused it. The vocabulary an agent writes against is `.claude/docs/run-identity.md` §5
   (release values and placeholders) and §6 (identity verdicts and block caps) — point agents
@@ -2890,13 +2916,13 @@ issue next?"; it must select the next one and continue.
   different directory name is still FOUND, so an invented run-id label no longer makes the gate
   inert, it makes the gate refuse until the state is where the registry says. A registered run
   whose state no rung finds is `BROKEN` and BLOCKS (next bullet); a session the registry does not
-  know is `UNREGISTERED` and the gate is a deliberate no-op. That is why `session-register.sh`
+  know is `UNREGISTERED` and the gate is a deliberate no-op. That is why `session-register`
   must be wired (Part 12.2a): without it there is no registry entry, EVERY session resolves
   `UNREGISTERED`, and the Stop gate looks enforcing while enforcing nothing.
 - **A registry entry whose state file is missing FAILS CLOSED.** That state is `BROKEN`: the
   gate blocks and tells the agent to create the state at the path the registry names, rather
   than treating absent state as absent obligation.
-- **Loop safety is the gate's own bounded consecutive-block counter** (`HOOK_BLOCK_CAP`,
+- **Loop safety is the gate's own bounded consecutive-block counter** (`the block cap`,
   default 8, validated into `[1, 64]`), not the harness's `stop_hook_active` field. Honouring
   that field made a POLICY gate block at most ONCE per continuation chain — the agent was
   nudged once and then free to stop on unfinished work. The count is cleared by a genuine
@@ -2917,7 +2943,7 @@ The orchestrator checkpoints after EVERY step to
 current issue/worktree/branch/PR, the issue queue) plus a mirrored `workflow_state.md` (so
 the TDD hooks fire during FIX) and a `DL-NNN` decision log. `<run-id>` is the registry's
 value for this `session_id`, NOT a self-chosen label, and the files are the ones
-`session-register.sh` already seeded — write into those, at that path, per Part 12.2a. The
+`session-register` already seeded — write into those, at that path, per Part 12.2a. The
 flat `…/issue-work-orchestrator/resume_state.md` is NOT a location any hook reads; state
 written there leaves every gate judging the run on nothing. Relaunch with `claude --agent
 issue-work-orchestrator`, `/issues-work`, or simply "continue the work on the existing
@@ -2967,7 +2993,7 @@ expected outcome, not a sign that something was missed.
 | `.claude/commands/*.md` | slash commands (≈ userTriggered hooks) |
 | `.claude/agents/*.md` | custom subagents (≈ .kiro/agents) |
 | `.claude/docs/*.md` | on-demand reference docs (the run-identity contract, agent drafting templates) — read by agents when needed, never auto-loaded |
-| `.claude/hooks/` | hook scripts + `hook-state-lib.sh` + `CONTRACT_VERSION` (checked in) |
+| `.claude/hooks/` | hook scripts + `hooklib.py` + `CONTRACT_VERSION` (checked in) |
 | `.claude/agent-state/` | long-running-agent state (gitignored) |
 | `.claude/agent-state/<agent>/runs/<run-id>/` | ONE run's state; `<run-id>` is registry-derived (Part 12.2a) |
 | `.claude/specs/<feature>/` | spec artifacts + reviews + decisions + evidence (committed) |
@@ -3027,15 +3053,15 @@ expected outcome, not a sign that something was missed.
 - Tiers (proportionality.md): S = change.md ≤ 8 KB, one combined review pass, one wave;
   M = requirements ≤ 20 KB / design ≤ 60 KB / tasks ≤ 15 KB, parallel panel, cap 4;
   L = double, cap 6. Review contract: .claude/docs/review-contract.md.
-- Gates: spec-tdd-gate.sh (PUSH, plus the --no-verify ban on commit and push),
-  spec-stop-gate.sh (turn-end), red-for-right-reason.sh (helper, not registered),
-  issue-loop-gate.sh (the primary brake against ending a turn on unfinished work),
-  claim-before-worktree.sh (blocks a per-issue worktree until the claim is visible on the
-  remote), issue-filing-gate.sh (blocks an issue-create call with no filing rationale).
-  Identity + context: session-register.sh (SessionStart — registers AND seeds this run's
-  state, without which the Stop gates are inert), scoped-temp-init.sh (SessionStart —
-  creates tmp/os-temp so the scoped TMPDIR is usable), continuous-work-reinject.sh
-  (SessionStart, matcher compact|resume|startup), hook-state-lib.sh (the shared
+- Gates: spec-tdd-gate (PUSH, plus the --no-verify ban on commit and push),
+  spec-stop-gate (turn-end), red_for_right_reason.py (helper, not registered),
+  issue-loop-gate (the primary brake against ending a turn on unfinished work),
+  claim-before-worktree (blocks a per-issue worktree until the claim is visible on the
+  remote), issue-filing-gate (blocks an issue-create call with no filing rationale).
+  Identity + context: session-register (SessionStart — registers AND seeds this run's
+  state, without which the Stop gates are inert), scoped-temp-init (SessionStart —
+  creates tmp/os-temp so the scoped TMPDIR is usable), continuous-work-reinject
+  (SessionStart, matcher compact|resume|startup), hooklib.py (the shared
   session-keyed identity/state library; no mtime rung), and CONTRACT_VERSION (keys the
   once-per-run contract handshake).
   Shared always-loaded rules in .claude/rules/: agent-state-convention.md (decision
@@ -3066,7 +3092,7 @@ expected outcome, not a sign that something was missed.
   session's own run has CLAIMED tracked work and has recorded no affirmative release — an idle
   Status, a terminal Phase/Status, or a substantive AWAITING_USER; an unrecognised Status means
   work in flight, and WORKABLE_ISSUES_REMAIN releases nothing. Reachable only when
-  session-register.sh has seeded that state; Part 12.2a / Part 13.3). Resumable.
+  session-register has seeded that state; Part 12.2a / Part 13.3). Resumable.
 - Mandatory merge agent: `code-merge-reviewer` — every rebase/merge conflict is
   delegated to it (holistic + line-by-line, both intents preserved, no blind
   take-a-side, regression-gated). Never resolve conflicts inline.
