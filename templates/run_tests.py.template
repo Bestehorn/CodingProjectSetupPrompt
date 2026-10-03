@@ -16,6 +16,12 @@ WHY THIS EXISTS
        the prohibition is mechanical rather than a request, and adds
        `--continue-on-collection-errors` so a broken import in one module cannot suppress
        the rest of the suite.
+    3. UNBOUNDED CONCURRENCY ACROSS SESSIONS. The worker bound is per process. Eight suites
+       from eight sessions and worktrees, each bounded, jointly saturated an 8-vCPU host
+       (measured 2026-10-01). Any run wider than named test FILES therefore holds one of the
+       host-wide slots of scripts/suite_semaphore.py (`max(1, cores // 4)` slots per user,
+       shared by every project and session) and WAITS for one rather than starting another
+       suite; run it as a background task and do other work meanwhile.
 
     Because every caller — the pre-push hook, the CI test job, the agent fleet, the
     `.pre-commit-config.yaml` manual-stage hook — goes through this script, the local run
@@ -30,7 +36,9 @@ WHERE TESTS RUN (the project's contract; see docs/ and the CI-owns-the-test-suit
 USAGE
     python scripts/run_tests.py                          # whole suite, bounded workers
     python scripts/run_tests.py test/test_thing.py       # the affected tests only
-    python scripts/run_tests.py -k "invoke_grant"        # ditto, by expression
+    python scripts/run_tests.py -k "invoke_grant"        # ditto, by expression (a selector collects the
+                                                         #   whole tree, so it takes a suite slot)
+    python scripts/run_tests.py test/api/                # a directory: holds a host-wide suite slot
     python scripts/run_tests.py --workers auto           # CI only: one worker per vCPU
     python scripts/run_tests.py --workers 1              # sequential (flaky shared state)
     python scripts/run_tests.py --coverage               # add the coverage gate
@@ -49,6 +57,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    from suite_semaphore import suite_slot  # installed beside this script (templates/suite_semaphore.py.template)
+except ImportError:  # an older project without the helper: run unbounded, and say so
+    suite_slot = None
 
 # Local parallelism ceiling. A quarter of the cores leaves the machine usable, and capping
 # at MAX_LOCAL_WORKERS keeps a 64-core host from spawning 16 pytest processes per worktree.
@@ -121,6 +134,20 @@ def has_xdist() -> bool:
     except ImportError:
         return False
     return True
+
+
+def needs_slot(extra: list[str]) -> bool:
+    """True for a run wider than named test FILES: no target, a directory target, or selectors only.
+
+    Paired tests — `run_tests.py test/test_thing.py` — are seconds long and are what TDD runs most, so
+    a run whose every target is an existing file skips the host-wide slot. Anything that can collect a
+    whole tree takes one.
+    """
+    targets = [Path(arg.split("::", 1)[0]) for arg in extra if not arg.startswith("-")]
+    existing = [path for path in targets if path.exists()]
+    if not existing:
+        return True
+    return any(path.is_dir() for path in existing)
 
 
 def build_command(
@@ -200,7 +227,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(f"run_tests: {' '.join(cmd)}", flush=True)
-    return subprocess.call(cmd)
+    if not needs_slot(extra):
+        return subprocess.call(cmd)
+    if suite_slot is None:
+        print(
+            "run_tests: scripts/suite_semaphore.py is missing - running WITHOUT the host-wide suite "
+            "slot; install templates/suite_semaphore.py.template beside this script.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return subprocess.call(cmd)
+    with suite_slot(label=f"run_tests {' '.join(extra) or '(whole suite)'}"):
+        return subprocess.call(cmd)
 
 
 if __name__ == "__main__":

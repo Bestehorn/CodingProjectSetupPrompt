@@ -1,5 +1,5 @@
 Valid-until: 2026-11-15
-## FRAMEWORK REVISION 2026-09-30 IS IN FORCE — it supersedes the phase text in your agent definition and command body
+## FRAMEWORK REVISION 2026-09-30 IS IN FORCE (amended 2026-10-03, item 8) — it supersedes the phase text in your agent definition and command body
 
 The rules, phase fragments, agents and hooks of this project were replaced. Apply this to
 the work in flight NOW, then continue:
@@ -24,3 +24,10 @@ the work in flight NOW, then continue:
    step is a residual, and the end-to-end check runs in the pipeline after the merge.
 7. Issue notes only at phase transitions; DL entries only for decisions; a question is five
    lines with the recommended option first; reversible decisions are decided, not asked.
+8. (2026-10-03) A shell call is the expensive tool: read, search and write files with Read,
+   Grep, Glob, Write and Edit — never `cat`, `grep`, `ls`, `sed` or a heredoc — and chain a
+   shell step into ONE call. The `no-foreground-sleep` gate refuses a foreground wait of 10 s
+   or more and any sleep in a loop: run the wait with `run_in_background: true`, or the
+   wrapper's `wait`. Local suites go through `scripts/run_tests.py`, which holds a host-wide
+   suite slot; a synth, `npm test` or a harness runs under
+   `python scripts/suite_semaphore.py run -- <command>` (`.claude/rules/native-tools-over-shell.md`).

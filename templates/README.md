@@ -14,7 +14,8 @@ final filename) and then extends or adapts it as the project evolves.
 | `githooks/pre-push` | `.githooks/pre-push` | Always (tracked hook: type check; suite only during a declared CI outage) |
 | `setup-hooks.sh.template` | `scripts/setup-hooks.sh` | Always (ENABLES the tracked hooks per clone) |
 | `pre-commit-config.yaml.template` | `.pre-commit-config.yaml` | Always |
-| `run_tests.py.template` | `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast) |
+| `run_tests.py.template` | `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast; holds a host-wide suite slot for any run wider than named files) |
+| `suite_semaphore.py.template` | `scripts/suite_semaphore.py` | Always (the host-wide cap on concurrent suites: `max(1, cores // 4)` slots per user, OS file locks the kernel releases on exit; `run_tests.py` takes a slot, a synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <cmd>`; `selftest` proves it on the host) |
 | `run_checks.py.template` | `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
 | `ci_outage_mode.py.template` | `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
 | `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`) |

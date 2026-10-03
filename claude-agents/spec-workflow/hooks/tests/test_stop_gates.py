@@ -463,6 +463,42 @@ def test_freshness_trunk_at_checkout_version_is_not_stale(fw: Freshness) -> None
     assert "FRAMEWORK REVISION" not in decision.stderr
 
 
+def test_freshness_cache_spares_git_while_the_refs_are_unchanged(fw: Freshness, monkeypatch) -> None:
+    """the cached check spawns git once per change of the tracking refs, not once per turn-end: a second
+    call with the same refs makes NO git call and returns the same answer; a moved ref misses the cache"""
+    calls: list = []
+    real_git = lib._git  # noqa: SLF001 — counting the library's own helper
+
+    def counting(args, cwd, stdin=None, timeout=10.0):
+        calls.append(args[0])
+        return real_git(args, cwd, stdin=stdin, timeout=timeout)
+
+    monkeypatch.setattr(lib, "_git", counting)
+    first = lib.framework_stale_cached(fw.root, OLD_FRAMEWORK, lib.CLAUDE, cache_dir=fw.orch)
+    assert first is not None and first[1] == NEW_FRAMEWORK, "the uncached answer is the stale trunk"
+    assert calls, "the first call reaches git"
+    seen = len(calls)
+    second = lib.framework_stale_cached(fw.root, OLD_FRAMEWORK, lib.CLAUDE, cache_dir=fw.orch)
+    assert second == first, "the cached answer equals the fresh one"
+    assert len(calls) == seen, "a second call with unchanged refs spawns no git at all"
+    assert (fw.orch / lib.FRAMEWORK_STALE_CACHE).is_file(), "the cache lives beside the decision log"
+    fw.git("update-ref", "refs/remotes/origin/main", "HEAD")  # a fetch moved the trunk to the checkout's version
+    third = lib.framework_stale_cached(fw.root, OLD_FRAMEWORK, lib.CLAUDE, cache_dir=fw.orch)
+    assert third is None, "a moved ref is seen immediately"
+    assert len(calls) > seen, "the miss reached git again"
+    other_version = lib.framework_stale_cached(fw.root, NEW_FRAMEWORK, lib.CLAUDE, cache_dir=fw.orch)
+    assert other_version is None, "a different local version is a different key, not a stale hit"
+
+
+def test_freshness_cache_is_bypassed_outside_a_checkout_root(tmp_path: Path) -> None:
+    """no `.git` at the project dir -> no fingerprint -> the plain check runs and no cache file is written"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert lib.refs_fingerprint(plain) is None
+    assert lib.framework_stale_cached(plain, OLD_FRAMEWORK, lib.CLAUDE, cache_dir=tmp_path / "cache") is None
+    assert not (tmp_path / "cache" / lib.FRAMEWORK_STALE_CACHE).exists()
+
+
 # =========================================================================================================
 # FAIL-CLOSED on a broken library (both gates)
 # =========================================================================================================

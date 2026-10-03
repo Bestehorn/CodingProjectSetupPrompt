@@ -79,9 +79,10 @@ evidence-proven code in one session.
 | `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; a question is five lines with the recommended option first; reversible decisions are decided, not asked (all agents + main session) |
 | `rules/proportionality.md` | HOW MUCH spec a change gets: tiers S/M/L from the ASK, hard byte caps, scope frozen once review opens, no measurements in specs (all agents) |
 | `rules/parallel-by-default.md` | Independent work runs concurrently — panels, research, implementation waves in ONE message; CI awaited in the background (all agents) |
+| `rules/native-tools-over-shell.md` | A Bash call is the expensive tool: files through Read/Grep/Glob/Write/Edit, never `cat`/`grep`/`ls`/heredocs; one shell call per step; no foreground sleep (the `no-foreground-sleep` gate); suites through the runner's host-wide slot (all agents) |
 | `docs/review-contract.md` | The finding shape every reviewer uses and the forbidden findings; installs to `.claude/docs/`, read on demand |
 | `rules/ci-owns-the-test-suite.md` | WHERE tests run: affected tests locally, full suite in CI, never as a commit precondition; commit often and push once; bounded local workers (never `-n auto`); fix EVERY failure a CI run reports in one pass (all agents + main session) |
-| `hooks/*.sh` | TDD/evidence gates (PUSH gate, stop gate, red-for-right-reason; both accept per-task and wave captures) + the issue-filing gate |
+| `hooks/hooks.py`, `hooks/gate_*.py` | The Python hook dispatcher and its discovered gates: the PUSH gate and stop gate (both accept per-task and wave captures), the issue-loop brake, no-env-vars, no-foreground-sleep, claim-before-worktree, the issue-filing gate; `red_for_right_reason.py` is the RED-audit helper |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
 `spec-prompt-author-agent`). The four `/spec-*` slash commands live in

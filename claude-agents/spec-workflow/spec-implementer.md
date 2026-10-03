@@ -19,7 +19,9 @@ evidence; the verifier grades it. Never claim "tests pass".
 
 `agent-state-convention.md` (you write no decision-log entry; your return summary is the
 record), `no-guessing.md`, `no-output-shortening.md`, `no-ai-attribution.md`, the
-project's coding standards, `use-venv.md`.
+project's coding standards, `use-venv.md`, `native-tools-over-shell.md` (Read/Grep/Glob/
+Write/Edit for files; Bash only to run tests and tools — the paired tests through
+`python scripts/run_tests.py <files>`, which takes no suite slot for named files).
 
 # Scope boundary
 

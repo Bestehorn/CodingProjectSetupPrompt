@@ -16,8 +16,10 @@ and operable safely. One lane of the panel; the conductor consolidates. Read
 `review-contract.md`, `proportionality.md`, `always-test-e2e.md`, `agent-state-convention.md`
 (you write only your lane file), `cdk-deployment-only.md`, `aws-config.md`,
 `no-environment-vars.md`, `remote-ci-must-pass.md`, `no-guessing.md`,
-`no-output-shortening.md`, `no-ai-attribution.md`. Read-only inspections (`cdk synth`,
-`cdk diff`) are allowed; never deploy or mutate infrastructure.
+`no-output-shortening.md`, `no-ai-attribution.md`, `native-tools-over-shell.md` (Read/
+Grep/Glob for files; never `cat`/`grep`/`ls` through Bash). Read-only inspections (`cdk
+synth`, `cdk diff`) are allowed, run under `python scripts/suite_semaphore.py run -- <cmd>`
+so they take a host-wide slot; never deploy or mutate infrastructure.
 
 # Scope
 

@@ -369,17 +369,19 @@ printf '{"session_id":"probe","cwd":"%s","hook_event_name":"Stop"}' "$PWD" \
 mkdir -p /tmp/gp/hooks && cp .claude/hooks/hooks.py .claude/hooks/gate_*.py /tmp/gp/hooks/
 ( cd /tmp/gp && printf '{"session_id":"x","cwd":"."}' | python hooks/hooks.py stop ); echo "exit $?"
 
-# 4. The eight pytest modules. A registered run with NO state file must BLOCK; if it is allowed the
+# 4. The ten pytest modules. A registered run with NO state file must BLOCK; if it is allowed the
 #    deployment is inert. Zero failures is the criterion.
 python -m pytest .claude/hooks/tests -q -p no:cacheprovider
 #   test_crlf_hygiene       a CR smuggled through a payload, a state file, a version file, a capture
 #   test_hook_state_lib     identity, parsing, counters, cap validation
-#   test_stop_gates         Stop gate decisions, wave captures, the freshness handshake, fail-closed
+#   test_stop_gates         Stop gate decisions, wave captures, the freshness handshake and its cache, fail-closed
 #   test_tdd_gate           push gate, both directions, CI-outage mode
+#   test_no_sleep           the foreground-sleep gate: polls refused, settle sleeps and background waits allowed
 #   test_reinject           no cross-run adoption, delivery invariants, the revision notice
 #   test_gate_overblock     the OVER-block direction: turns that must be ALLOWED
 #   test_unpinned_fixes     handshake BLOCK by text, evidence substance, mtime, cross-gate
 #   test_scoped_temp        the self-writing settings.local.json env block
+#   test_dispatcher         gate discovery and order, a project gate, the disable switch, the launcher
 
 # 5. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
 #    blocking path, so its absence across many sessions means never-blocked.

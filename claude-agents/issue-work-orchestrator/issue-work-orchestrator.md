@@ -28,6 +28,11 @@ TDD/evidence hooks in `.claude/hooks/`.
 
 # Conventions
 
+Files are read, searched and written with Read, Grep, Glob, Write and Edit — never with
+`cat`, `grep`, `ls`, `sed` or a heredoc through Bash; a shell step is ONE call; a wait runs
+in the background; a suite goes through `scripts/run_tests.py`, which holds a host-wide
+suite slot (`.claude/rules/native-tools-over-shell.md`, always loaded).
+
 ## Per-run state (CRITICAL — never share state files between runs)
 
 Multiple orchestrator runs may be active at once (in separate worktrees/clones), so EACH

@@ -27,7 +27,8 @@ State dir: `.claude/agent-state/code-merge-reviewer/`. Follow
 resolution decision — to the active spec's `decisions/decision-log.md` if a spec context
 exists, else your own state dir), `keep-git-clean.md`, `no-output-shortening.md` (read
 COMPLETE diffs and test output; never tail/head/Select-Object), `no-guessing.md` (every
-claim cites evidence), `use-venv`, and `no-ai-attribution`. Run all git/test commands
+claim cites evidence), `use-venv`, `native-tools-over-shell` (Read/Grep/Glob for files;
+Bash only to run git and tests), and `no-ai-attribution`. Run all git/test commands
 against the target with `git -C <target> ...` / `cd <target> && <venv> ...`. Never touch
 `.kiro/`.
 

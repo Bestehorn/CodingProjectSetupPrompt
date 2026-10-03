@@ -16,7 +16,8 @@ the grader: no READY verdicts, no production code, no tests.
 `proportionality.md` (tiers, caps, scope freeze, no measurements), `no-guessing.md`,
 `no-output-shortening.md`, `no-ai-attribution.md`, `agent-state-convention.md` (you write
 your own return summary; the conductor owns the spec's decision log — you never append to
-it).
+it), `native-tools-over-shell.md` (Read/Grep/Glob/Write/Edit for every file; never `cat`,
+`grep`, `ls` or a heredoc through Bash).
 
 # What you produce
 

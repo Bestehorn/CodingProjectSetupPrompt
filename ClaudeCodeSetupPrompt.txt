@@ -63,6 +63,18 @@
 #     months because the bare `bash` the harness resolved was the WSL launcher (Part 6,
 #     MIGRATION.md incident `wsl-launcher`), and they depended on `jq`. Neither dependency
 #     remains, and no Git Bash installation is required.
+#   - 2026-10-03: THE SHELL IS THE EXPENSIVE TOOL. Measured on an 8-vCPU Windows host at
+#     100 percent CPU (70 to 75 percent of it kernel time): every Bash tool call spawned a
+#     login shell of about 21 processes, one call in ten was a `sleep` poll, and eight
+#     individually bounded suites from eight sessions saturated the machine together. Three
+#     mechanisms: the always-loaded `native-tools-over-shell.md` rule (Read/Grep/Glob/Write/
+#     Edit over `cat`/`grep`/`ls`/heredocs; one shell call per step), the
+#     `no-foreground-sleep` PreToolUse gate (a foreground wait of 10 s or more, or any sleep
+#     in a loop, is refused; the same command with `run_in_background: true` passes), and
+#     `scripts/suite_semaphore.py` (host-wide suite slots, `max(1, cores // 4)` per user,
+#     OS file locks; `run_tests.py` takes one for any run wider than named files). The
+#     trunk-freshness check is cached on the tracking refs' fingerprint instead of spawning
+#     git three times per turn-end.
 
 ---
 
@@ -396,7 +408,16 @@ necessary; the files below are its mechanism.
    - `run_tests.py` — the ONE definition of how tests are invoked. Bounded local
      workers (`min(4, cores // 4)`, floor 1), `--workers auto` for CI only, and
      it REFUSES `-x`/`--maxfail` so no caller can make a run report one failure
-     instead of all of them.
+     instead of all of them. For any run wider than named test files it holds one
+     of the host-wide suite slots below and WAITS for a free one.
+   - `suite_semaphore.py` — the host-wide cap on concurrent suites: `max(1, cores // 4)`
+     slots per user (override: one integer in `~/.claude/suite-semaphore/cap`), taken
+     with OS file locks the kernel releases when the holder exits, so a killed suite
+     leaves no stale slot and no PID check is needed. The worker bound above is per
+     process; eight bounded suites from eight sessions saturated an 8-vCPU host
+     together (measured 2026-10-01). `run_tests.py` imports it; a CDK synth, `npm test`
+     or a harness runs under `python scripts/suite_semaphore.py run -- <command>`;
+     `status` shows the holders and `selftest` proves exclusion on this host.
    - `run_checks.py` — runs every check group and reports every failure in one
      pass. Part 7 makes each CI job a single call to it, which is what stops the
      pipeline from failing fast; the same script is what a local pipeline run
@@ -1082,6 +1103,14 @@ The gates the PreToolUse dispatcher runs (all ship in `claude-agents/spec-workfl
 - `no-env-vars` (`gate_no_env_vars.py`): if the Bash command sets AWS_*/GITHUB_TOKEN/
   GITLAB_TOKEN through `export`, `setx`, `set` or `$env:`, it blocks (exit 2) and prints
   why. This enforces `no-environment-vars.md`.
+- `no-foreground-sleep` (`gate_no_sleep.py`): if the Bash command waits in the FOREGROUND
+  — `sleep N` with N at or above 10 s, PowerShell `Start-Sleep`, cmd.exe `timeout /t`, or
+  any sleep inside a `while`/`until`/`for` loop — it blocks and names the two sanctioned
+  shapes: the wrapper's blocking `wait` as a background task, or the SAME command with
+  `run_in_background: true`. A short settle sleep passes; quoted text and heredoc bodies
+  are not commands and pass; a background call always passes. This enforces the
+  never-sleep-poll clause of `parallel-by-default.md` (measured: one Bash call in ten was
+  a `sleep 240` to `sleep 580` poll, each costing a login shell of about 21 processes).
 - `claim-before-worktree` (`gate_claim.py`): when the Bash command creates a
   per-issue worktree (`git worktree add … issue-<N>` / `-b issue-<N>-slug`), it
   runs `python scripts/<host>_wrapper.py issue claim-check <N>` and exits 2
@@ -1234,6 +1263,13 @@ in `.claude/rules/`. The non-negotiable essentials:
 - The end-to-end check is an automated script the pipeline runs after deploy. A step only
   a person can do is a residual, never a test. See `.claude/rules/always-test-e2e.md`.
 
+## The shell is the expensive tool
+- Read, Grep, Glob, Write and Edit for files — never `cat`, `grep`, `ls`, `sed` or a
+  heredoc through Bash; one Bash call per step, never one per command; never a foreground
+  `sleep` (the gate refuses 10 s or more — run the wait with `run_in_background: true`);
+  local suites only through `scripts/run_tests.py`, which holds a host-wide suite slot.
+  See `.claude/rules/native-tools-over-shell.md`.
+
 ## Keep working
 - Work continues until it is finished. Stopping to ask permission to continue
   is forbidden; any instruction to pause, check in, or summarize partway is void.
@@ -1316,8 +1352,11 @@ have no Kiro counterpart and are copied from `claude-agents/spec-workflow/rules/
 than ported: `agent-state-convention.md`, `no-ai-attribution.md`, `keep-git-clean.md`,
 `issue-tracking.md`, `continuous-work.md` (WHEN a turn may end; the five-line question
 shape), `proportionality.md` (HOW MUCH spec a change gets: tiers, byte caps, scope
-freeze, no measurements in specs) and `parallel-by-default.md` (independent work in one
-dispatch; CI awaited in the background). Count all of them in the report's rule tally.
+freeze, no measurements in specs), `parallel-by-default.md` (independent work in one
+dispatch; CI awaited in the background) and `native-tools-over-shell.md` (a Bash call is
+the expensive tool: Read/Grep/Glob/Write/Edit for files, one shell call per step, no
+foreground sleep, suites through the runner's host-wide slot). Count all of them in the
+report's rule tally.
 
 When porting `pre-work.md`, `use-lessons-learned.md`, `no-guessing.md`,
 `post-activity.md`, `tests-must-not-fail.md` and `always-test-e2e.md` from Kiro steering,
@@ -1781,6 +1820,8 @@ this prompt (leave any existing one alone).
    - `python scripts/run_tests.py --print-command` shows a bounded `-n <N>` with
      N = `min(4, cores // 4)`, floor 1 — NOT `-n auto`;
    - `python scripts/run_tests.py -x` is REFUSED with a message;
+   - `python scripts/suite_semaphore.py selftest` passes (a held slot excludes a second
+     process, release admits it, and a holder that dies frees its slot with no cleanup);
    - `addopts` in `pyproject.toml` carries no `--cov` flags, so a targeted run of
      a few tests neither instruments coverage nor fails a project threshold.
 5a. CI-outage marker — round-trip it, then leave it CLEARED:
@@ -1863,8 +1904,9 @@ this prompt (leave any existing one alone).
     back to local execution as its FIRST move.
 13. Memory budget and proportionality (Part 9, Part 12) —
     `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes in full and
-    `python scripts/memory_compile.py report` exits 0; `.claude/rules/proportionality.md`
-    and `.claude/rules/parallel-by-default.md` are installed with no `paths:`;
+    `python scripts/memory_compile.py report` exits 0; `.claude/rules/proportionality.md`,
+    `.claude/rules/parallel-by-default.md` and `.claude/rules/native-tools-over-shell.md`
+    are installed with no `paths:`;
     `.claude/docs/review-contract.md` exists; `/compile-memory` is installed; the wrapper
     implements the blocking wait (`pipeline wait` / `wait-run` — a `NotImplementedError`
     means agents will fall back to `sleep` polling); and where the project deploys, the
@@ -2014,7 +2056,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   frozen once review opens; specs carry no measurements; evidence is test output) and
   `parallel-by-default.md` (panels, research bursts and implementation waves dispatch in
   ONE message; a pipeline is awaited with the wrapper's blocking wait as a background task,
-  never with `sleep`) — all always-loaded — and
+  never with `sleep`) and `native-tools-over-shell.md` (a Bash call is the expensive tool:
+  Read/Grep/Glob/Write/Edit for files, one shell call per step, no foreground sleep, local
+  suites through the runner's host-wide slot) — all always-loaded — and
   `per-worktree-venv.md` (CONDITIONAL, `paths:`-scoped to cdk/app projects: each worktree
   gets its own venv when running code/CDK from worktrees).
 - **On-demand docs** → `.claude/docs/`: `review-contract.md` — the finding shape every
@@ -2042,9 +2086,11 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     delivers every block message, and treats a gate that raises as a refusal (fail CLOSED).
     `python .claude/hooks/hooks.py selftest` installs the directory into a scratch project
     and spawns the LAUNCHER exactly as the harness does: a missing dispatcher fails open,
-    SessionStart injects and logs, PreToolUse blocks a bypass, reads a quoted lower-case
-    non-ASCII command in UTF-8 and leaves a non-shell tool alone, and Stop refuses a
-    registered unfinished run. `python .claude/hooks/hooks.py registration` prints the
+    SessionStart injects and logs, PreToolUse blocks a bypass, refuses a foreground sleep
+    poll and allows the same wait in the background, reads a quoted lower-case non-ASCII
+    command in UTF-8 and leaves a non-shell tool alone, and Stop refuses a registered
+    unfinished run. A failure of the self-test's own machinery is reported as a FAIL line,
+    never as a traceback. `python .claude/hooks/hooks.py registration` prints the
     `settings.json` block (Part 12.2). Gates are DISCOVERED: every `gate_*.py` beside it
     declaring `EVENT`, `ORDER` and `run(ctx)` (plus `TOOLS` for a PreToolUse gate) is run in
     ORDER, so a project adds its own gate as a file, never as a registration (Part 6).
@@ -2055,7 +2101,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     resolution, the `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, the `Name: value` state-field
     reader (last occurrence wins, fences ignored, bold invisible, trimmed, case-insensitive),
     bounded block counters, the decision log, the contract-version handshake, the revision
-    notice, the trunk-freshness check and the wave-capture resolver (`capture_for_task`).
+    notice, the trunk-freshness check (answered from a per-project cache keyed on the
+    tracking refs' fingerprint, so git is spawned only after a fetch moved a ref — not three
+    times per turn-end) and the wave-capture resolver (`capture_for_task`).
     Every gate imports it for one reason: the defect it exists to prevent — resolving state by
     "most recently touched" instead of by session — was found INDEPENDENTLY in THREE separate
     hooks. Keep the resolution logic here and nowhere else. `selftest()` is deliberately its
@@ -2091,6 +2139,11 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     never read as a pass.
   - `gate_no_env_vars.py` — `no-env-vars` (PreToolUse/Bash): blocks setting
     AWS_*/GITHUB_TOKEN/GITLAB_TOKEN in the shell (Part 6).
+  - `gate_no_sleep.py` — `no-foreground-sleep` (PreToolUse/Bash): blocks a foreground wait
+    of 10 s or more and any sleep inside a loop, and names the background form of the same
+    command and the wrapper's blocking wait (Part 6). Quoted text and heredoc bodies are
+    stripped first, so a script that merely CONTAINS a sleep is written unhindered, and a
+    call with `run_in_background: true` always passes.
   - `gate_claim.py` — `claim-before-worktree` (PreToolUse/Bash): blocks per-issue worktree
     creation until the issue is verifiably claimed in-progress on the remote: the mechanical
     enforcement of the deterministic claim (Part 5.3 / 6.2). It asks the tracker a question
@@ -2129,7 +2182,7 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     `keep-git-clean.md`), otherwise ask the operator — and `framework-ack-<version>` stops the
     repeat. This is how a revision merged on the trunk reaches live sessions on OTHER machines,
     where nobody has pulled and the orchestrator never moves the checkout.
-  - `tests/` — EIGHT pytest modules (plus `conftest.py`), driving the real gates in-process and
+  - `tests/` — TEN pytest modules (plus `conftest.py`), driving the real gates in-process and
     the dispatcher as a subprocess against synthetic project trees, asserting the gates'
     decisions (exit code 0 or 2) and, where an exit code cannot distinguish two causes, the
     REFUSAL TEXT. Together with `hooks.py selftest` they are the acceptance criterion for this
@@ -2151,7 +2204,8 @@ cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-co
                                                                # continuous-work,
                                                                # ci-owns-the-test-suite,
                                                                # proportionality,
-                                                               # parallel-by-default
+                                                               # parallel-by-default,
+                                                               # native-tools-over-shell
 mkdir -p .claude/docs
 cp claude-agents/spec-workflow/docs/review-contract.md .claude/docs/  # ON-DEMAND: every reviewer reads it
 cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, deliberately NOT in
@@ -2166,7 +2220,7 @@ cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md .claude/hooks/
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.py .claude/hooks/tests/   # all EIGHT modules + conftest.py
+cp claude-agents/spec-workflow/hooks/tests/*.py .claude/hooks/tests/   # all TEN modules + conftest.py
 rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                      # the bash predecessors, if any
 ```
 NOTE: `CONTRACT_VERSION` has no `.py` suffix, so the glob above does NOT pick it up — copy
@@ -2178,18 +2232,22 @@ gates are ARMED rather than merely installed, which is the exact failure this wh
 exists to prevent. Run them after installing, from the project root, together with the
 self-test that proves the REGISTERED launch form executes on this machine:
 ```bash
-python -m pytest .claude/hooks/tests -q -p no:cacheprovider   # the eight modules
+python -m pytest .claude/hooks/tests -q -p no:cacheprovider   # the ten modules
 python .claude/hooks/hooks.py selftest                        # spawns `python hooks.py <event>` as the harness does
 ```
 Both must report zero failures. The modules, and what each pins:
 `test_crlf_hygiene.py` (a CR smuggled through a payload, a state file, a version file or a
 capture), `test_hook_state_lib.py` (identity, parsing, counters, cap validation),
-`test_stop_gates.py` (Stop gate decisions, wave captures, the freshness handshake, fail-closed
-on a truncated library), `test_gate_overblock.py` (turns that must be ALLOWED),
-`test_tdd_gate.py` (push gate, both directions, CI-outage mode), `test_reinject.py` (no
-cross-run adoption, delivery invariants, the revision notice), `test_unpinned_fixes.py` (the
-handshake by TEXT, evidence substance, mtime independence, cross-gate agreement),
-`test_scoped_temp.py` (the self-writing settings.local.json env block).
+`test_stop_gates.py` (Stop gate decisions, wave captures, the freshness handshake and its
+refs-fingerprint cache, fail-closed on a truncated library), `test_gate_overblock.py` (turns
+that must be ALLOWED), `test_tdd_gate.py` (push gate, both directions, CI-outage mode),
+`test_no_sleep.py` (the foreground-sleep gate: polls and loops refused, settle sleeps,
+quoted text, heredocs and background waits allowed), `test_reinject.py` (no cross-run
+adoption, delivery invariants, the revision notice), `test_unpinned_fixes.py` (the handshake
+by TEXT, evidence substance, mtime independence, cross-gate agreement),
+`test_scoped_temp.py` (the self-writing settings.local.json env block),
+`test_dispatcher.py` (gate discovery and order, a project gate, the disable switch, the
+launcher's fail-open, the registration block).
 `test_unpinned_fixes.py` is the youngest and explains why a green suite is not the same as a
 guarded one: an adversarial pass MUTATED the shipped hooks and re-ran all 193 assertions the
 other six then held, and THREE mutations survived every one of them — the contract handshake's
@@ -2216,7 +2274,7 @@ the real gates, and asserts their decisions. `test_hook_state_lib.py` is separat
 suites on purpose — it calls the library functions directly, because a measured fail-open hid
 in precisely the gap between a library and its one caller while every end-to-end assertion
 passed over it.
-Zero failures across the eight modules AND the self-test is the acceptance criterion for this
+Zero failures across the ten modules AND the self-test is the acceptance criterion for this
 Part (the wave-capture cases in both gate suites pin that a `# tasks:` header covers exactly
 the ids it names, so `1.1` never covers `1.10`; the freshness cases pin that a newer trunk
 version is refused ONCE per run with the fast-forward instruction, that an acked run reaches
@@ -2394,6 +2452,10 @@ What the dispatcher's gates do:
 - `claim-before-worktree` blocks per-issue worktree creation until the issue is verifiably
   claimed in-progress on the remote, so the claim-before-work ordering is mechanical rather
   than self-policed.
+- `no-foreground-sleep` blocks a foreground wait of 10 s or more and any sleep inside a
+  loop, naming the background form of the same command and the wrapper's blocking wait; a
+  settle sleep, quoted text, a heredoc body and a background call all pass. Like the two
+  above it reads no run state and fires in ordinary sessions too.
 - `red_for_right_reason.py` is a helper the conductor invokes to confirm a failing
   test fails on an assertion, not an import/collection error.
 
@@ -2401,8 +2463,8 @@ These are the machine-enforced floor under the agents' prompt-level discipline �
 their REACH accurately in the report, because the floor is conditional:
 
 - **All FIVE state-reading hooks resolve state ONLY through session-keyed rungs** — the five
-  that source `hooklib.py`; `claim-before-worktree` and `issue-filing-gate` read
-  no run state at all — (the registry's `state_dir`
+  that source `hooklib.py`; `claim-before-worktree`, `issue-filing-gate` and
+  `no-foreground-sleep` read no run state at all — (the registry's `state_dir`
   for this `session_id`; then `runs/<first-8-of-session-id>/`; then a `runs/*/` whose
   `resume_state.md` records this `SESSION_ID`). None of them has a most-recently-modified rung,
   so no session is ever judged against, or told about, another run's state. The one
@@ -2588,8 +2650,10 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > (the pre-commit hook is lint + security, about a second); run the AFFECTED tests
 > locally via `python scripts/run_tests.py`; push ONCE when the batch is complete, never
 > to find out whether it works; and take the full-suite verdict from the CI run on the
-> pushed SHA. Never `pytest -n auto` locally and never two worktrees running suites at
-> once. When a CI run comes back red, enumerate every failing job and every failure
+> pushed SHA. Never `pytest -n auto` locally; `run_tests.py` holds one of the host-wide
+> suite slots (`scripts/suite_semaphore.py`), so suites queue instead of stacking, and a
+> synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <command>`.
+> When a CI run comes back red, enumerate every failing job and every failure
 > inside it BEFORE changing anything, group them by root cause, fix them ALL, and push
 > once — fixing one failure and re-pushing to find the next is a rule violation.
 > All agents and the main session follow `.claude/rules/proportionality.md`: the ASK fixes
@@ -2601,6 +2665,12 @@ ported ones, AND the main session) share the conventions without their bodies ch
 > lanes, research bursts and the tasks of an implementation wave are dispatched in ONE
 > message; a pipeline is awaited with the wrapper's blocking wait as a background task,
 > never with `sleep`.
+> All agents and the main session follow `.claude/rules/native-tools-over-shell.md`: files
+> are read, searched and written with Read, Grep, Glob, Write and Edit, never with `cat`,
+> `grep`, `ls`, `sed` or a heredoc through Bash; a shell step is ONE call; a wait runs in
+> the background (the `no-foreground-sleep` gate refuses a foreground wait of 10 s or more
+> and any sleep in a loop); local suites go through `scripts/run_tests.py`, which holds a
+> host-wide suite slot.
 > Every question to the operator has the five-line shape of `continuous-work.md` — one line
 > of context, two to four options with one-line consequences, the recommended option first
 > — and reversible decisions are decided and recorded, never asked.
@@ -3078,7 +3148,10 @@ expected outcome, not a sign that something was missed.
   CI-OUTAGE MODE is declared),
   `pre-commit-config.yaml.template` (its `stages:` keys are what decide
   commit vs push vs manual),
-  `run_tests.py.template` (→ `scripts/run_tests.py`; bounded workers, refuses `-x`),
+  `run_tests.py.template` (→ `scripts/run_tests.py`; bounded workers, refuses `-x`, holds
+  a host-wide suite slot for any run wider than named files),
+  `suite_semaphore.py.template` (→ `scripts/suite_semaphore.py`; the host-wide cap on
+  concurrent suites and synths, Part 2.2),
   `run_checks.py.template` (→ `scripts/run_checks.py`; every check, every failure,
   one pass — each CI job calls it, Part 7),
   `ci_outage_mode.py.template` (→ `scripts/ci_outage_mode.py`; the shared CI-outage
@@ -3109,6 +3182,8 @@ expected outcome, not a sign that something was missed.
   L = double, cap 6. Review contract: .claude/docs/review-contract.md.
 - Gates: spec-tdd-gate (PUSH, plus the --no-verify ban on commit and push),
   spec-stop-gate (turn-end), red_for_right_reason.py (helper, not registered),
+  no-foreground-sleep (a foreground wait of 10 s or more, or any sleep in a loop, is
+  refused; the same command run in the background passes),
   issue-loop-gate (the primary brake against ending a turn on unfinished work),
   claim-before-worktree (blocks a per-issue worktree until the claim is visible on the
   remote), issue-filing-gate (blocks an issue-create call with no filing rationale).
@@ -3134,7 +3209,9 @@ expected outcome, not a sign that something was missed.
   for a run in the background, never with sleep),
   proportionality.md (the ASK fixes the tier; the tier fixes byte caps, panel, iteration
   cap and time tripwire; scope frozen once review opens; no measurements in specs),
-  parallel-by-default.md (independent work in one dispatch; waits in the background).
+  parallel-by-default.md (independent work in one dispatch; waits in the background),
+  native-tools-over-shell.md (Read/Grep/Glob/Write/Edit over shell file commands; one
+  shell call per step; no foreground sleep; suites through the runner's host-wide slot).
   On-demand docs in .claude/docs/: review-contract.md (the finding shape every reviewer
   uses) and run-identity.md.
 

@@ -14,7 +14,9 @@ Read `.claude/docs/review-contract.md` first: its finding shape, forbidden findi
 # Binding rules
 
 `review-contract.md`, `proportionality.md`, `agent-state-convention.md` (you write only
-your lane file), `no-guessing.md`, `no-output-shortening.md`, `no-ai-attribution.md`.
+your lane file), `no-guessing.md`, `no-output-shortening.md`, `no-ai-attribution.md`,
+`native-tools-over-shell.md` (Read/Grep/Glob for files; never `cat`/`grep`/`ls` through
+Bash).
 
 # Sources of "the standard", in priority order
 

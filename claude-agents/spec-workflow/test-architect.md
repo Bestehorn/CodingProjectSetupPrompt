@@ -16,7 +16,8 @@ forbidden findings and its "clean is expected" standard bind you.
 
 `review-contract.md`, `proportionality.md`, `agent-state-convention.md` (you write only
 your lane file, never the spec's decision log), `no-guessing.md`,
-`no-output-shortening.md`, `no-ai-attribution.md`.
+`no-output-shortening.md`, `no-ai-attribution.md`, `native-tools-over-shell.md` (Read/Grep/
+Glob for files; never `cat`/`grep`/`ls` through Bash).
 
 # What you check
 

@@ -45,7 +45,13 @@ def _spawn(event: str, payload: str, project: Path) -> subprocess.CompletedProce
 
 def test_framework_gates_are_discovered_in_order() -> None:
     names = [g[0] for g in hooks.discover_gates("pre-tool-use", HOOKS_DIR)]
-    assert names == ["no-env-vars", "spec-tdd-gate", "claim-before-worktree", "issue-filing-gate"]
+    assert names == [
+        "no-env-vars",
+        "no-foreground-sleep",
+        "spec-tdd-gate",
+        "claim-before-worktree",
+        "issue-filing-gate",
+    ]
     assert [g[0] for g in hooks.discover_gates("stop", HOOKS_DIR)] == ["spec-stop-gate", "issue-loop-gate"]
     assert [g[0] for g in hooks.discover_gates("session-start", HOOKS_DIR)] == [
         "session-register",
@@ -68,7 +74,7 @@ def test_a_project_gate_joins_the_event_without_a_second_registration(tmp_path: 
         encoding="utf-8",
     )
     names = [g[0] for g in hooks.discover_gates("pre-tool-use", hooks_dir)]
-    assert names[-1] == "project-write-gate" and len(names) == 5
+    assert names[-1] == "project-write-gate" and len(names) == 6
     write_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "x.py", "content": "# TODO"}})
     decision = hooks.dispatch("pre-tool-use", write_payload, environ={}, cwd=tmp_path, hooks_dir=hooks_dir)
     assert decision.exit_code == 2 and "project-write-gate" in decision.stderr

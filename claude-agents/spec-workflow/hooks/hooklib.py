@@ -30,6 +30,7 @@ module, so a truncated copy fails closed in the gates that must fail closed.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -572,6 +573,88 @@ def framework_stale(project_dir: Path, local_version: str, host: Host = CLAUDE) 
         if remote_version and remote_version > local and (best is None or remote_version > best[1]):
             best = (ref[len("refs/remotes/") :], remote_version)
     return best
+
+
+FRAMEWORK_STALE_CACHE = ".framework-stale.json"
+
+
+def _git_common_dir_noexec(project_dir: Path) -> Optional[Path]:
+    """The repository's common git dir resolved from `.git` WITHOUT spawning git: the `.git` directory, or
+    the `gitdir: <path>` file of a worktree (whose `commondir` file points back at the shared repository).
+    None when project_dir is not itself the top of a checkout; the caller then takes the uncached path."""
+    dot = project_dir / ".git"
+    if dot.is_dir():
+        gitdir = dot
+    elif dot.is_file():
+        text = read_text(dot).strip()
+        if not text.startswith("gitdir:"):
+            return None
+        gitdir = Path(text[len("gitdir:") :].strip())
+        if not gitdir.is_absolute():
+            gitdir = project_dir / gitdir
+    else:
+        return None
+    common = gitdir
+    pointer = gitdir / "commondir"
+    if pointer.is_file():
+        rel = read_text(pointer).strip()
+        if rel:
+            common = Path(rel) if Path(rel).is_absolute() else gitdir / rel
+    return common if common.is_dir() else None
+
+
+def refs_fingerprint(project_dir: Path) -> Optional[str]:
+    """A digest of everything the freshness check reads — `packed-refs` and the loose files under
+    `refs/remotes/` — computed with NO process spawned. It changes exactly when a fetch (or an update-ref)
+    changes what `framework_stale` would read, so an answer cached under it is never stale."""
+    common = _git_common_dir_noexec(project_dir)
+    if common is None:
+        return None
+    digest = hashlib.sha1()  # a change detector, not a security boundary
+    try:
+        packed = common / "packed-refs"
+        if packed.is_file():
+            digest.update(b"packed-refs\0")
+            digest.update(packed.read_bytes())
+        remotes = common / "refs" / "remotes"
+        if remotes.is_dir():
+            for root, dirs, files in os.walk(str(remotes)):
+                dirs.sort()
+                for name in sorted(files):
+                    path = Path(root) / name
+                    digest.update(path.relative_to(remotes).as_posix().encode("utf-8") + b"\0")
+                    digest.update(path.read_bytes())
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def framework_stale_cached(
+    project_dir: Path, local_version: str, host: Host = CLAUDE, cache_dir: Optional[Path] = None
+) -> Optional[Tuple[str, str]]:
+    """`framework_stale`, answered from `<cache_dir>/.framework-stale.json` while nothing it reads has changed.
+    Measured: the three git calls cost about 1.5 s of a loaded Windows host per Stop event, 485 turn-ends a
+    day across one machine's sessions, for an answer that changes only when a fetch moves a tracking ref.
+    The key is the refs fingerprint plus the checkout's own version and the hooks dir, so a moved ref, a
+    bumped CONTRACT_VERSION or another host all miss. Without a fingerprint (not a checkout root) or a cache
+    dir, this IS the uncached call."""
+    fingerprint = refs_fingerprint(project_dir)
+    if fingerprint is None or cache_dir is None:
+        return framework_stale(project_dir, local_version, host)
+    key = {"fingerprint": fingerprint, "hooks_dir": host.hooks_dir, "local": local_version}
+    cache = cache_dir / FRAMEWORK_STALE_CACHE
+    try:
+        data = json.loads(read_text(cache) or "{}")
+    except ValueError:
+        data = {}
+    if isinstance(data, dict) and data.get("key") == key:
+        cached = data.get("result")
+        if isinstance(cached, list) and len(cached) == 2:
+            return (str(cached[0]), str(cached[1]))
+        return None
+    result = framework_stale(project_dir, local_version, host)
+    write_json_atomic(cache, {"key": key, "result": list(result) if result else None, "checked_at": utc_stamp()})
+    return result
 
 
 def counter_path(base: Path, name: str, session: str) -> Path:

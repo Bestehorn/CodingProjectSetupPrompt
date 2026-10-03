@@ -44,13 +44,21 @@ are allowed to commit, that is this rule being violated.
 ## Local test execution is bounded
 
 When you do run tests locally, go through `python scripts/run_tests.py`. It derives a
-BOUNDED worker count — `min(4, cores // 4)`, floor 1 — and refuses `-x` / `--maxfail`.
+BOUNDED worker count — `min(4, cores // 4)`, floor 1 — refuses `-x` / `--maxfail`, and holds a
+host-wide suite slot for any run wider than named test files.
 
 - **Never `pytest -n auto` locally.** That is a CI-runner setting. `run_tests.py --workers
   auto` exists for CI and nothing else.
-- **Never run suites in two worktrees at the same time.** The bound is per process; four
-  concurrent worktrees at four workers each is sixteen pytest processes, which is how the
-  host became unusable.
+- **One suite per slot, machine-wide.** The worker bound is per process; four concurrent
+  worktrees at four workers each were sixteen pytest processes, which is how the host
+  became unusable, and eight bounded suites from eight sessions did it again (measured
+  2026-10-01). So `run_tests.py` takes one of the `max(1, cores // 4)` slots that
+  `scripts/suite_semaphore.py` keeps per user — shared by every project, worktree, Claude
+  and Kiro session on the machine; override in `~/.claude/suite-semaphore/cap` — and WAITS
+  for a free one rather than starting another suite. Run a wide suite as a background task
+  and do other work meanwhile. A CDK synth, `npm test`, a vitest run or a mutation harness
+  takes a slot the same way: `python scripts/suite_semaphore.py run -- <command>`.
+  `python scripts/suite_semaphore.py status` shows who holds what.
 - If a suite is flaky under parallelism, `--workers 1` is the honest answer while the shared
   state gets fixed — not a retry loop, and never an `xfail` (`tests-must-not-fail.md`).
 
@@ -118,7 +126,8 @@ exact command the operator must run. Batch remote operations at the defined boun
 
 Before pushing, confirm: paired tests green and captured; the batch is complete rather than
 a probe; no `--no-verify` anywhere; no local full-suite run was performed to satisfy a gate;
-no `sleep` polling anywhere in the session.
+no suite or synth started outside `run_tests.py` / `suite_semaphore.py run`; no `sleep`
+polling anywhere in the session.
 After a red CI run, confirm: every failing job read, every failure enumerated, root causes
 grouped and written down, all of them fixed, exactly one push.
 
@@ -130,5 +139,6 @@ this rule only changes WHERE the run happens; frequent commits are not a licence
 commit generated files (`keep-git-clean.md`); waiting on CI is not a turn-end
 (`continuous-work.md`); "every failing job" means full logs and quoted evidence
 (`no-output-shortening.md`, `no-guessing.md`). The mechanisms are `scripts/run_tests.py`,
-`scripts/run_checks.py` (the same command CI runs, so a local pipeline cannot drift from
-the real one), and `scripts/ci_outage_mode.py`.
+`scripts/suite_semaphore.py` (the host-wide slots), `scripts/run_checks.py` (the same
+command CI runs, so a local pipeline cannot drift from the real one), and
+`scripts/ci_outage_mode.py`.

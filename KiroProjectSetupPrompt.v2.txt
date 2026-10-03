@@ -14,6 +14,16 @@
 #     gate was inert) and on `jq`; neither dependency remains. The spec gates and
 #     the re-inject lost their most-recently-modified fallback: every rung is
 #     session-keyed. The agents' JSON hooks blocks name the dispatcher.
+#   - 2026-10-03: the shell is the expensive tool. Measured on an 8-vCPU host at 100
+#     percent CPU, 70 to 75 percent of it kernel time: each shell call spawned a login
+#     shell of about 21 processes, one call in ten was a `sleep` poll, and eight
+#     bounded suites from eight sessions saturated the machine together. New steering
+#     8.37 native-tools-over-shell (file tools over `cat`/`grep`/`ls`/heredocs; one shell
+#     call per step), the `no-foreground-sleep` gate (a foreground wait of 10 s or more,
+#     or any sleep in a loop, refused; the background form passes), and
+#     `scripts/suite_semaphore.py` (host-wide suite slots that `run_tests.py` takes for
+#     any run wider than named files). The trunk-freshness check is cached on the
+#     tracking refs' fingerprint.
 #   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
 #   - Aligns every MCP server config with the canonical install snippet from
 #     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,
@@ -594,7 +604,17 @@ are its mechanism.
    - `run_tests.py` — the ONE definition of how tests are invoked. Bounded
      local workers (`min(4, cores // 4)`, floor 1), `--workers auto` for CI
      only, and it REFUSES `-x`/`--maxfail` so no caller can make a run report
-     one failure instead of all of them.
+     one failure instead of all of them. For any run wider than named test
+     files it holds one of the host-wide suite slots below and WAITS for one.
+   - `suite_semaphore.py` — the host-wide cap on concurrent suites:
+     `max(1, cores // 4)` slots per user (override: one integer in
+     `~/.claude/suite-semaphore/cap`), taken with OS file locks the kernel
+     releases when the holder exits, so a killed suite leaves no stale slot.
+     The worker bound above is per process; eight bounded suites from eight
+     sessions saturated an 8-vCPU host together (measured 2026-10-01).
+     `run_tests.py` imports it; a CDK synth or `npm test` runs under
+     `python scripts/suite_semaphore.py run -- <command>`; `status` shows the
+     holders and `selftest` proves exclusion on this host.
    - `run_checks.py` — runs every check group and reports every failure in one
      pass. PART 7 makes each CI job a single call to it, which is what stops
      the pipeline from failing fast; the same script is what a local pipeline
@@ -3199,9 +3219,13 @@ derives a BOUNDED worker count — `min(4, cores // 4)`, floor 1 — and refuses
 
 - **Never `pytest -n auto` locally.** That is a CI-runner setting.
   `run_tests.py --workers auto` exists for CI and nothing else.
-- **Never run suites in two worktrees at once.** The bound is per process;
-  four worktrees at four workers each is sixteen pytest processes, which is
-  how the host became unusable.
+- **One suite per slot, machine-wide.** The bound is per process; four
+  worktrees at four workers each is sixteen pytest processes, which is how
+  the host became unusable, and eight bounded suites from eight sessions did
+  it again. `run_tests.py` therefore takes one of the `max(1, cores // 4)`
+  host-wide slots of `scripts/suite_semaphore.py` and WAITS for a free one;
+  a synth or `npm test` runs under `python scripts/suite_semaphore.py run --
+  <command>`, in the background when it is long.
 - If a suite is flaky under parallelism, `--workers 1` is the honest answer
   while the shared state gets fixed — not a retry loop, and never an `xfail`
   (`tests-must-not-fail.md`).
@@ -3383,13 +3407,46 @@ are not. A sequential dispatch of independent work is a defect, not a style choi
 
 Never `sleep`-poll in a shell call. A CI run, a deploy or a merge is waited on with the
 wrapper's blocking `wait` subcommand run in the background while you do every piece of
-work that does not depend on the verdict. Idling on a pipeline is a stop in disguise
+work that does not depend on the verdict; anything else is awaited by running that command
+in the background. The `no-foreground-sleep` gate refuses a foreground wait of 10 s or more
+and any sleep inside a loop. Idling on a pipeline is a stop in disguise
 (`continuous-work.md`).
 
 ## Self-check before any dispatch
 
 Could this call run alongside the previous one? If yes, they belong in the same batch. Is
 the next step blocked on a run? Start the wait and pick up the next unblocked step.
+```
+
+### 8.37 `native-tools-over-shell.md` (always) — fleet convention — NEW
+
+```markdown
+---
+inclusion: always
+---
+# Native Tools Over Shell — a shell call is the expensive tool (ALL agents)
+
+The model's work runs on the inference side; what the machine pays for is process
+creation, and a shell call is the one tool that creates processes (measured 2026-10-01:
+a login shell of about 21 processes per call, 400 calls an hour across eleven sessions,
+one in ten a `sleep` poll, most of the rest `cat`, `ls`, `grep` and heredoc writes).
+
+- Read a file with the file-reading tool, never `cat`, `head`, `tail`, `sed -n`, `type`.
+- Search with the search tools, never `grep`/`rg`, `find`, `ls`.
+- Write and edit with the file-writing tools, never `cat > file <<EOF`, `echo >`, `sed -i`.
+- The shell is for EXECUTING: tests, linters, git, the wrapper scripts, build and deploy
+  tools. One call carries a whole step (`a && b && c`), never one call per command.
+- Never `sleep` in a foreground call: the `no-foreground-sleep` gate refuses a wait of 10 s
+  or more and any sleep in a loop; await a pipeline with the wrapper's blocking `wait` in
+  the background, and anything else by running that command in the background.
+- Local suites go through `scripts/run_tests.py`, which holds a host-wide suite slot; a
+  synth, `npm test` or a harness runs under `python scripts/suite_semaphore.py run -- <cmd>`.
+
+## Self-check before a shell call
+
+Does this command only read, search or write a file? Then it is a native tool call. Does it
+wait? Then it runs in the background. Is it a suite or a synth? Then it goes through the
+runner or the semaphore. Otherwise, chain the step into ONE call.
 ```
 
 ### 8.26 Verify conformance of ALL steering files (MANDATORY)
@@ -3555,14 +3612,14 @@ NOT confused with the Part 9 `.kiro/hooks/*.kiro.hook` runtime hooks:
 mkdir -p .kiro/hooks-bin .kiro/hooks-bin/tests
 cp claude-agents/spec-workflow/hooks/hooklib.py              .kiro/hooks-bin/   # the shared library
 cp claude-agents/spec-workflow/hooks/hooks.py                .kiro/hooks-bin/   # the shared dispatcher core
-cp claude-agents/spec-workflow/hooks/gate_*.py               .kiro/hooks-bin/   # the nine gates
+cp claude-agents/spec-workflow/hooks/gate_*.py               .kiro/hooks-bin/   # the ten gates
 cp claude-agents/spec-workflow/hooks/red_for_right_reason.py .kiro/hooks-bin/
 cp cli-agents/spec-workflow/hooks/kiro_hooks.py              .kiro/hooks-bin/   # the Kiro entry point
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION        .kiro/hooks-bin/   # keys the contract handshake
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md      .kiro/hooks-bin/   # printed at spawn while valid
 cp claude-agents/spec-workflow/hooks/tests/*.py              .kiro/hooks-bin/tests/
 rm -f .kiro/hooks-bin/*.sh                                                       # the bash predecessors, if any
-python -m pytest .kiro/hooks-bin/tests -q -p no:cacheprovider                    # the eight modules must pass
+python -m pytest .kiro/hooks-bin/tests -q -p no:cacheprovider                    # the ten modules must pass
 ```
 
 The hooks are PYTHON (standard library only, 3.9+) and they are the SAME gates Claude Code
@@ -3620,7 +3677,10 @@ What each event runs (`python .kiro/hooks-bin/kiro_hooks.py <event>`):
   is never relaunched through the orchestrator's Remote Sync step 1b.
 - **`preToolUse`** (matcher `execute_bash`; the orchestrator, conductor, implementer, and
   every tracker-capable utility agent): the `no-env-vars` gate blocks setting
-  AWS_*/GITHUB_TOKEN/GITLAB_TOKEN in the shell; the `spec-tdd-gate` blocks (exit 2, stderr
+  AWS_*/GITHUB_TOKEN/GITLAB_TOKEN in the shell; the `no-foreground-sleep` gate blocks a
+  foreground wait of 10 s or more (`sleep`, `Start-Sleep`, `timeout /t`) and any sleep
+  inside a loop, naming the wrapper's blocking wait and the background form of the same
+  command (steering 8.37); the `spec-tdd-gate` blocks (exit 2, stderr
   returned to the model) a `git commit --no-verify`/`-n`, a `git push --no-verify`, a
   `git push` while a task marked complete has no capture or the newest paired-test capture
   is red or full of skips, and a `git push` under CI-OUTAGE MODE with no green full-suite
@@ -4540,8 +4600,9 @@ After completing all parts:
     ```
 11. **Memory budget and proportionality** (PART 12, 8.35, 8.36, 8A) —
     `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes in full and
-    `python scripts/memory_compile.py report` exits 0; `.kiro/steering/proportionality.md`
-    and `.kiro/steering/parallel-by-default.md` exist with `inclusion: always`;
+    `python scripts/memory_compile.py report` exits 0; `.kiro/steering/proportionality.md`,
+    `.kiro/steering/parallel-by-default.md` and `.kiro/steering/native-tools-over-shell.md`
+    exist with `inclusion: always`;
     `.kiro/docs/review-contract.md` and the five fragments under
     `.kiro/specs/_workflow/phases/` exist with `.kiro/` paths; `@compile-memory` is
     installed; the wrapper implements the blocking wait (`pipeline wait` / `wait-run` — a
@@ -4760,6 +4821,8 @@ All under `templates/` in the prompt repository:
 - `gitlab.json.template`
 - `gitlab_wrapper.py.template`
 - `github_wrapper.py.template`
+- `run_tests.py.template` (bounded workers, no fail-fast; holds a host-wide suite slot, PART 2.2)
+- `suite_semaphore.py.template` (the host-wide cap on concurrent suites and synths, PART 2.2)
 - `test_instruction_corpus_budget.py.template` (the memory-budget guard, PART 12)
 - `memory_compile.py.template` (the mechanical half of `@compile-memory`, PART 12)
 

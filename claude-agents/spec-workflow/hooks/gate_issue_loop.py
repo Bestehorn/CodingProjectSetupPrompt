@@ -305,8 +305,11 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
                 _contract_message(ctx, run_dir, version),
             )
 
-    # FRAMEWORK FRESHNESS — a fetched trunk carries a newer framework than this checkout. Same shape.
-    stale = lib.framework_stale(ctx.project_dir, version, ctx.host)
+    # FRAMEWORK FRESHNESS — a fetched trunk carries a newer framework than this checkout. Same shape. Cached
+    # on the tracking refs' fingerprint: three git calls per turn-end was the measured cost of asking anew.
+    stale = lib.framework_stale_cached(
+        ctx.project_dir, version, ctx.host, cache_dir=ctx.state_base / lib.ORCHESTRATOR_DIRNAME
+    )
     if stale is not None:
         ref, trunk_version = stale
         ack = lib.framework_ack_file(run_dir, trunk_version)

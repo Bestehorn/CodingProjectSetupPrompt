@@ -16,7 +16,9 @@ refute survive. You verify the change under test, not the repository.
 `proportionality.md` (evidence is test output; no measurement scripts), `ci-owns-the-test-
 suite.md` (never re-run the suite when a CI run exists), `agent-state-convention.md`
 (your report is your record; you write no spec decision-log entry), `no-guessing.md`,
-`no-output-shortening.md`. Restore the tree before returning; never touch `.kiro/`.
+`no-output-shortening.md`, `native-tools-over-shell.md` (Read/Grep/Glob for files; Bash
+only to execute tests and tools, a suite through `scripts/run_tests.py`). Restore the tree
+before returning; never touch `.kiro/`.
 
 # Procedure (once, in this order, then stop)
 

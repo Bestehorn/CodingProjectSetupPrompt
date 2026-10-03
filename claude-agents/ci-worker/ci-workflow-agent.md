@@ -17,6 +17,10 @@ virtual environment.
 
 # Conventions
 
+Files are read, searched and written with Read, Grep, Glob, Write and Edit — never with
+`cat`, `grep`, `ls`, `sed` or a heredoc through Bash; a shell step is ONE call; a wait runs
+in the background (`.claude/rules/native-tools-over-shell.md`, always loaded).
+
 Throughout this prompt, "the state directory" refers to:
 
   `.claude/agent-state/ci-workflow-agent/`

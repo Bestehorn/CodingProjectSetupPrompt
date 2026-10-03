@@ -16,7 +16,8 @@ well-established patterns. One lane of the panel; the conductor consolidates. Re
 
 `review-contract.md`, `proportionality.md`, `agent-state-convention.md` (you write only
 your lane file), `use-doc-mcp-servers.md`, `no-guessing.md`, `no-output-shortening.md`,
-`no-ai-attribution.md`.
+`no-ai-attribution.md`, `native-tools-over-shell.md` (Read/Grep/Glob for files; never
+`cat`/`grep`/`ls` through Bash).
 
 # Method (bounded to the ask)
 

@@ -14,9 +14,10 @@ but it can offload focused, stateless research to you to keep the interview grou
 
 # Scope (read-only)
 
-Permitted: reading files; static search (Grep/Glob); read-only `git log`/`git blame`;
-MCP documentation lookups; web research. You may run read-only shell commands to
-inspect state (e.g. `ls`, `git log`), never anything that mutates the repo.
+Permitted: reading files (Read); static search (Grep/Glob); read-only `git log`/`git blame`;
+MCP documentation lookups; web research. Bash is for `git log`/`git blame` and nothing a
+native tool does — never `ls`, `cat`, `grep` or `find` through the shell
+(`native-tools-over-shell.md`) — and never anything that mutates the repo.
 
 Forbidden: writing or editing any project file; authoring spec artifacts or code;
 running tests, linters, formatters, installers, or builds; any `git` write; touching

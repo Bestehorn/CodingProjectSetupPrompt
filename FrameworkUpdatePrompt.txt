@@ -126,8 +126,13 @@ of this in the same PR, in this order, and record the before/after sizes:
    `ORDER` above 100 and `run(ctx)` — never a second registration and never `bash`; a
    framework gate the project must switch off is named in `.claude/hooks/hooks.config.json`
    (`{"disabled_gates": [...]}`) with the reason in the PR.
-7. **Wrapper and CI.** Implement the blocking wait in the project's wrapper (`pipeline
-   wait` / `wait-run`, per the template) if absent. Where the project deploys, the pipeline
+7. **Runner, wrapper and CI.** Install `scripts/suite_semaphore.py` from its template and
+   bring `scripts/run_tests.py` to the current template's shape — a run wider than named
+   test files holds one of the host-wide suite slots; keep the project's own worker policy
+   and flags — so eight bounded suites from eight sessions can no longer stack on one
+   host; `python scripts/suite_semaphore.py selftest` proves the slots work there.
+   Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run`, per
+   the template) if absent. Where the project deploys, the pipeline
    needs a post-deploy job that runs the committed end-to-end script; add it if end-to-end
    scripts exist that only an agent used to run by hand. Shape the job to what the project
    can afford to run on every merge: a check that is slow (a training run), externally
@@ -141,7 +146,8 @@ of this in the same PR, in this order, and record the before/after sizes:
    keeps the project's xdist/coverage settings out of a suite that must print its own totals)
    and `python .claude/hooks/hooks.py selftest` passes — it spawns the launcher exactly as the
    harness does, so a hook that cannot start on this host is caught here and not in a
-   transcript; grep `.claude/` and `.kiro/` for `Type1`/`Type2` (outside the
+   transcript; `python scripts/suite_semaphore.py selftest` passes; grep `.claude/` and
+   `.kiro/` for `Type1`/`Type2` (outside the
    issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an
    old copy preserved over the new one. A Kiro tree the project keeps as-is (marker file
    `.kiro/FROZEN`, one line: date and reason) is exempt from the grep and from the Kiro half

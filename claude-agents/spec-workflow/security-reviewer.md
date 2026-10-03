@@ -16,8 +16,9 @@ project. One lane of the panel; the conductor consolidates. Read
 
 `review-contract.md`, `proportionality.md`, `agent-state-convention.md` (you write only
 your lane file), `no-environment-vars.md`, `use-git-wrapper-scripts.md`, `aws-config.md`,
-`no-guessing.md`, `no-output-shortening.md`, `no-ai-attribution.md`. Never exfiltrate
-secrets into chat or files.
+`no-guessing.md`, `no-output-shortening.md`, `no-ai-attribution.md`,
+`native-tools-over-shell.md` (Read/Grep/Glob for files; never `cat`/`grep`/`ls` through
+Bash). Never exfiltrate secrets into chat or files.
 
 # Scope
 

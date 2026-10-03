@@ -71,7 +71,9 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one block per verdi
     if notice:
         out.append(notice)
 
-    stale = lib.framework_stale(ctx.project_dir, ctx.contract_version, ctx.host)
+    stale = lib.framework_stale_cached(
+        ctx.project_dir, ctx.contract_version, ctx.host, cache_dir=ctx.state_base / lib.ORCHESTRATOR_DIRNAME
+    )
     if stale is not None:
         ref, version = stale
         out.append(

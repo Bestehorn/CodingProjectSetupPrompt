@@ -1,0 +1,394 @@
+#!/usr/bin/env python
+"""Host-wide cap on concurrent local test suites: the ONE place that decides how many suites may run at once.
+
+WHY THIS EXISTS
+    Measured 2026-10-01 on an 8-vCPU Windows host at 100 percent CPU: eight pytest masters, two CDK synths, a
+    vitest run and two mutation harnesses were live at the same moment, each from a different session or
+    worktree, each individually bounded (`run_tests.py` caps the WORKERS of one process) and jointly
+    unbounded. The rule "never run suites in two worktrees at the same time" (ci-owns-the-test-suite.md) had
+    no mechanism: a dozen sessions cannot see each other's shells. This module is the mechanism — a fixed
+    number of SLOTS in one directory per user account, each taken with an OS file lock that the kernel
+    releases the moment the holder exits. A crashed or killed suite therefore never leaves a stale slot, and
+    nothing needs a PID check.
+
+WHAT TAKES A SLOT
+    scripts/run_tests.py, for any run wider than named test FILES (a directory, the whole suite, a bare `-k`);
+    the pre-push hook's CI-outage suite goes through run_tests.py and so pays the same way;
+    any other heavy local run, through the CLI below (CDK synth, `npm test`, vitest, a mutation harness).
+    A run of named test files does NOT take a slot: paired tests are seconds long and are what TDD runs most.
+
+USAGE
+    from suite_semaphore import suite_slot
+    with suite_slot(label="run_tests test/"):
+        ...run the suite...
+
+    python scripts/suite_semaphore.py run --label "cdk synth" -- npx cdk synth
+    python scripts/suite_semaphore.py status          # who holds which slot
+    python scripts/suite_semaphore.py selftest        # prove the exclusion works on this host
+
+THE CAP
+    max(1, cpu_count // 4) slots by default — 2 on an 8-vCPU host — matching run_tests.py's per-process
+    worker bound, so the two together allow about one pytest worker per two vCPUs machine-wide. Override with
+    one integer in <lock dir>/cap (a FILE, not an environment variable: no-environment-vars.md). The lock
+    directory is ~/.claude/suite-semaphore/ — per USER, not per project, because the cap protects the
+    machine, and every project, worktree, Claude or Kiro session of this user shares it.
+
+WAITING
+    A waiter prints ONE line to stderr naming the holders, then polls every 2 s and re-announces every
+    minute, with no timeout by default: the caller runs it as a BACKGROUND task and is re-invoked on
+    completion (parallel-by-default.md). With a timeout, a slot that never frees raises SuiteSlotTimeout; the
+    CLI maps it to exit 75 (EX_TEMPFAIL) so a caller can tell "busy" from "the suite failed".
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+LOCK_DIR_NAME = "suite-semaphore"
+CAP_FILENAME = "cap"
+MAX_CAP = 16
+POLL_SECONDS = 2.0
+ANNOUNCE_EVERY_SECONDS = 60.0
+EXIT_BUSY = 75  # EX_TEMPFAIL: the slot never freed within the timeout; nothing was run
+_IS_WINDOWS = sys.platform == "win32"
+
+
+class SuiteSlotTimeout(RuntimeError):
+    """No slot freed within the timeout. Nothing was run."""
+
+
+def default_lock_dir() -> Path:
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):  # no resolvable home (a service account): still one dir per user
+        home = Path(tempfile.gettempdir())
+    return home / ".claude" / LOCK_DIR_NAME
+
+
+def default_cap(cpu_count: int | None = None) -> int:
+    cores = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    return max(1, cores // 4)
+
+
+def configured_cap(lock_dir: Path, cpu_count: int | None = None) -> int:
+    """The cap file's integer when it holds one in [1, MAX_CAP], else the default."""
+    try:
+        text = (lock_dir / CAP_FILENAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default_cap(cpu_count)
+    return int(text) if text.isdigit() and 1 <= int(text) <= MAX_CAP else default_cap(cpu_count)
+
+
+def _try_lock(fd: int) -> bool:
+    """One non-blocking attempt on the first byte of the open file; False when another process holds it."""
+    if sys.platform == "win32":
+        import msvcrt  # noqa: PLC0415 — platform-conditional
+
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl  # noqa: PLC0415 — platform-conditional
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if sys.platform == "win32":
+        import msvcrt  # noqa: PLC0415
+
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        return
+    import fcntl  # noqa: PLC0415
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+class SuiteSlot:
+    """One slot of the host-wide semaphore. Use as a context manager, or acquire()/release() by hand."""
+
+    def __init__(
+        self,
+        *,
+        label: str,
+        lock_dir: Path | None = None,
+        cap: int | None = None,
+        timeout: float | None = None,
+        announce=None,
+    ) -> None:
+        self.label = label
+        self.lock_dir = lock_dir or default_lock_dir()
+        self.cap = cap if cap is not None else configured_cap(self.lock_dir)
+        self.timeout = timeout
+        self.announce = announce if announce is not None else sys.stderr
+        self.index: int | None = None
+        self._fd: int | None = None
+
+    def _lock_path(self, index: int) -> Path:
+        return self.lock_dir / f"slot-{index}.lock"
+
+    def _info_path(self, index: int) -> Path:
+        return self.lock_dir / f"slot-{index}.info"
+
+    def try_acquire(self) -> bool:
+        """One pass over the slots; True when one was taken."""
+        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(self.cap):
+            fd = os.open(str(self._lock_path(index)), os.O_RDWR | os.O_CREAT)
+            if _try_lock(fd):
+                self.index, self._fd = index, fd
+                self._write_info(index)
+                return True
+            os.close(fd)
+        return False
+
+    def acquire(self) -> int:
+        deadline = None if self.timeout is None else time.monotonic() + max(self.timeout, 0.0)
+        announced_at: float | None = None
+        while not self.try_acquire():
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                raise SuiteSlotTimeout(
+                    f"suite_semaphore: all {self.cap} slot(s) stayed busy for {self.timeout:g}s "
+                    f"({self._holders_line()}); nothing was run"
+                )
+            if announced_at is None or now - announced_at >= ANNOUNCE_EVERY_SECONDS:
+                self.announce.write(
+                    f"suite_semaphore: all {self.cap} slot(s) busy ({self._holders_line()}); waiting for one "
+                    f"[{self.label}]\n"
+                )
+                self.announce.flush()
+                announced_at = now
+            time.sleep(POLL_SECONDS)
+        assert self.index is not None
+        return self.index
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        index, fd = self.index, self._fd
+        self.index, self._fd = None, None
+        try:
+            if index is not None:
+                self._info_path(index).unlink()
+        except OSError:
+            pass
+        _unlock(fd)
+        os.close(fd)
+
+    def __enter__(self) -> "SuiteSlot":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+    def _write_info(self, index: int) -> None:
+        info = {
+            "pid": os.getpid(),
+            "label": self.label,
+            "cwd": os.getcwd(),
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        try:
+            self._info_path(index).write_text(json.dumps(info) + "\n", encoding="utf-8")
+        except OSError:
+            pass  # the lock is what matters; the info file is for `status`
+
+    def _holders_line(self) -> str:
+        parts = []
+        for index, info in holders(self.lock_dir, self.cap):
+            if info is None:
+                parts.append(f"slot {index}: free")
+            else:
+                label, pid, since = info.get("label", "?"), info.get("pid", "?"), info.get("started_at", "?")
+                parts.append(f"slot {index}: {label} pid {pid} since {since}")
+        return "; ".join(parts) or "no slots"
+
+
+def holders(lock_dir: Path, cap: int) -> list[tuple[int, dict | None]]:
+    """(index, holder info or None when free) for every slot. Probing takes and releases a free slot's lock."""
+    result: list[tuple[int, dict | None]] = []
+    for index in range(cap):
+        lock_path = lock_dir / f"slot-{index}.lock"
+        if not lock_path.exists():
+            result.append((index, None))
+            continue
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT)
+        try:
+            if _try_lock(fd):
+                _unlock(fd)
+                result.append((index, None))
+                continue
+        finally:
+            os.close(fd)
+        info: dict = {}
+        try:
+            info = json.loads((lock_dir / f"slot-{index}.info").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = {"label": "(unknown holder)", "pid": "?"}
+        result.append((index, info if isinstance(info, dict) else {"label": "(unknown holder)"}))
+    return result
+
+
+def suite_slot(
+    label: str,
+    *,
+    lock_dir: Path | None = None,
+    cap: int | None = None,
+    timeout: float | None = None,
+) -> SuiteSlot:
+    """`with suite_slot("run_tests test/"): ...` — blocks until a slot is free, releases on exit."""
+    return SuiteSlot(label=label, lock_dir=lock_dir, cap=cap, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------------------------------------
+
+
+def _resolve_command(command: list[str]) -> list[str]:
+    """Windows resolves `.exe` only: `npx`, `cdk`, `npm` are `.cmd` shims that need their full path."""
+    if not command:
+        return command
+    resolved = shutil.which(command[0])
+    return [resolved, *command[1:]] if resolved else command
+
+
+def cmd_status(lock_dir: Path, cap: int) -> int:
+    print(f"suite_semaphore: {cap} slot(s) in {lock_dir}")
+    for index, info in holders(lock_dir, cap):
+        if info is None:
+            print(f"  slot {index}: free")
+        else:
+            print(
+                f"  slot {index}: {info.get('label', '?')}  pid {info.get('pid', '?')}  "
+                f"since {info.get('started_at', '?')}  cwd {info.get('cwd', '?')}"
+            )
+    return 0
+
+
+def cmd_run(lock_dir: Path, cap: int, label: str, timeout: float | None, command: list[str]) -> int:
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        print("suite_semaphore run: no command given after `--`", file=sys.stderr)
+        return 2
+    try:
+        with suite_slot(label or " ".join(command), lock_dir=lock_dir, cap=cap, timeout=timeout):
+            return subprocess.call(_resolve_command(command))  # nosec B603 — the caller's own command
+    except SuiteSlotTimeout as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BUSY
+
+
+def selftest() -> int:
+    """Prove, on THIS host, that a held slot excludes a second process, that release admits it, and that a
+    holder that DIES without releasing frees its slot — the property that makes stale-lock handling unnecessary."""
+    results: list[tuple[str, bool, str]] = []
+    here = Path(__file__).resolve()
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_dir = Path(tmp) / "locks"
+        cli = [sys.executable, str(here), "--lock-dir", str(lock_dir), "--cap", "1"]
+        probe = [*cli, "run", "--timeout", "1", "--", sys.executable, "-c", "pass"]
+
+        held = SuiteSlot(label="selftest holder", lock_dir=lock_dir, cap=1)
+        held.acquire()
+        results.append(("the first acquirer takes slot 0", held.index == 0, f"index {held.index}"))
+        busy = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)
+        results.append(
+            (
+                f"a second process is refused while the slot is held (exit {EXIT_BUSY}, nothing run)",
+                busy.returncode == EXIT_BUSY and "busy" in busy.stderr,
+                f"exit {busy.returncode}: {busy.stderr.strip()[:160]}",
+            )
+        )
+        status = subprocess.run([*cli, "status"], capture_output=True, text=True, timeout=60, check=False)
+        results.append(("status names the holder", "selftest holder" in status.stdout, status.stdout.strip()[:160]))
+        held.release()
+        admitted = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)
+        results.append(
+            (
+                "after release the same process is admitted (exit 0)",
+                admitted.returncode == 0,
+                f"exit {admitted.returncode}",
+            )
+        )
+        # A holder that exits without release(): the kernel drops the lock with the handle.
+        dying = (
+            "import sys, os; sys.path.insert(0, sys.argv[1]); import suite_semaphore as s; from pathlib import Path; "
+            "slot = s.SuiteSlot(label='dies', lock_dir=Path(sys.argv[2]), cap=1); slot.acquire(); os._exit(3)"
+        )
+        died = subprocess.run(
+            [sys.executable, "-c", dying, str(here.parent), str(lock_dir)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        results.append(
+            ("a holder can die mid-run (exit 3)", died.returncode == 3, f"exit {died.returncode} {died.stderr[:120]}")
+        )
+        after = SuiteSlot(label="selftest after death", lock_dir=lock_dir, cap=1, timeout=5)
+        try:
+            after.acquire()
+            freed, detail = True, f"slot {after.index}"
+        except SuiteSlotTimeout as exc:
+            freed, detail = False, str(exc)
+        finally:
+            after.release()
+        results.append(("the dead holder's slot is free again without any cleanup", freed, detail))
+    failed = 0
+    for label, ok, detail in results:
+        failed += 0 if ok else 1
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}" + ("" if ok else f"\n        {detail}"))
+    print(f"suite_semaphore selftest: {len(results) - failed} passed, {failed} failed")
+    return 1 if failed else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Host-wide cap on concurrent local test suites.")
+    parser.add_argument("--lock-dir", default=None, help="override the per-user lock directory (tests)")
+    parser.add_argument("--cap", type=int, default=None, help="override the slot count (tests)")
+    sub = parser.add_subparsers(dest="subcommand", required=True)
+    sub.add_parser("status", help="show every slot and its holder")
+    run = sub.add_parser("run", help="take a slot, run the command after `--`, release")
+    run.add_argument("--label", default="", help="what `status` shows for this run")
+    run.add_argument("--timeout", type=float, default=None, help=f"seconds to wait before exit {EXIT_BUSY}")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("selftest", help="prove exclusion, release and death-release on this host")
+    args = parser.parse_args(argv)
+
+    lock_dir = Path(args.lock_dir) if args.lock_dir else default_lock_dir()
+    cap = args.cap if args.cap else configured_cap(lock_dir)
+    if args.subcommand == "status":
+        return cmd_status(lock_dir, cap)
+    if args.subcommand == "run":
+        return cmd_run(lock_dir, cap, args.label, args.timeout, list(args.command))
+    return selftest()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

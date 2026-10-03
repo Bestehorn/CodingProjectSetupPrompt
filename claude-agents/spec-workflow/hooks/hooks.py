@@ -3,7 +3,7 @@
 
 Usage:
     python .claude/hooks/hooks.py session-start     # SessionStart: register, scoped temp, re-inject
-    python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, push gate, claim, filing (+ project gates)
+    python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, sleep, push gate, claim, filing (+ project)
     python .claude/hooks/hooks.py stop              # Stop: evidence gate, loop brake
     python .claude/hooks/hooks.py selftest          # prove the registered launch form executes and blocks
     python .claude/hooks/hooks.py registration      # print the settings.json hooks block to install
@@ -337,25 +337,37 @@ def _probe_interpreter(python: str) -> Tuple[bool, str]:
     return works, f"{python} -> exit {rc}: {err[:160] or out}{remedy}"
 
 
-def selftest() -> int:  # noqa: C901, PLR0915 — one linear list of checks, reported together
+def selftest() -> int:
     """Install this hooks directory into a scratch project, then spawn the dispatcher exactly as the harness
     does — the `python` on PATH, exec form, the launcher — and assert: a MISSING dispatcher fails open;
-    SessionStart injects the contract and logs a decision; PreToolUse blocks a bypass and reads a quoted
-    command; Stop refuses a registered run that records unfinished work. Exit 1 on any FAIL."""
+    SessionStart injects the contract and logs a decision; PreToolUse blocks a bypass, refuses a foreground
+    sleep poll but allows it in the background, reads a quoted command and leaves a non-shell tool alone; Stop
+    refuses a registered run that records unfinished work. Exit 1 on any FAIL — including a failure of the
+    self-test's own machinery: an exception here becomes a FAIL line, never a traceback, because a traceback
+    discards the PASS lines that locate the break (measured: a run-dir write raised before the Stop check)."""
     results: List[Tuple[str, bool, str]] = []
+    try:
+        _selftest_checks(results)
+    except Exception:  # noqa: BLE001 — the self-test must always end in a report
+        detail = traceback.format_exc().strip().splitlines()[-1]
+        results.append(("the self-test itself ran to completion", False, detail))
+    return _report(results)
+
+
+def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C901, PLR0915 — one linear list
     if lib is None:
         results.append(("hooklib.py imports", False, LIB_ERROR or "unknown"))
-        return _report(results)
+        return
     results.append(("hooklib.py imports", True, str(HERE / "hooklib.py")))
     python = shutil.which("python") or shutil.which("python3")
     if not python:
         results.append(("`python` resolves on PATH", False, "no python on PATH — exec-form registration cannot start"))
-        return _report(results)
+        return
     results.append(("`python` resolves on PATH", True, python))
     works, detail = _probe_interpreter(python)
     results.append(("`python` on PATH is a working interpreter", works, detail))
     if not works:
-        return _report(results)
+        return
     off = disabled_gates(HERE)
     if off:
         results.append(("gates disabled by hooks.config.json", True, ", ".join(sorted(off))))
@@ -433,6 +445,29 @@ def selftest() -> int:  # noqa: C901, PLR0915 — one linear list of checks, rep
                     f"exit {quoted.returncode} {quoted.stderr[:120]}",
                 )
             )
+        if "no-foreground-sleep" not in off:
+            poll = spawn(
+                "pre-tool-use", '{"tool_name":"Bash","tool_input":{"command":"sleep 300; cat out.txt"}}', project
+            )
+            results.append(
+                (
+                    "PreToolUse refuses a foreground `sleep 300` poll",
+                    poll.returncode == 2 and "no-foreground-sleep" in poll.stderr,
+                    f"exit {poll.returncode} {poll.stderr[:120]}",
+                )
+            )
+            background = spawn(
+                "pre-tool-use",
+                '{"tool_name":"Bash","tool_input":{"command":"sleep 300; cat out.txt","run_in_background":true}}',
+                project,
+            )
+            results.append(
+                (
+                    "PreToolUse allows the same wait as a background task",
+                    background.returncode == 0,
+                    f"exit {background.returncode} {background.stderr[:120]}",
+                )
+            )
         write_call = spawn(
             "pre-tool-use",
             '{"tool_name":"Write","tool_input":{"file_path":"x.py","content":"git push --no-verify"}}',
@@ -448,6 +483,9 @@ def selftest() -> int:  # noqa: C901, PLR0915 — one linear list of checks, rep
 
         if "issue-loop-gate" not in off:
             run_dir = project / ".claude" / "agent-state" / lib.ORCHESTRATOR_DIRNAME / "runs" / sid[:8]
+            # session-register seeded this directory at the SessionStart spawn above; the self-test must not
+            # depend on that (the gate may be disabled, or its seeding may be the defect under test).
+            run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / lib.RESUME_FILENAME).write_text(
                 f"SESSION_ID: {sid}\nStatus: IN_PROGRESS\nPhase: FIX\nCURRENT_ISSUE: 999\nAWAITING_USER: none\n",
                 encoding="utf-8",
@@ -462,7 +500,6 @@ def selftest() -> int:  # noqa: C901, PLR0915 — one linear list of checks, rep
                     f"exit {stop.returncode} {stop.stderr[:120]}",
                 )
             )
-    return _report(results)
 
 
 def _report(results: List[Tuple[str, bool, str]]) -> int:
