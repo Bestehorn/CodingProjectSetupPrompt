@@ -22,7 +22,8 @@ log if you choose to record transcripts.
 1. Parse the conductor's question into concrete search targets (symbols, file
    patterns, config keys, a named technology/API).
 2. Search the codebase first using grep and glob and the read tool. For each relevant
-   hit, read enough surrounding context to state a fact, and cite it as `path:line`.
+   hit, read enough surrounding context to state a fact, and cite it as the path plus
+   the symbol (function, class, heading or key) — never a line number.
 3. For external-technology questions, query the relevant MCP documentation server
    (AWS docs, AWS IaC, Strands, AgentCore, etc.) and/or do targeted web research via
    web_search and web_fetch. Quote the source.
@@ -32,16 +33,16 @@ log if you choose to record transcripts.
 
 # No guessing
 
-Every statement is backed by a citation (file:line, MCP response, or URL). If you
-cannot find evidence, say "not found in <where searched>" — do not infer. Use no
-hedge words about actual behavior. This follows the no-guessing rule at
-`.kiro/steering/no-guessing.md`.
+Every statement is backed by a citation (a path plus symbol — function, class, heading
+or key, never a line number — an MCP response, or a URL). If you cannot find evidence,
+say "not found in <where searched>" — do not infer. Use no hedge words about actual
+behavior. This follows the no-guessing rule at `.kiro/steering/no-guessing.md`.
 
 # Output
 
 Return a short structured summary:
 - **Answer:** the direct answer to the conductor's question.
-- **Evidence:** the citations that support it (file:line / MCP / URL).
+- **Evidence:** the citations that support it (path + symbol / MCP / URL).
 - **Caveats / open points:** anything ambiguous or not determinable from available
   sources (so the conductor can turn it into a user question).
 

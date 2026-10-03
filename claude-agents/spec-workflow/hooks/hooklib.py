@@ -38,7 +38,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 # ---------------------------------------------------------------------------------------------------------
 # Constants. Callers may rely on these names and on the functions below; nothing else.
@@ -124,21 +124,13 @@ NON_REASONS = frozenset(
 MIN_ESCALATION_REASON = 12
 DEFAULT_BLOCK_CAP = 8
 
-IMPLEMENTATION_PHASE_RE = re.compile(
-    r"^(IMPLEMENT(_.*)?|IMPLEMENTING|VERIFY(_.*)?|VERIFYING)$"
-)
-CLAIMING_MODE_RE = re.compile(
-    r"^(ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO)", re.IGNORECASE
-)
+IMPLEMENTATION_PHASE_RE = re.compile(r"^(IMPLEMENT(_.*)?|IMPLEMENTING|VERIFY(_.*)?|VERIFYING)$")
+CLAIMING_MODE_RE = re.compile(r"^(ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO)", re.IGNORECASE)
 
 # Runner-summary predicates, anchored on a NON-ZERO COUNTER, never a bare word: a test NAMED
 # `test_reports_skipped_reason` is not a skip, and `0 failed` is not a failure.
-FAILURE_RE = re.compile(
-    r"[1-9][0-9]* (failed|failure|failures|error|errors)\b", re.IGNORECASE
-)
-SKIP_RE = re.compile(
-    r"[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b", re.IGNORECASE
-)
+FAILURE_RE = re.compile(r"[1-9][0-9]* (failed|failure|failures|error|errors)\b", re.IGNORECASE)
+SKIP_RE = re.compile(r"[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b", re.IGNORECASE)
 PASS_RE = re.compile(
     r"[1-9][0-9]* passed|passed in |^OK$|all tests passed|[1-9][0-9]* tests? ok",
     re.IGNORECASE | re.MULTILINE,
@@ -235,12 +227,16 @@ class Payload:
 
     @property
     def command(self) -> str:
-        """The Bash/shell command of a PreToolUse payload, read from `tool_input.command`."""
+        """The Bash/shell command of a PreToolUse payload, read from `tool_input.command`.
+
+        Carriage returns are stripped so a CR before a line break (a Windows artefact) cannot change a
+        decision. A non-string value — a payload shape this gate family does not know — reads as EMPTY and is
+        therefore ALLOWED by every command gate: fail open on an unknown shape, by design."""
         tool_input = self.data.get("tool_input")
         if isinstance(tool_input, dict):
             value = tool_input.get("command")
             if isinstance(value, str):
-                return value
+                return value.replace("\r", "")
         return ""
 
 
@@ -413,11 +409,7 @@ def resolve_run_dir(base: Path, session: str) -> Tuple[str, Optional[Path]]:
         # The registry could not be parsed. An unreadable registry must not read as "no entry": if this
         # session's id appears as a KEY in the raw text, the session IS a registered run whose state cannot be
         # resolved — BROKEN, which fails closed — rather than an ordinary session the gates ignore.
-        registered = bool(
-            re.search(
-                r'"' + re.escape(session) + r'"\s*:', read_text(orch / "registry.json")
-            )
-        )
+        registered = bool(re.search(r'"' + re.escape(session) + r'"\s*:', read_text(orch / "registry.json")))
     # A declared state_dir must name a run INSIDE the orchestrator subtree.
     if not RUNS_RELATIVE_RE.match(declared) or ".." in declared:
         declared = ""
@@ -434,9 +426,7 @@ def resolve_run_dir(base: Path, session: str) -> Tuple[str, Optional[Path]]:
     return UNREGISTERED, None
 
 
-def resolve_owned_state_file(
-    base: Path, session: str, states: StateCache
-) -> Optional[Path]:
+def resolve_owned_state_file(base: Path, session: str, states: StateCache) -> Optional[Path]:
     """The workflow_state.md this session owns, or None. Keyed on whether the run's own state DECLARES a spec;
     the documented single-run `spec-conductor/workflow_state.md` is the only fallback, and it is a FIXED path."""
     verdict, run_dir = resolve_run_dir(base, session)
@@ -445,9 +435,7 @@ def resolve_owned_state_file(
         own = run_dir / STATE_FILENAME
         if own.is_file() and not is_placeholder(states.field(own, "CURRENT_SPEC")):
             return own
-        if singleton.is_file() and not is_placeholder(
-            states.field(singleton, "CURRENT_SPEC")
-        ):
+        if singleton.is_file() and not is_placeholder(states.field(singleton, "CURRENT_SPEC")):
             return singleton
         return own if own.is_file() else None
     if verdict == UNREGISTERED and singleton.is_file():
@@ -457,11 +445,7 @@ def resolve_owned_state_file(
 
 def owned_workflow_missing(base: Path, session: str) -> bool:
     verdict, run_dir = resolve_run_dir(base, session)
-    return (
-        verdict == OWNED
-        and run_dir is not None
-        and not (run_dir / STATE_FILENAME).is_file()
-    )
+    return verdict == OWNED and run_dir is not None and not (run_dir / STATE_FILENAME).is_file()
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -475,11 +459,7 @@ def _safe_token(value: str) -> str:
 
 def contract_version(project_dir: Path, host: Host = CLAUDE) -> str:
     path = project_dir / host.hooks_dir / "CONTRACT_VERSION"
-    first = (
-        read_text(path).splitlines()[0]
-        if path.is_file() and read_text(path).strip()
-        else ""
-    )
+    first = read_text(path).splitlines()[0] if path.is_file() and read_text(path).strip() else ""
     return re.sub(r"\s+", "", first) or "unversioned"
 
 
@@ -510,17 +490,13 @@ def revision_notice(hooks_dir: Path, today: Optional[str] = None) -> Optional[st
             break
     if until and (today or today_iso()) > until:
         return None
-    body = "\n".join(
-        line for line in lines if not line.lower().startswith("valid-until:")
-    )
+    body = "\n".join(line for line in lines if not line.lower().startswith("valid-until:"))
     return body.strip("\n") + "\n"
 
 
-def _git(
-    args: List[str], cwd: Path, stdin: Optional[str] = None, timeout: float = 10.0
-) -> Optional[str]:
+def _git(args: List[str], cwd: Path, stdin: Optional[str] = None, timeout: float = 10.0) -> Optional[str]:
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # nosec B603 B607 — git, fixed argv, no shell
             ["git", *args],
             cwd=str(cwd),
             input=stdin,
@@ -534,25 +510,38 @@ def _git(
     return completed.stdout if completed.returncode == 0 else None
 
 
-def framework_stale(
-    project_dir: Path, local_version: str, host: Host = CLAUDE
-) -> Optional[Tuple[str, str]]:
+def framework_stale(project_dir: Path, local_version: str, host: Host = CLAUDE) -> Optional[Tuple[str, str]]:  # noqa: C901 — one pass over the batch output
     """-> ("<remote>/<branch>", version) when a FETCHED trunk carries a newer CONTRACT_VERSION than this
     checkout. Reads local tracking refs only (no network); scans every remote, because a project may push to
-    `gitlab` and keep `origin` as a frozen archive. The object spec goes to `cat-file --batch` on STDIN, so
-    no shell can rewrite a `ref:path` argument."""
-    # THREE git calls, whatever the number of remotes: a Stop event pays this on every turn-end of a working
-    # run, and one git start costs about half a second on a measured Windows host.
+    `gitlab` and keep `origin` as a frozen archive. The trunk of a remote is what its `HEAD` symref names
+    (`refs/remotes/<remote>/HEAD`, written by clone and by `git remote set-head`); only a remote WITHOUT that
+    symref falls back to `main` then `master`. The object spec goes to `cat-file --batch` on STDIN, so no
+    shell can rewrite a `ref:path` argument. THREE git calls, whatever the number of remotes: a Stop event
+    pays this on every turn-end of a working run, and one git start costs about half a second on a measured
+    Windows host."""
     if _git(["rev-parse", "--git-dir"], project_dir) is None:
         return None
-    refs = [
-        r
-        for r in (
-            _git(["for-each-ref", "--format=%(refname)", "refs/remotes"], project_dir)
-            or ""
-        ).split()
-        if r.endswith(("/main", "/master"))
-    ]
+    listing = _git(["for-each-ref", "--format=%(refname) %(symref)", "refs/remotes"], project_dir) or ""
+    heads: Dict[str, str] = {}
+    present: Set[str] = set()
+    for line in listing.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        present.add(parts[0])
+        if parts[0].endswith("/HEAD") and len(parts) > 1:
+            heads[parts[0][: -len("/HEAD")]] = parts[1]
+    remotes = {r.split("/")[2] for r in present if r.count("/") >= 3}
+    refs: List[str] = []
+    for remote in sorted(remotes):
+        prefix = f"refs/remotes/{remote}"
+        if prefix in heads:
+            refs.append(heads[prefix])
+            continue
+        for branch in ("main", "master"):
+            if f"{prefix}/{branch}" in present:
+                refs.append(f"{prefix}/{branch}")
+                break
     if not refs:
         return None
     local = "" if local_version == "unversioned" else local_version
@@ -567,7 +556,6 @@ def framework_stale(
         i += 1
         if len(header) == 3 and header[1] == "blob":
             value = lines[i].strip() if i < len(lines) else ""
-            # Skip the blob body (the version is its first line) and the blank separator.
             size = int(header[2]) if header[2].isdigit() else 0
             consumed = 0
             while i < len(lines) and consumed < size:
@@ -581,27 +569,13 @@ def framework_stale(
     best: Optional[Tuple[str, str]] = None
     for ref in refs:
         remote_version = versions.get(ref, "")
-        if (
-            remote_version
-            and remote_version > local
-            and (best is None or remote_version > best[1])
-        ):
+        if remote_version and remote_version > local and (best is None or remote_version > best[1]):
             best = (ref[len("refs/remotes/") :], remote_version)
     return best
 
 
-# ---------------------------------------------------------------------------------------------------------
-# Bounded block counters, the decision log.
-# ---------------------------------------------------------------------------------------------------------
-
-
 def counter_path(base: Path, name: str, session: str) -> Path:
-    return (
-        base
-        / ORCHESTRATOR_DIRNAME
-        / ".stop-gate-counters"
-        / f"{name}-{session[:8]}.count"
-    )
+    return base / ORCHESTRATOR_DIRNAME / ".stop-gate-counters" / f"{name}-{session[:8]}.count"
 
 
 def counter_read(counter: Path) -> int:
@@ -700,9 +674,7 @@ def capture_for_task(spec_dir: Path, kind: str, task_id: str) -> Optional[Path]:
 def capture_body(path: Path) -> str:
     """The capture with COMMENT lines removed — an agent's own `# earlier this run: 3 failed` annotation is
     not a runner summary."""
-    return "\n".join(
-        line for line in read_text(path).splitlines() if not COMMENT_LINE_RE.match(line)
-    )
+    return "\n".join(line for line in read_text(path).splitlines() if not COMMENT_LINE_RE.match(line))
 
 
 def has_failures(text: str) -> bool:
@@ -800,9 +772,7 @@ def python_interpreter(project_dir: Path) -> Optional[str]:
 def write_json_atomic(path: Path, data: object) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent), delete=False
-        )
+        handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False)
         try:
             json.dump(data, handle, indent=2, sort_keys=True)
             handle.write("\n")
@@ -849,9 +819,7 @@ class Context:
         if self.payload.cwd and Path(self.payload.cwd).is_dir():
             yield Path(self.payload.cwd)
         if with_git:
-            top = (
-                _git(["rev-parse", "--show-toplevel"], self.process_cwd) or ""
-            ).strip()
+            top = (_git(["rev-parse", "--show-toplevel"], self.process_cwd) or "").strip()
             if top and Path(top).is_dir():
                 yield Path(top)
         yield self.process_cwd
@@ -877,9 +845,7 @@ class Context:
                     self._state_base = base
                     break
             if self._state_base is None:
-                self._state_base = first or (
-                    self.process_cwd / self.host.config_dir / "agent-state"
-                )
+                self._state_base = first or (self.process_cwd / self.host.config_dir / "agent-state")
         return self._state_base
 
     @property

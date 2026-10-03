@@ -602,8 +602,9 @@ and swap the values.
 Exactly ONE addendum may follow the table, selected by the outcome — its
 literal header, its content, then nothing:
 
-  - `Direct fix` (NOT_FILED via G.2): ≤4 lines — file:line, the change,
-    and the test that proves it — so the caller makes the fix now.
+  - `Direct fix` (NOT_FILED via G.2): ≤4 lines — the file path plus the
+    symbol (function, class, heading or key — never a line number), the
+    change, and the test that proves it — so the caller makes the fix now.
   - `Questions` (BLOCKED_ON_CLARIFICATION): one line restating the
     observation so the user can correct a misreading, then the minimal
     numbered question set.

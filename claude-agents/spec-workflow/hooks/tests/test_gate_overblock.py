@@ -97,9 +97,7 @@ class Arena:
 
     def append(self, run: str, line: str) -> None:
         """Append one `Name: value` line to resume_state.md — the way the hooks tell the agent to correct a field."""
-        with (self.orch / "runs" / run / lib.RESUME_FILENAME).open(
-            "a", encoding="utf-8"
-        ) as handle:
+        with (self.orch / "runs" / run / lib.RESUME_FILENAME).open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
 
     def counter(self, name: str) -> Path:
@@ -109,13 +107,9 @@ class Arena:
         return self.root / ".claude" / "specs" / name
 
     def payload(self) -> str:
-        return json.dumps(
-            {"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"}
-        )
+        return json.dumps({"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"})
 
-    def ctx(
-        self, payload: Optional[str] = None, environ: Optional[Dict[str, str]] = None
-    ) -> lib.Context:
+    def ctx(self, payload: Optional[str] = None, environ: Optional[Dict[str, str]] = None) -> lib.Context:
         return lib.Context(
             lib.Payload.parse(self.payload() if payload is None else payload),
             environ={} if environ is None else environ,
@@ -131,9 +125,7 @@ class Arena:
 
     def register_session(self) -> lib.Decision:
         """session-register on a SessionStart payload — what the bash piped into session-register.sh."""
-        payload = json.dumps(
-            {"session_id": SID, "source": "startup", "cwd": self.root.as_posix()}
-        )
+        payload = json.dumps({"session_id": SID, "source": "startup", "cwd": self.root.as_posix()})
         return gate_session_register.run(self.ctx(payload))
 
 
@@ -160,9 +152,7 @@ def test_f5_unacked_contract_with_not_started_allows(arena: Arena) -> None:
     The contract handshake was evaluated BEFORE the benign checks, so a routine CONTRACT_VERSION bump refused
     the next turn-end of EVERY live session in the clone, ordinary chat sessions included."""
     arena.register(f"runs/{RUN8}/")
-    arena.seed_state(
-        RUN8, "NOT_STARTED", "NOT_STARTED", "none", "unknown", issue="none"
-    )
+    arena.seed_state(RUN8, "NOT_STARTED", "NOT_STARTED", "none", "unknown", issue="none")
     assert arena.loop().exit_code == 0
 
 
@@ -211,13 +201,9 @@ def test_f14_narrative_status_blocks_and_the_named_escape_allows(arena: Arena) -
     writing a progress note."""
     _seed_working_run(arena)
     arena.append(RUN8, "Status: COMPLETED (was IN_PROGRESS)")
-    assert arena.loop().exit_code == 2, (
-        "F14 narrative Status -> BLOCK (whole-value match)"
-    )
+    assert arena.loop().exit_code == 2, "F14 narrative Status -> BLOCK (whole-value match)"
     arena.append(RUN8, "Status: COMPLETED")
-    assert arena.loop().exit_code == 0, (
-        "F14 the named escape 'Status: COMPLETED' -> allow"
-    )
+    assert arena.loop().exit_code == 0, "F14 the named escape 'Status: COMPLETED' -> allow"
 
 
 def test_f14_in_progress_narrative_mentioning_completed_blocks(arena: Arena) -> None:
@@ -284,9 +270,7 @@ def test_f2_cap_is_durable_and_progress_rearms(arena: Arena) -> None:
     assert arena.loop().exit_code == 0, "F2  next turn ALSO allows (not a duty cycle)"
     assert arena.loop().exit_code == 0, "F2  and the turn after that"
     arena.append(RUN8, "Phase: DONE")
-    assert arena.loop().exit_code == 0, (
-        "F2  progress clears the marker (allow, and resets)"
-    )
+    assert arena.loop().exit_code == 0, "F2  progress clears the marker (allow, and resets)"
     arena.append(RUN8, "Phase: FIX")
     assert arena.loop().exit_code == 2, "F2  gate re-arms after progress -> BLOCK"
 
@@ -327,28 +311,20 @@ def test_f4_recorded_escalation_releases_the_spec_gate(arena: Arena) -> None:
     gate delivers BOTH instruct the agent to record exactly that field. Measured: the loop gate allowed and this
     gate still refused, telling the agent to "continue"."""
     _seed_implementing(arena, "IMPLEMENT")
-    assert arena.spec().exit_code == 2, (
-        "F4  IMPLEMENT + no tasks.md -> BLOCK (baseline)"
-    )
+    assert arena.spec().exit_code == 2, "F4  IMPLEMENT + no tasks.md -> BLOCK (baseline)"
     arena.append(RUN8, "AWAITING_USER: genuine design fork on the retry policy")
     assert arena.spec().exit_code == 0, "F4  + recorded escalation -> allow"
 
 
-@pytest.mark.parametrize(
-    "bad_phase", ["NOT_IMPLEMENTED", "PRE_IMPLEMENT_REVIEW", "IMPLEMENTATION_PLANNING"]
-)
-def test_f13_phase_that_is_not_implementation_allows(
-    arena: Arena, bad_phase: str
-) -> None:
+@pytest.mark.parametrize("bad_phase", ["NOT_IMPLEMENTED", "PRE_IMPLEMENT_REVIEW", "IMPLEMENTATION_PLANNING"])
+def test_f13_phase_that_is_not_implementation_allows(arena: Arena, bad_phase: str) -> None:
     """F13 phase '<bad_phase>' is not implementation -> allow (the phase test was an unanchored substring, so
     phases meaning the OPPOSITE demanded a task list)"""
     _seed_implementing(arena, bad_phase)
     assert arena.spec().exit_code == 0
 
 
-@pytest.mark.parametrize(
-    "good_phase", ["IMPLEMENT", "IMPLEMENTING", "VERIFY", "VERIFYING"]
-)
+@pytest.mark.parametrize("good_phase", ["IMPLEMENT", "IMPLEMENTING", "VERIFY", "VERIFYING"])
 def test_f13_genuine_implementation_phase_blocks(arena: Arena, good_phase: str) -> None:
     """F13 phase '<good_phase>' IS implementation -> BLOCK"""
     _seed_implementing(arena, good_phase)
@@ -366,12 +342,8 @@ def test_f9_placeholder_spec_at_implement_blocks_about_the_spec_not_the_path(
     is itself refused, with BOTH escapes named."""
     _seed_implementing(arena, "IMPLEMENT", spec="none", make_spec_dir=False)
     decision = arena.spec()
-    assert decision.exit_code == 2, (
-        "F9  CURRENT_SPEC 'none' at IMPLEMENT -> BLOCK (spec unrecorded)"
-    )
-    assert "none/tasks.md" not in decision.stderr, (
-        "F9  ...and NOT about the path 'none/tasks.md'"
-    )
+    assert decision.exit_code == 2, "F9  CURRENT_SPEC 'none' at IMPLEMENT -> BLOCK (spec unrecorded)"
+    assert "none/tasks.md" not in decision.stderr, "F9  ...and NOT about the path 'none/tasks.md'"
 
 
 def test_f9_placeholder_spec_outside_implement_allows(arena: Arena) -> None:
@@ -385,34 +357,22 @@ def test_f8_spec_inside_recorded_worktree_is_found_and_judged(arena: Arena) -> N
 
     For the orchestrator flow the spec lives inside a per-issue WORKTREE while the project dir is the main
     checkout. Measured: a real spec with a real tasks.md and a green capture was refused on every turn."""
-    _seed_implementing(
-        arena, "IMPLEMENT", spec=".claude/specs/retry", make_spec_dir=False
-    )
+    _seed_implementing(arena, "IMPLEMENT", spec=".claude/specs/retry", make_spec_dir=False)
     worktree = arena.root / ".claude" / "worktrees" / "issue-42"
     arena.append(RUN8, f"WORKTREE: {worktree.as_posix()}")
     spec = worktree / ".claude" / "specs" / "retry"
     (spec / "evidence" / "green").mkdir(parents=True)
     (spec / "tasks.md").write_text("- [x] 1 do the thing\n", encoding="utf-8")
-    (spec / "evidence" / "green" / "1.txt").write_text(
-        "5 passed in 1.0s\n", encoding="utf-8"
-    )
-    assert arena.spec().exit_code == 0, (
-        "F8  spec inside a recorded WORKTREE is found -> allow"
-    )
-    (
-        spec / "evidence" / "green" / "1.txt"
-    ).unlink()  # ...and the worktree spec must still be JUDGED
-    assert arena.spec().exit_code == 2, (
-        "F8  worktree spec with missing evidence -> BLOCK"
-    )
+    (spec / "evidence" / "green" / "1.txt").write_text("5 passed in 1.0s\n", encoding="utf-8")
+    assert arena.spec().exit_code == 0, "F8  spec inside a recorded WORKTREE is found -> allow"
+    (spec / "evidence" / "green" / "1.txt").unlink()  # ...and the worktree spec must still be JUDGED
+    assert arena.spec().exit_code == 2, "F8  worktree spec with missing evidence -> BLOCK"
 
 
 def test_f8b_unresolvable_current_spec_allows(arena: Arena) -> None:
     """F8b unresolvable CURRENT_SPEC -> allow (cannot judge): the gate cannot SEE the work, which is not the
     same as the work being unproven"""
-    _seed_implementing(
-        arena, "IMPLEMENT", spec=".claude/specs/nowhere-at-all", make_spec_dir=False
-    )
+    _seed_implementing(arena, "IMPLEMENT", spec=".claude/specs/nowhere-at-all", make_spec_dir=False)
     assert arena.spec().exit_code == 0
 
 
@@ -451,9 +411,7 @@ def test_f10_evidence_predicates_anchor_on_a_counter_not_a_word(
     _seed_implementing(arena, "IMPLEMENT")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1 do the thing\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1 do the thing\n", encoding="utf-8")
     (green / "1.txt").write_text(capture, encoding="utf-8")
     assert arena.spec().exit_code == expected, label
 
@@ -471,9 +429,7 @@ def test_f6_seeding_failure_leaves_the_session_inert(arena: Arena) -> None:
     MANUFACTURED the BROKEN identity both gates fail closed on: with `runs` occupied by a regular file, the
     registry held a complete entry, no state existed, and BOTH gates refused every turn-end."""
     (arena.orch / "runs").write_text("not a directory\n", encoding="utf-8")
-    assert arena.register_session().exit_code == 0, (
-        "F6  register exits 0 when seeding is impossible"
-    )
+    assert arena.register_session().exit_code == 0, "F6  register exits 0 when seeding is impossible"
     registry = (arena.orch / "registry.json").read_text(encoding="utf-8")
     assert SID not in registry, "F6  registry left UNTOUCHED (so the session is inert)"
     assert arena.loop().exit_code == 0, "F6  loop gate therefore does NOT block"
@@ -483,9 +439,7 @@ def test_f6_seeding_failure_leaves_the_session_inert(arena: Arena) -> None:
 def test_f6_happy_path_seeds_and_registers(arena: Arena) -> None:
     """F6  happy path seeds the state file; writes the registry entry; a freshly seeded session is not blocked"""
     arena.register_session()
-    assert (arena.orch / "runs" / RUN8 / lib.RESUME_FILENAME).is_file(), (
-        "F6  happy path seeds the state file"
-    )
+    assert (arena.orch / "runs" / RUN8 / lib.RESUME_FILENAME).is_file(), "F6  happy path seeds the state file"
     registry = (arena.orch / "registry.json").read_text(encoding="utf-8")
     assert SID in registry, "F6  happy path writes the registry entry"
     assert arena.loop().exit_code == 0, "F6  a freshly seeded session is not blocked"

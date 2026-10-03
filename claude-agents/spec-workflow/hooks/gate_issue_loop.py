@@ -18,6 +18,8 @@ from pathlib import Path
 import hooklib as lib
 
 HOOK = "issue-loop-gate"
+EVENT = "stop"  # the dispatcher runs this gate on this event
+ORDER = 20  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
 
 CONTRACT_TEXT = """THE CONTRACT, in force from now on for this run:
 
@@ -97,9 +99,7 @@ Then RESUME the task. Do not end the turn to report having read this.
 """
 
 
-def _freshness_message(
-    ctx: lib.Context, run_dir: Path, ref: str, trunk_version: str
-) -> str:
+def _freshness_message(ctx: lib.Context, run_dir: Path, ref: str, trunk_version: str) -> str:
     proj = ctx.project_dir
     hooks_rel = ctx.host.hooks_dir
     return f"""{HOOK}: REFUSING the stop — {ref} carries FRAMEWORK REVISION {trunk_version}; this checkout runs
@@ -128,9 +128,7 @@ Do not end the turn to report having read this.
 """
 
 
-def _brake_message(
-    sid: str, state: Path, status: str, phase: str, claim: str, remain: str, issue: str
-) -> str:
+def _brake_message(sid: str, state: Path, status: str, phase: str, claim: str, remain: str, issue: str) -> str:
     lines = [
         f"{HOOK} (the ISSUE-LOOP brake): REFUSING the stop — run {sid[:8]} records itself as UNFINISHED.",
         f"    Status: {status}",
@@ -150,9 +148,7 @@ def _brake_message(
             "user's.",
         ]
     elif lib.is_placeholder(issue):
-        lines += [
-            f"This run claims tracked work as {claim}. Finish it end to end before any turn ends."
-        ]
+        lines += [f"This run claims tracked work as {claim}. Finish it end to end before any turn ends."]
     else:
         lines += [
             f"WORKABLE_ISSUES_REMAIN is '{remain}', so this is a single-issue run: FINISH issue {issue} end to",
@@ -172,7 +168,7 @@ def _brake_message(
     return "\n".join(lines) + "\n"
 
 
-def run(ctx: lib.Context) -> lib.Decision:
+def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every release, then every refusal, in order
     sid = ctx.session_id
     base = ctx.state_base
     if not sid:
@@ -262,9 +258,7 @@ def run(ctx: lib.Context) -> lib.Decision:
         return lib.allow()
     if lib.phase_is_terminal(phase) or lib.phase_is_terminal(status):
         lib.counter_reset(counter)
-        ctx.log(
-            HOOK, "ALLOW", f"run={sid[:8]} terminal Phase='{phase}' Status='{status}'"
-        )
+        ctx.log(HOOK, "ALLOW", f"run={sid[:8]} terminal Phase='{phase}' Status='{status}'")
         return lib.allow()
     if lib.is_substantive_escalation(awaiting):
         lib.counter_reset(counter)
@@ -276,9 +270,7 @@ def run(ctx: lib.Context) -> lib.Decision:
     claim = ""
     if not lib.is_placeholder(issue):
         claim = f"issue={issue}"
-    elif not lib.is_placeholder(mode) and lib.CLAIMING_MODE_RE.match(
-        mode.replace("-", "_")
-    ):
+    elif not lib.is_placeholder(mode) and lib.CLAIMING_MODE_RE.match(mode.replace("-", "_")):
         claim = f"mode={mode}"
     elif not lib.is_placeholder(spec):
         claim = f"spec={spec}"

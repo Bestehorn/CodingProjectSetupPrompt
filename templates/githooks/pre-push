@@ -64,6 +64,18 @@ else
     exit 1
 fi
 
+# The CONFIG comes from the CURRENT working tree, not the main checkout. Only the venv lives
+# in the main checkout; .pre-commit-config.yaml is a TRACKED file, so the branch's own copy
+# (its excludes, a hook it adds) must govern pushes from that branch's worktree. Measured in
+# the companion pre-commit hook: a worktree commit that ADDED excludes was refused by the
+# main checkout's older config. The main checkout's file is only the fallback for a tree
+# that has none.
+WORK_TREE="$(git rev-parse --show-toplevel)"
+PRECOMMIT_CONFIG="$WORK_TREE/.pre-commit-config.yaml"
+if [ ! -f "$PRECOMMIT_CONFIG" ]; then
+    PRECOMMIT_CONFIG="$MAIN_CHECKOUT/.pre-commit-config.yaml"
+fi
+
 # --- Type check (the push-boundary check) ----------------------------------------------
 # mypy is a whole-project analysis, so the push boundary suits it far better than the
 # commit boundary, where it would be re-warmed on every commit for a partial answer.
@@ -71,8 +83,7 @@ fi
 # rather than a hook id keeps that file the single source of truth for what runs when.
 if [ -x "$PRECOMMIT" ]; then
     echo "pre-push: type-checking (pre-push stage hooks)..."
-    "$PRECOMMIT" run --hook-stage pre-push --all-files \
-        --config "$MAIN_CHECKOUT/.pre-commit-config.yaml" || exit $?
+    "$PRECOMMIT" run --hook-stage pre-push --all-files --config "$PRECOMMIT_CONFIG" || exit $?
 else
     echo "pre-push: WARNING — pre-commit not found in the venv; skipping the type check." >&2
     echo "          Run: pip install -e '.[dev]' && bash scripts/setup-hooks.sh" >&2

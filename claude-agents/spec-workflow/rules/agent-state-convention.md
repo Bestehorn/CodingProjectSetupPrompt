@@ -49,6 +49,18 @@ Hooks read **the LAST occurrence of a plain `Name: value` line**. Therefore:
    `Phase: DONE (was IMPLEMENT)`); the accepted vocabulary is
    `.claude/docs/run-identity.md` §5.
 
+## 1c. One Authoritative Writer per artefact
+
+Every spec artefact, state file and log has exactly ONE writer at a time. The main-session
+orchestrator (spec-conductor, issue-work-orchestrator) is the Authoritative Writer of the
+spec directory, the run's state files, `review/review-latest.md`, the task checkboxes, the
+evidence captures and the decision log; a delegate writes ONLY what it was dispatched to
+produce — an author its artefact, a reviewer its own lane file, an implementer the code and
+tests of its task — and reports the rest back. This is what makes parallel dispatch safe
+(`parallel-by-default.md`): concurrent delegates never touch the same file, and the writer
+of record merges their results in one place. A delegate that finds a defect in a file it
+does not own reports it; it never edits it.
+
 ## 2. The decision log (mandatory for all agents)
 
 Whenever an agent makes a **non-trivial decision** — a design choice, a classification,
@@ -73,7 +85,7 @@ Create the file with an `# Decision Log` header on first use.
 **Decision:** <one sentence: what was decided>
 **Driver:** <what forced it — requirement IDs, finding IDs (A2/B1), user answer Q###, a failing test, an MCP source>
 **Alternatives considered:** <one line each, or "none">
-**Evidence:** <path:line | command output ref (evidence/...) | review/<r>/iteration-NN.md#A2 | MCP/web citation>
+**Evidence:** <path + symbol (function, class, heading or key — never a line number) | command output ref (evidence/...) | review/<r>/iteration-NN.md#A2 | MCP/web citation>
 **Supersedes:** <DL-mmm, or "none">
 **Artifacts touched:** <files written/edited>
 ```

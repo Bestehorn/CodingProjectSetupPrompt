@@ -53,9 +53,20 @@ else
     exit 1
 fi
 
+# The CONFIG comes from the CURRENT working tree, not the main checkout. Only the
+# venv lives in the main checkout; .pre-commit-config.yaml is a TRACKED file, so
+# the branch's own copy (its lint excludes, a hook it adds) must govern commits
+# made in that branch's worktree. Measured: a worktree commit that ADDED excludes
+# was refused by the main checkout's older config. The main checkout's file is
+# only the fallback for a tree that has none.
+WORK_TREE="$(git rev-parse --show-toplevel)"
+PRECOMMIT_CONFIG="$WORK_TREE/.pre-commit-config.yaml"
+if [ ! -f "$PRECOMMIT_CONFIG" ]; then
+    PRECOMMIT_CONFIG="$MAIN_CHECKOUT/.pre-commit-config.yaml"
+fi
+
 # Run every hook declared with `stages: [pre-commit]` in .pre-commit-config.yaml,
 # against the staged files for this commit. Running the STAGE rather than naming
 # hook ids keeps that config file the single source of truth for what runs when —
 # adding a fast check there requires no edit to this hook.
-exec "$PRECOMMIT" run --hook-stage pre-commit \
-    --config "$MAIN_CHECKOUT/.pre-commit-config.yaml"
+exec "$PRECOMMIT" run --hook-stage pre-commit --config "$PRECOMMIT_CONFIG"

@@ -155,10 +155,16 @@ with the update instruction, and `continuous-work-reinject` says the same at ses
   `AWAITING_USER`, and continues what does not depend on it.
 
 Like the contract handshake, it never stands the gate down at the cap: it auto-acks and falls
-through to the brake. So **pushing the project update to the trunk is the whole rollout**: the
-first Remote Sync on each machine fetches the new version, the next turn-end delivers the
-instruction, and the fast-forward brings the notice, rules, agents and hooks with it. Ordinary chat
-sessions (`UNREGISTERED`) are told only at session start and never refused.
+through to the brake. The rollout is therefore **the merge plus ONE fast-forward of each machine's
+main checkout** — the merge alone is not. A session runs the hooks of the checkout it started in,
+read from disk at every event, and a checkout older than the freshness check carries nothing that
+could announce a newer trunk. So the first fast-forward on a machine is done by hand (or by the
+framework-update run for its own machine, when that checkout is clean and strictly behind — the one
+sanctioned move of local main above); from then on the freshness check in the installed hooks
+announces every later revision to every registered run on that machine: the first Remote Sync
+fetches the new version, the next turn-end delivers the instruction, and the fast-forward brings
+the notice, rules, agents and hooks with it. Ordinary chat sessions (`UNREGISTERED`) are told only
+at session start and never refused.
 
 ---
 
@@ -375,39 +381,42 @@ python -m pytest .claude/hooks/tests -q -p no:cacheprovider
 #   test_unpinned_fixes     handshake BLOCK by text, evidence substance, mtime, cross-gate
 #   test_scoped_temp        the self-writing settings.local.json env block
 
-# 4. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
+# 5. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
 #    blocking path, so its absence across many sessions means never-blocked.
 ls -la .claude/agent-state/issue-work-orchestrator/.stop-gate-counters/ 2>/dev/null \
   || echo "no counters yet — no gate has ever blocked in this clone"
 
-# 5. Read the decision log. Every invocation appends one line, so permanent inertness is now
+# 6. Read the decision log. Every invocation appends one line, so permanent inertness is now
 #    visible instead of looking identical to compliance.
 tail -40 .claude/agent-state/issue-work-orchestrator/.hook-decisions/*.log
 ```
 
-Step 4 is the one that matters most. It is how the original defect was *proved* rather than
+Step 5 is the one that matters most. It is how the original defect was *proved* rather than
 suspected: the counter directory did not exist in a clone with 189 registered sessions, which is
 only possible if neither gate had ever blocked a turn-end.
 
 ### Why the library has a suite of its own, and not just the gate suite
 
-`test_hook_state_lib.py` exists because an end-to-end suite can pass over a broken library.
-`resolve_run_dir` contained
+`test_hook_state_lib.py` exists because an end-to-end suite can pass over a broken library. A gate
+reaches the library along the paths that gate takes, with the files that gate builds; a defect on
+any other path is invisible to the gate suite until an unrelated change routes a call through it.
+The library suite therefore imports `hooklib` and calls `resolve_run_dir` and `normalize_verdict`
+directly, with no gate in between, and pins the answers whose fail-direction matters most:
 
-```bash
-local base="$1" ... orch="$base/$HOOK_ORCHESTRATOR_DIRNAME"
-```
-
-and bash expands every assignment word in a single `local` **before** creating any of the locals,
-so `$base` there resolved to the **caller's global** of that name. Both gates hold a global called
-`base`, so all 24 gate assertions passed while the function was, called from anywhere else,
-aborting. Inside a `$(…)` that abort produces an empty verdict, which the gates read as "nothing to
-guard": a silent fail-open, reachable by nothing more than renaming a variable in a caller.
+- `normalize_verdict` turns ANY unrecognised verdict into `BROKEN`: an empty string, `None`, a typo
+  or a new synonym can never read as "nothing to guard".
+- `registry_lookup` returns `None` for a registry it cannot read — distinct from `"MISS"`, which is a
+  readable registry provably without this session's entry. An unreadable registry must not read as
+  "unregistered".
+- `resolve_run_dir`, on that `None`, probes the raw registry text for the session id as a key; when
+  it is there, the session IS a registered run whose state cannot be resolved, so the verdict is
+  `BROKEN` — never `UNREGISTERED`, which every gate treats as benign. A corrupt registry fails
+  closed.
 
 The general lesson, worth applying beyond this file: **a test that reaches the unit only through
-one caller measures the pair, not the unit.** The library suite therefore defines no global named
-`base`, `session`, `orch`, `declared` or `run_dir`, so a reintroduced same-statement self-reference
-reds a case here instead of waiting for an unrelated refactor to expose it.
+one caller measures the pair, not the unit.** Each answer above is reachable from a gate only
+through one particular broken file, so a gate suite built from well-formed fixtures passes whether
+or not the library answers correctly; a direct case here reds the moment the answer changes.
 
 ---
 

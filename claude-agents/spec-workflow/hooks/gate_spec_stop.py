@@ -19,9 +19,11 @@ from typing import List, Optional
 import hooklib as lib
 
 HOOK = "spec-stop-gate"
+EVENT = "stop"  # the dispatcher runs this gate on this event
+ORDER = 10  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
 
 
-def run(ctx: lib.Context) -> lib.Decision:
+def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the evidence gate: every release, then every refusal
     sid = ctx.session_id
     base = ctx.state_base
     counter = lib.counter_path(base, "spec", sid or "nosession")
@@ -44,9 +46,7 @@ def run(ctx: lib.Context) -> lib.Decision:
 
     def block(detail: str, message: str) -> lib.Decision:
         if not lib.counter_bump(counter):
-            ctx.log(
-                HOOK, "ALLOW_COUNTER_UNWRITABLE", f"counter={counter} reason={detail}"
-            )
+            ctx.log(HOOK, "ALLOW_COUNTER_UNWRITABLE", f"counter={counter} reason={detail}")
             return lib.allow(
                 stderr=(
                     f"{HOOK}: this gate cannot persist its block counter at {counter}, so its bounded-escape "
@@ -70,9 +70,12 @@ def run(ctx: lib.Context) -> lib.Decision:
             return block(
                 f"broken identity run={sid[:8]}",
                 (
-                    f"{HOOK}: REFUSING the stop — this session's run state is MISSING, so no gate can judge your work.\n"
-                    f"Create {run_dir / lib.RESUME_FILENAME} (that exact path — do not invent a run-id label) with plain\n"
-                    f"`Name: value` lines including SESSION_ID: {sid}, then CONTINUE. Do not end the turn to report this.\n"
+                    f"{HOOK}: REFUSING the stop — this session's run state is MISSING, so no gate can judge your "
+                    f"work.\n"
+                    f"Create {run_dir / lib.RESUME_FILENAME} (that exact path — do not invent a run-id label) with "
+                    f"plain\n"
+                    f"`Name: value` lines including SESSION_ID: {sid}, then CONTINUE. Do not end the turn to report "
+                    f"this.\n"
                 ),
             )
         if lib.owned_workflow_missing(base, sid):
@@ -85,7 +88,8 @@ def run(ctx: lib.Context) -> lib.Decision:
                     f"{HOOK} (the EVIDENCE gate): REFUSING the stop — this run OWNS state but its workflow\n"
                     "state file does not exist, so this gate cannot judge the implementation at all:\n"
                     f"    {owned_dir / lib.STATE_FILENAME}\n\n"
-                    "Create that exact path with plain `Name: value` lines carrying at least SESSION_ID, CURRENT_SPEC,\n"
+                    "Create that exact path with plain `Name: value` lines carrying at least SESSION_ID, "
+                    "CURRENT_SPEC,\n"
                     "Phase, Status and CURRENT_TASK, then CONTINUE. If this run has no spec workflow, record\n"
                     "`CURRENT_SPEC: none` and `Phase: NOT_STARTED` and this gate will stand aside.\n"
                 ),
@@ -105,9 +109,7 @@ def run(ctx: lib.Context) -> lib.Decision:
     # A RECORDED ESCALATION IS HONOURED HERE TOO, to the SAME standard as the loop gate. Read from the
     # resume_state.md beside the workflow state (where the other hooks tell the agent to put it), else here.
     resume = state_file.parent / lib.RESUME_FILENAME
-    awaiting = ctx.field(resume, "AWAITING_USER") or ctx.field(
-        state_file, "AWAITING_USER"
-    )
+    awaiting = ctx.field(resume, "AWAITING_USER") or ctx.field(state_file, "AWAITING_USER")
     if lib.is_substantive_escalation(awaiting):
         return allow(f"escalation recorded: AWAITING_USER='{awaiting}'")
 
@@ -137,9 +139,7 @@ def run(ctx: lib.Context) -> lib.Decision:
     # per-issue WORKTREE while the project dir is the main checkout.
     spec_dir = _resolve_spec_root(ctx, spec_value, ctx.field(resume, "WORKTREE"))
     if spec_dir is None:
-        return allow(
-            f"CURRENT_SPEC '{spec_value}' resolves to no directory from any known root"
-        )
+        return allow(f"CURRENT_SPEC '{spec_value}' resolves to no directory from any known root")
     tasks = spec_dir / "tasks.md"
 
     # PROGRESS RESETS THE COUNT: the fingerprint is the evidence STATE, not a clock.
@@ -148,9 +148,7 @@ def run(ctx: lib.Context) -> lib.Decision:
         lib.counter_reset(counter)
         lib.counter_note_progress(counter, fingerprint)
         blocks = 0
-        ctx.log(
-            HOOK, "PROGRESS", f"evidence changed; block count reset spec={spec_dir}"
-        )
+        ctx.log(HOOK, "PROGRESS", f"evidence changed; block count reset spec={spec_dir}")
 
     if not tasks.is_file():
         if at_cap():
@@ -191,9 +189,7 @@ def run(ctx: lib.Context) -> lib.Decision:
     return allow(f"proven at phase '{phase}' spec={spec_dir}")
 
 
-def _resolve_spec_root(
-    ctx: lib.Context, spec_value: str, worktree: str
-) -> Optional[Path]:
+def _resolve_spec_root(ctx: lib.Context, spec_value: str, worktree: str) -> Optional[Path]:
     # The same ORDER as the push gate — project root, recorded worktree, then the value as given (which is
     # how an absolute path resolves) — so the two gates never disagree about which directory a spec is.
     candidates: List[Path] = [ctx.project_dir / spec_value]
@@ -206,14 +202,13 @@ def _resolve_spec_root(
     return None
 
 
-def evidence_problems(spec_dir: Path, tasks: Path) -> List[str]:
+def evidence_problems(spec_dir: Path, tasks: Path) -> List[str]:  # noqa: C901 — one check per evidence defect
     """The evidence defects of a spec, one line each — shared with the push gate so the two cannot disagree."""
     problems: List[str] = []
     ids, unparseable = lib.checked_task_ids(tasks)
     for line in unparseable:
         problems.append(
-            f"  - a checked task line carries no parseable task id, so its evidence cannot be located: "
-            f"{line}\n"
+            f"  - a checked task line carries no parseable task id, so its evidence cannot be located: {line}\n"
         )
     for task_id in ids:
         if lib.is_heading_id(task_id, ids):
@@ -249,8 +244,7 @@ def evidence_problems(spec_dir: Path, tasks: Path) -> List[str]:
         body = lib.capture_body(latest)
         if lib.has_failures(body):
             problems.append(
-                f"  - latest paired-test capture ({latest}) shows failures/errors — the tests are not "
-                "green.\n"
+                f"  - latest paired-test capture ({latest}) shows failures/errors — the tests are not green.\n"
             )
         if lib.has_skips(body):
             problems.append(

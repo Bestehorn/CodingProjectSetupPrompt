@@ -59,15 +59,20 @@
   },
   "toolAliases": {},
   "hooks": {
+    "agentSpawn": [
+      {
+        "command": "python -X utf8 -c \"import os,sys,runpy;p=os.path.join(os.getcwd(),'.kiro','hooks-bin','kiro_hooks.py');sys.argv=[p]+sys.argv[1:];os.path.isfile(p) and runpy.run_path(p,run_name='__main__')\" agentSpawn"
+      }
+    ],
     "preToolUse": [
       {
-        "command": "python .kiro/hooks-bin/kiro_hooks.py preToolUse",
+        "command": "python -X utf8 -c \"import os,sys,runpy;p=os.path.join(os.getcwd(),'.kiro','hooks-bin','kiro_hooks.py');sys.argv=[p]+sys.argv[1:];os.path.isfile(p) and runpy.run_path(p,run_name='__main__')\" preToolUse",
         "matcher": "execute_bash"
       }
     ],
     "stop": [
       {
-        "command": "python .kiro/hooks-bin/kiro_hooks.py stop"
+        "command": "python -X utf8 -c \"import os,sys,runpy;p=os.path.join(os.getcwd(),'.kiro','hooks-bin','kiro_hooks.py');sys.argv=[p]+sys.argv[1:];os.path.isfile(p) and runpy.run_path(p,run_name='__main__')\" stop"
       }
     ]
   },

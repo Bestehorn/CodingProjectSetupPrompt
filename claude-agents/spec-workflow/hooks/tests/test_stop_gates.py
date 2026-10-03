@@ -62,9 +62,7 @@ class Arena:
         entry = {SID: {"session_id": SID, "run_id": RUN8, "state_dir": state_dir}}
         (self.orch / "registry.json").write_text(json.dumps(entry), encoding="utf-8")
 
-    def seed_state(
-        self, run: str, status: str, phase: str, awaiting: str, remain: str
-    ) -> None:
+    def seed_state(self, run: str, status: str, phase: str, awaiting: str, remain: str) -> None:
         run_dir = self.orch / "runs" / run
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / lib.RESUME_FILENAME).write_text(
@@ -83,11 +81,7 @@ class Arena:
         run_dir = self.orch / "runs" / run
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / lib.STATE_FILENAME).write_text(
-            "# Workflow state\n"
-            f"SESSION_ID: {SID}\n"
-            f"CURRENT_SPEC: {spec}\n"
-            f"Phase: {phase}\n"
-            "Status: IN_PROGRESS\n",
+            f"# Workflow state\nSESSION_ID: {SID}\nCURRENT_SPEC: {spec}\nPhase: {phase}\nStatus: IN_PROGRESS\n",
             encoding="utf-8",
         )
 
@@ -104,13 +98,9 @@ class Arena:
         return self.root / ".claude" / "specs" / name
 
     def payload(self) -> str:
-        return json.dumps(
-            {"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"}
-        )
+        return json.dumps({"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"})
 
-    def ctx(
-        self, payload: Optional[str] = None, environ: Optional[Dict[str, str]] = None
-    ) -> lib.Context:
+    def ctx(self, payload: Optional[str] = None, environ: Optional[Dict[str, str]] = None) -> lib.Context:
         return lib.Context(
             lib.Payload.parse(self.payload() if payload is None else payload),
             environ={} if environ is None else environ,
@@ -272,9 +262,7 @@ def test_spec_checked_task_without_capture_blocks(arena: Arena) -> None:
     arena.seed_state(RUN8, "IN_PROGRESS", "FIX", "none", "no")
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     arena.spec_dir().mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1 do the thing\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1 do the thing\n", encoding="utf-8")
     assert arena.spec().exit_code == 2
 
 
@@ -285,9 +273,7 @@ def test_spec_checked_task_with_green_capture_allows(arena: Arena) -> None:
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1 do the thing\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1 do the thing\n", encoding="utf-8")
     (green / "1.txt").write_text("5 passed in 1.0s\n", encoding="utf-8")
     assert arena.spec().exit_code == 0
 
@@ -299,9 +285,7 @@ def test_spec_green_capture_containing_skip_blocks(arena: Arena) -> None:
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1 do the thing\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1 do the thing\n", encoding="utf-8")
     (green / "1.txt").write_text("4 passed, 1 skipped in 1.0s\n", encoding="utf-8")
     assert arena.spec().exit_code == 2
 
@@ -313,9 +297,7 @@ def test_spec_parent_heading_needs_no_capture_allows(arena: Arena) -> None:
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 0 parent heading\n- [x] 0.1 subtask\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 0 parent heading\n- [x] 0.1 subtask\n", encoding="utf-8")
     (green / "0.1.txt").write_text("5 passed\n", encoding="utf-8")
     assert arena.spec().exit_code == 0
 
@@ -330,12 +312,8 @@ def test_spec_wave_capture_naming_both_tasks_allows(arena: Arena) -> None:
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1.1 TEST: parser\n- [x] 1.2 IMPL: parser\n", encoding="utf-8"
-    )
-    (green / "wave-1.txt").write_text(
-        "# tasks: 1.1 1.2\n7 passed in 1.3s\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1.1 TEST: parser\n- [x] 1.2 IMPL: parser\n", encoding="utf-8")
+    (green / "wave-1.txt").write_text("# tasks: 1.1 1.2\n7 passed in 1.3s\n", encoding="utf-8")
     assert arena.spec().exit_code == 0
 
 
@@ -350,9 +328,7 @@ def test_spec_checked_task_no_wave_capture_names_blocks(arena: Arena) -> None:
         "- [x] 1.1 TEST: parser\n- [x] 1.2 IMPL: parser\n- [x] 2.1 IMPL: writer\n",
         encoding="utf-8",
     )
-    (green / "wave-1.txt").write_text(
-        "# tasks: 1.1 1.2\n7 passed in 1.3s\n", encoding="utf-8"
-    )
+    (green / "wave-1.txt").write_text("# tasks: 1.1 1.2\n7 passed in 1.3s\n", encoding="utf-8")
     assert arena.spec().exit_code == 2
 
 
@@ -363,12 +339,8 @@ def test_spec_wave_header_1_1_does_not_cover_task_1_10_blocks(arena: Arena) -> N
     arena.seed_workflow(RUN8, "IMPLEMENT", ".claude/specs/demo")
     green = arena.spec_dir() / "evidence" / "green"
     green.mkdir(parents=True)
-    (arena.spec_dir() / "tasks.md").write_text(
-        "- [x] 1.10 IMPL: tenth\n", encoding="utf-8"
-    )
-    (green / "wave-1.txt").write_text(
-        "# tasks: 1.1\n7 passed in 1.3s\n", encoding="utf-8"
-    )
+    (arena.spec_dir() / "tasks.md").write_text("- [x] 1.10 IMPL: tenth\n", encoding="utf-8")
+    (green / "wave-1.txt").write_text("# tasks: 1.1\n7 passed in 1.3s\n", encoding="utf-8")
     assert arena.spec().exit_code == 2
 
 
@@ -430,20 +402,12 @@ class Freshness:
         (hooks / "CONTRACT_VERSION").write_text(NEW_FRAMEWORK + "\n", encoding="utf-8")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "trunk")
-        self.git(
-            "update-ref", "refs/remotes/origin/main", "HEAD"
-        )  # stands in for a fetch: the tracking ref is read
-        self.git(
-            "reset", "-q", "--hard", "HEAD~1"
-        )  # the checkout stays on the OLD framework
-        self.git(
-            "remote", "add", "origin", str(self.root)
-        )  # the scan walks `git remote`; a name is all it needs
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")  # stands in for a fetch: the tracking ref is read
+        self.git("reset", "-q", "--hard", "HEAD~1")  # the checkout stays on the OLD framework
+        self.git("remote", "add", "origin", str(self.root))  # the scan walks `git remote`; a name is all it needs
         self.run_dir.mkdir(parents=True)
         (self.orch / "registry.json").write_text(
-            json.dumps(
-                {SID: {"session_id": SID, "run_id": RUN8, "state_dir": f"runs/{RUN8}/"}}
-            ),
+            json.dumps({SID: {"session_id": SID, "run_id": RUN8, "state_dir": f"runs/{RUN8}/"}}),
             encoding="utf-8",
         )
         (self.run_dir / lib.RESUME_FILENAME).write_text(
@@ -452,17 +416,11 @@ class Freshness:
             encoding="utf-8",
         )
         # the contract handshake is done
-        (self.run_dir / f"contract-ack-{OLD_FRAMEWORK}").write_text(
-            "test ack\n", encoding="utf-8"
-        )
+        (self.run_dir / f"contract-ack-{OLD_FRAMEWORK}").write_text("test ack\n", encoding="utf-8")
 
     def run(self) -> lib.Decision:
-        payload = json.dumps(
-            {"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"}
-        )
-        ctx = lib.Context(
-            lib.Payload.parse(payload), environ={}, hooks_dir=HOOKS_DIR, cwd=self.root
-        )
+        payload = json.dumps({"session_id": SID, "cwd": self.root.as_posix(), "hook_event_name": "Stop"})
+        ctx = lib.Context(lib.Payload.parse(payload), environ={}, hooks_dir=HOOKS_DIR, cwd=self.root)
         return gate_issue_loop.run(ctx)
 
 
@@ -480,39 +438,25 @@ def test_freshness_stale_framework_not_yet_told_blocks(fw: Freshness) -> None:
     sanctioned fast-forward, and names the ack file to create"""
     decision = fw.run()
     assert decision.exit_code == 2
-    assert f"FRAMEWORK REVISION {NEW_FRAMEWORK}" in decision.stderr, (
-        "the refusal names the trunk's framework version"
-    )
-    assert "merge --ff-only origin/main" in decision.stderr, (
-        "the refusal gives the sanctioned fast-forward"
-    )
-    assert f"framework-ack-{NEW_FRAMEWORK}" in decision.stderr, (
-        "the refusal names the ack file to create"
-    )
+    assert f"FRAMEWORK REVISION {NEW_FRAMEWORK}" in decision.stderr, "the refusal names the trunk's framework version"
+    assert "merge --ff-only origin/main" in decision.stderr, "the refusal gives the sanctioned fast-forward"
+    assert f"framework-ack-{NEW_FRAMEWORK}" in decision.stderr, "the refusal names the ack file to create"
 
 
 def test_freshness_told_once_falls_through_to_the_brake(fw: Freshness) -> None:
     """told once -> falls through to the brake on unfinished work -> BLOCK; a run already told is NOT told
     again; the brake, not the handshake, refuses the acked run"""
     fw.run()  # the first refusal delivers the notice
-    (fw.run_dir / f"framework-ack-{NEW_FRAMEWORK}").write_text(
-        "ack\n", encoding="utf-8"
-    )
+    (fw.run_dir / f"framework-ack-{NEW_FRAMEWORK}").write_text("ack\n", encoding="utf-8")
     decision = fw.run()
     assert decision.exit_code == 2
-    assert "FRAMEWORK REVISION" not in decision.stderr, (
-        "a run already told is NOT told again"
-    )
-    assert "records itself as UNFINISHED" in decision.stderr, (
-        "the brake, not the handshake, refuses the acked run"
-    )
+    assert "FRAMEWORK REVISION" not in decision.stderr, "a run already told is NOT told again"
+    assert "records itself as UNFINISHED" in decision.stderr, "the brake, not the handshake, refuses the acked run"
 
 
 def test_freshness_trunk_at_checkout_version_is_not_stale(fw: Freshness) -> None:
     """trunk at the checkout's own version -> no freshness refusal"""
-    fw.git(
-        "update-ref", "refs/remotes/origin/main", "HEAD"
-    )  # trunk == checkout: nothing is stale
+    fw.git("update-ref", "refs/remotes/origin/main", "HEAD")  # trunk == checkout: nothing is stale
     for ack in fw.run_dir.glob("framework-ack-*"):
         ack.unlink()
     decision = fw.run()
@@ -568,13 +512,9 @@ def test_fail_closed_partial_library_blocks(arena: Arena, tmp_path: Path) -> Non
     copy = _hooks_copy(tmp_path)
     library = copy / "hooklib.py"
     text = library.read_text(encoding="utf-8")
-    library.write_text(
-        text[: text.index("def selftest")], encoding="utf-8"
-    )  # deliberately truncated: no selftest
+    library.write_text(text[: text.index("def selftest")], encoding="utf-8")  # deliberately truncated: no selftest
     completed = _spawn_stop(copy, arena)
-    assert completed.returncode == 2, (
-        f"exit {completed.returncode}; stderr: {completed.stderr[-400:]}"
-    )
+    assert completed.returncode == 2, f"exit {completed.returncode}; stderr: {completed.stderr[-400:]}"
     # Not in the bash suite: the exit 2 must be the gate's refusal naming the broken library, not the
     # interpreter's own exit 2 for a script it could not open.
     assert "hooklib" in completed.stderr, completed.stderr[-400:]
@@ -585,7 +525,5 @@ def test_fail_closed_missing_library_blocks(arena: Arena, tmp_path: Path) -> Non
     copy = _hooks_copy(tmp_path)
     (copy / "hooklib.py").unlink()
     completed = _spawn_stop(copy, arena)
-    assert completed.returncode == 2, (
-        f"exit {completed.returncode}; stderr: {completed.stderr[-400:]}"
-    )
+    assert completed.returncode == 2, f"exit {completed.returncode}; stderr: {completed.stderr[-400:]}"
     assert "hooklib" in completed.stderr, completed.stderr[-400:]

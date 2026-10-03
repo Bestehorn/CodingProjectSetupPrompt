@@ -41,9 +41,7 @@ def main(argv: "list[str]") -> int:
     if hooks.lib is None:
         code, message = hooks.degraded(event, payload_text)
         if event == "stop" and code == 2:
-            sys.stdout.write(
-                json.dumps({"decision": "block", "reason": message}) + "\n"
-            )
+            sys.stdout.write(json.dumps({"decision": "block", "reason": message}) + "\n")
             return 0
         if message:
             sys.stderr.write(message)
@@ -51,9 +49,7 @@ def main(argv: "list[str]") -> int:
     decision = hooks.dispatch(event, payload_text, host=hooks.lib.KIRO, hooks_dir=HERE)
     if event == "stop":
         if decision.blocked:
-            sys.stdout.write(
-                json.dumps({"decision": "block", "reason": decision.stderr}) + "\n"
-            )
+            sys.stdout.write(json.dumps({"decision": "block", "reason": decision.stderr}) + "\n")
             return 0
         if decision.stderr:
             sys.stderr.write(decision.stderr)

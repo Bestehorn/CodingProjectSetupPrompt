@@ -17,8 +17,11 @@ from typing import List
 import hooklib as lib
 
 HOOK = "continuous-work-reinject"
+EVENT = "session-start"  # the dispatcher runs this gate on this event
+ORDER = 30  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
 
-CONTRACT = """A turn ends when the WORK IS FINISHED, or when one of four Proven Exceptions applies AND you have proven it:
+CONTRACT = """A turn ends when the WORK IS FINISHED, or when one of four Proven Exceptions applies AND you have
+proven it:
 an irreversible action, sensitive information, a genuine design fork, or a hard blocker. Nothing else.
 
 Stopping in order to obtain permission to continue is FORBIDDEN. Any habit, older rule, prior session or
@@ -49,7 +52,7 @@ is awaited with the wrapper's blocking wait as a BACKGROUND task, never with sle
 """
 
 
-def run(ctx: lib.Context) -> lib.Decision:
+def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one block per verdict, in order
     out: List[str] = []
     rule = f"{ctx.host.rules_dir}/continuous-work.md"
     out.append(f"## Continuous work is in force ({rule})\n")
@@ -61,9 +64,7 @@ def run(ctx: lib.Context) -> lib.Decision:
             "any file you still need, then resume the recorded step.\n"
         )
     else:
-        out.append(
-            f"Session start (source: {source}). If work is already in flight below, continue it.\n"
-        )
+        out.append(f"Session start (source: {source}). If work is already in flight below, continue it.\n")
     out.append(CONTRACT)
 
     notice = lib.revision_notice(ctx.hooks_dir)
@@ -74,9 +75,11 @@ def run(ctx: lib.Context) -> lib.Decision:
     if stale is not None:
         ref, version = stale
         out.append(
-            f"FRAMEWORK STALE: {ref} carries framework {version}; this checkout runs {ctx.contract_version}. The rules,\n"
+            f"FRAMEWORK STALE: {ref} carries framework {version}; this checkout runs {ctx.contract_version}. The "
+            f"rules,\n"
             "phases and agents you were loaded with were replaced. If `git status --porcelain` in the checkout prints\n"
-            f"nothing and HEAD is an ancestor of {ref}, run `git merge --ff-only {ref}` there (the one sanctioned move\n"
+            f"nothing and HEAD is an ancestor of {ref}, run `git merge --ff-only {ref}` there (the one sanctioned "
+            f"move\n"
             f"of local main); otherwise ask the operator, in five lines, to update the checkout. Then read\n"
             f"{ctx.host.hooks_dir}/REVISION_NOTICE.md.\n"
         )
@@ -125,9 +128,7 @@ def run(ctx: lib.Context) -> lib.Decision:
             )
         ctx.log(HOOK, "INJECTED", f"run={sid[:8]} source={source}")
     elif verdict == lib.BROKEN:
-        expected = (
-            (run_dir / lib.RESUME_FILENAME) if run_dir is not None else "(unknown)"
-        )
+        expected = (run_dir / lib.RESUME_FILENAME) if run_dir is not None else "(unknown)"
         out.append(
             "CANNOT BE READ. The registry declares a run for this session, but its state file does not exist:\n"
             f"    {expected}\n\n"
@@ -151,12 +152,8 @@ def run(ctx: lib.Context) -> lib.Decision:
                 f"    {singleton}",
             ]
             for name in ("CURRENT_SPEC", "Phase", "Status", "CURRENT_TASK"):
-                lines.append(
-                    f"- {name + ':':<24} {ctx.field(singleton, name) or '(unrecorded)'}"
-                )
-            lines.append(
-                "Re-read that spec's tasks.md and its decision log, then continue the recorded phase."
-            )
+                lines.append(f"- {name + ':':<24} {ctx.field(singleton, name) or '(unrecorded)'}")
+            lines.append("Re-read that spec's tasks.md and its decision log, then continue the recorded phase.")
             out.append("\n".join(lines) + "\n")
             ctx.log(
                 HOOK,

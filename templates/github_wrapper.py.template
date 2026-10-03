@@ -5,7 +5,9 @@ Usage:
     python scripts/github_wrapper.py list-runs --limit 5
     python scripts/github_wrapper.py wait-run <run_id> [--timeout-seconds 3600]
         # BLOCKS until the workflow run completes, polling internally; exit 0 on success,
-        # 1 on failure/cancellation, 2 on timeout. Agents run it as a BACKGROUND task and
+        # 10 when it completed with any non-success conclusion (failure/cancelled/skipped/
+        # timed_out/...), 11 on timeout — distinct from the wrapper's own 1 (API error),
+        # 2 (usage), 3 (claim-check unclaimed). Agents run it as a BACKGROUND task and
         # keep working (parallel-by-default.md) — never `sleep` in a tool call.
     python scripts/github_wrapper.py get-logs <run_id> --failed-only
     python scripts/github_wrapper.py list-issues
@@ -129,6 +131,12 @@ FIELD_STATUS = "status"
 RUN_STATUS_COMPLETED = "completed"
 RUN_CONCLUSION_SUCCESS = "success"
 
+# Blocking-wait verdicts. Deliberately NOT 1/2/3: 1 is this wrapper's API-error exit (see
+# __main__), 2 is argparse's usage error, 3 is `claim-check`'s "open and unclaimed". A caller
+# that saw 1 could not tell "the run failed" from "the API call failed".
+EXIT_WAIT_NOT_SUCCESS = 10
+EXIT_WAIT_TIMEOUT = 11
+
 
 def wait_run(
     *,
@@ -139,7 +147,11 @@ def wait_run(
     timeout_seconds: int = 3600,
     interval_seconds: int = 30,
 ) -> int:
-    """Block until the workflow run completes. Exit-code semantics: 0 success, 1 failed/cancelled, 2 timeout.
+    """Block until the workflow run completes.
+
+    Exit-code semantics: 0 success, 10 not success (any non-success conclusion: failure, cancelled,
+    skipped, timed_out, ...), 11 timeout — distinct from the wrapper's 1/2/3 (API error / usage
+    error / claim-check unclaimed).
 
     The ONE sanctioned way for an agent to wait on CI: started as a background task while the agent keeps
     working; the harness re-invokes the agent when it exits. A `sleep N` in a tool call, repeated, was
@@ -147,19 +159,21 @@ def wait_run(
     """
     import time
 
+    path = f"/repos/{owner}/{repo}/actions/runs/{run_id}"
     deadline = time.monotonic() + timeout_seconds
     status = ""
     conclusion = ""
     while time.monotonic() < deadline:
-        data = _api_request(method="GET", path=f"/repos/{owner}/{repo}/actions/runs/{run_id}", token=token)
+        data = _api_request(method="GET", path=path, token=token)
         status = str(data.get(FIELD_STATUS, ""))
         conclusion = str(data.get(FIELD_CONCLUSION) or "")
         if status == RUN_STATUS_COMPLETED:
-            print(json.dumps({"run_id": run_id, FIELD_STATUS: status, FIELD_CONCLUSION: conclusion, "html_url": data.get("html_url", "")}))
-            return 0 if conclusion == RUN_CONCLUSION_SUCCESS else 1
+            verdict = {"run_id": run_id, FIELD_STATUS: status, FIELD_CONCLUSION: conclusion}
+            print(json.dumps({**verdict, "html_url": data.get("html_url", "")}))
+            return 0 if conclusion == RUN_CONCLUSION_SUCCESS else EXIT_WAIT_NOT_SUCCESS
         time.sleep(interval_seconds)
     print(json.dumps({"run_id": run_id, FIELD_STATUS: status or "unknown", "timeout_seconds": timeout_seconds}))
-    return 2
+    return EXIT_WAIT_TIMEOUT
 
 
 # Implement subcommand functions: list_workflows, list_runs, get_run, wait_run

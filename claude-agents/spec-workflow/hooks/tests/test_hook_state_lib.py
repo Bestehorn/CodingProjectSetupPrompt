@@ -200,9 +200,7 @@ def test_state_field_last_occurrence_wins(tmp_path: Path) -> None:
 def test_state_field_value_may_contain_a_colon(tmp_path: Path) -> None:
     """value may contain a colon"""
     assert (
-        _field(
-            tmp_path, "AWAITING_USER: need a credential: for prod\n", "AWAITING_USER"
-        )
+        _field(tmp_path, "AWAITING_USER: need a credential: for prod\n", "AWAITING_USER")
         == "need a credential: for prod"
     )
 
@@ -245,9 +243,7 @@ def test_state_field_missing_file_is_empty(tmp_path: Path) -> None:
 def test_selftest_is_the_last_definition() -> None:
     """hook_task_selftest is the last definition -> `selftest` is the last top-level def of hooklib.py"""
     tree = ast.parse((HOOKS_DIR / "hooklib.py").read_text(encoding="utf-8"))
-    definitions = [
-        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-    ]
+    definitions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
     assert definitions[-1].name == "selftest"
 
 
@@ -282,9 +278,7 @@ def _stop(hooks_copy: Path, arena: Arena) -> subprocess.CompletedProcess:
     )
 
 
-def test_truncated_library_lacking_selftest_makes_stop_refuse(
-    tmp_path: Path, arena: Arena
-) -> None:
+def test_truncated_library_lacking_selftest_makes_stop_refuse(tmp_path: Path, arena: Arena) -> None:
     """The INTENT of the last-definition case: a truncated library could define every function the gates
     use while omitting the self-test symbol — and the gates' fail-closed check must then REFUSE the stop
     rather than pass on a broken library. Baseline first: the intact copy allows an unregistered session."""
@@ -330,17 +324,13 @@ def test_resolve_block_cap_result_is_always_valid_arithmetic() -> None:
     value = lib.resolve_block_cap("abc")
     assert isinstance(value, int)
     assert value >= 1
-    assert (
-        lib.resolve_block_cap(None) == lib.DEFAULT_BLOCK_CAP
-    )  # an absent variable, not a typo
+    assert lib.resolve_block_cap(None) == lib.DEFAULT_BLOCK_CAP  # an absent variable, not a typo
 
 
 def test_live_block_cap_constant_is_in_range(arena: Arena) -> None:
     """the live constant is in range"""
     assert 1 <= lib.DEFAULT_BLOCK_CAP <= 64
-    ctx = lib.Context(
-        lib.Payload.parse("{}"), environ={}, hooks_dir=HOOKS_DIR, cwd=arena.root
-    )
+    ctx = lib.Context(lib.Payload.parse("{}"), environ={}, hooks_dir=HOOKS_DIR, cwd=arena.root)
     assert 1 <= ctx.block_cap <= 64
 
 
@@ -374,9 +364,7 @@ def test_capped_marker_is_durable_until_a_genuine_reset(tmp_path: Path) -> None:
     assert lib.counter_is_capped(counter) is False
     assert lib.counter_mark_capped(counter) is True
     assert lib.counter_is_capped(counter) is True
-    assert (
-        lib.counter_is_capped(counter) is True
-    )  # a second look: the marker is a FILE, not process state
+    assert lib.counter_is_capped(counter) is True  # a second look: the marker is a FILE, not process state
     lib.counter_reset(counter)
     assert lib.counter_is_capped(counter) is False
     assert lib.counter_read(counter) == 0
@@ -387,16 +375,12 @@ def test_capped_marker_is_durable_until_a_genuine_reset(tmp_path: Path) -> None:
 # ==========================================================================================================
 
 
-@pytest.mark.parametrize(
-    "value", ["", "none", "NONE", "-", "n/a", "unset", "empty", "null", "tbd"]
-)
+@pytest.mark.parametrize("value", ["", "none", "NONE", "-", "n/a", "unset", "empty", "null", "tbd"])
 def test_placeholder_spellings(value: str) -> None:
     assert lib.is_placeholder(value) is True, f"placeholder: [{value}]"
 
 
-@pytest.mark.parametrize(
-    "value", ["574", ".claude/specs/x", "design fork on retry policy", "0"]
-)
+@pytest.mark.parametrize("value", ["574", ".claude/specs/x", "design fork on retry policy", "0"])
 def test_real_values_are_not_placeholders(value: str) -> None:
     assert lib.is_placeholder(value) is False, f"real value: [{value}]"
 
@@ -415,7 +399,4 @@ def test_trailing_spaces_stripped_so_value_reads_as_placeholder(tmp_path: Path) 
 
 def test_trailing_tab_stripped(tmp_path: Path) -> None:
     """trailing tab stripped (`x \\t` had produced the unopenable path `x /tasks.md`)"""
-    assert (
-        _field(tmp_path, "CURRENT_SPEC: .claude/specs/x \t\n", "CURRENT_SPEC")
-        == ".claude/specs/x"
-    )
+    assert _field(tmp_path, "CURRENT_SPEC: .claude/specs/x \t\n", "CURRENT_SPEC") == ".claude/specs/x"

@@ -18,6 +18,8 @@ import tempfile
 import hooklib as lib
 
 HOOK = "scoped-temp-init"
+EVENT = "session-start"  # the dispatcher runs this gate on this event
+ORDER = 20  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
 
 
 def run(ctx: lib.Context) -> lib.Decision:
@@ -78,7 +80,8 @@ def run(ctx: lib.Context) -> lib.Decision:
         )
     return lib.allow(
         stdout=(
-            f"Scoped temp CONFIGURED: wrote the TMPDIR/TEMP/TMP env block into {ctx.host.config_dir}/settings.local.json\n"
+            f"Scoped temp CONFIGURED: wrote the TMPDIR/TEMP/TMP env block into "
+            f"{ctx.host.config_dir}/settings.local.json\n"
             f"pointing at {target} — it takes effect from the NEXT session; this session still uses the previous\n"
             "temp settings.\n"
         )

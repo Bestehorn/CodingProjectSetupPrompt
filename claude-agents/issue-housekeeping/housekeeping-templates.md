@@ -48,8 +48,8 @@ exists in the codebase as of commit <current-HEAD>.
 
 **Root Cause:** <description with code citations>
 **Fix Approach:**
-1. <step 1 with file:line references>
-2. <step 2 with file:line references>
+1. <step 1 with path + symbol references (function, class, heading or key — never a line number)>
+2. <step 2 with path + symbol references>
 ...
 **Test Plan:**
 - <test 1 description>

@@ -52,9 +52,7 @@ def run_hook(
 ) -> lib.Decision:
     """bash `run_hook`: CLAUDE_PROJECT_DIR=<arena>, nothing on stdin."""
     env = {"CLAUDE_PROJECT_DIR": str(arena)} if environ is None else environ
-    ctx = lib.Context(
-        lib.Payload.parse(payload), environ=env, hooks_dir=HOOKS, cwd=cwd or arena
-    )
+    ctx = lib.Context(lib.Payload.parse(payload), environ=env, hooks_dir=HOOKS, cwd=cwd or arena)
     return gate_scoped_temp.run(ctx)
 
 
@@ -94,12 +92,8 @@ def test_no_settings_file_block_is_written(arena: Path) -> None:
     )
     assert settings_of(arena).is_file(), "settings file was created"
     tmpdir_val = json_env(arena, "TMPDIR")
-    assert tmpdir_val.endswith("os-temp"), (
-        f"TMPDIR points at .../os-temp; got {tmpdir_val!r}"
-    )
-    assert is_absolute_like_bash(tmpdir_val), (
-        f"TMPDIR is an ABSOLUTE path; got {tmpdir_val!r}"
-    )
+    assert tmpdir_val.endswith("os-temp"), f"TMPDIR points at .../os-temp; got {tmpdir_val!r}"
+    assert is_absolute_like_bash(tmpdir_val), f"TMPDIR is an ABSOLUTE path; got {tmpdir_val!r}"
     assert json_env(arena, "TEMP") == tmpdir_val, "TEMP matches TMPDIR"
     assert json_env(arena, "TMP") == tmpdir_val, "TMP matches TMPDIR"
     assert (arena / "tmp" / "os-temp").is_dir(), "tmp/os-temp directory exists"
@@ -111,9 +105,7 @@ def test_second_run_is_idempotent_and_silent(arena: Path) -> None:
     before = settings_of(arena).read_bytes()
     decision = run_hook(arena)
     assert decision.exit_code == 0, "second run: exit 0"
-    assert decision.stdout == "", (
-        f"second run: SILENT (stdout is context); got {decision.stdout!r}"
-    )
+    assert decision.stdout == "", f"second run: SILENT (stdout is context); got {decision.stdout!r}"
     assert settings_of(arena).read_bytes() == before, "second run: file byte-identical"
 
 
@@ -132,23 +124,17 @@ def test_written_path_names_this_tree(arena: Path) -> None:
 
 def test_merge_preserves_other_keys_and_env_vars(arena: Path) -> None:
     """Other top-level keys and other env vars survive the merge."""
-    settings_of(arena).write_text(
-        '{"permissions":{"allow":["Bash(ls:*)"]},"env":{"FOO":"bar"}}', encoding="utf-8"
-    )
+    settings_of(arena).write_text('{"permissions":{"allow":["Bash(ls:*)"]},"env":{"FOO":"bar"}}', encoding="utf-8")
     decision = run_hook(arena)
     assert decision.exit_code == 0, "merge run: exit 0"
-    assert json_key(arena, "permissions") == '{"allow": ["Bash(ls:*)"]}', (
-        "other top-level key survives"
-    )
+    assert json_key(arena, "permissions") == '{"allow": ["Bash(ls:*)"]}', "other top-level key survives"
     assert json_env(arena, "FOO") == "bar", "other env var survives"
     assert json_env(arena, "TMPDIR").endswith("os-temp"), "TMPDIR added beside FOO"
 
 
 def test_custom_tmpdir_is_respected(arena: Path) -> None:
     """A custom TMPDIR is respected: silent, nothing written."""
-    settings_of(arena).write_text(
-        '{"env":{"TMPDIR":"/my/custom/tempdir"}}', encoding="utf-8"
-    )
+    settings_of(arena).write_text('{"env":{"TMPDIR":"/my/custom/tempdir"}}', encoding="utf-8")
     before = settings_of(arena).read_bytes()
     decision = run_hook(arena)
     assert decision.exit_code == 0, "custom TMPDIR: exit 0"
@@ -165,9 +151,7 @@ def test_malformed_json_is_never_touched(arena: Path) -> None:
     assert re.search(r"not a valid.*JSON", decision.stdout, re.S), (
         f"malformed JSON: says so instead of clobbering; got {decision.stdout!r}"
     )
-    assert settings_of(arena).read_bytes() == before, (
-        "malformed JSON: file byte-identical"
-    )
+    assert settings_of(arena).read_bytes() == before, "malformed JSON: file byte-identical"
 
 
 def test_json_array_settings_is_never_touched(arena: Path) -> None:
@@ -175,13 +159,9 @@ def test_json_array_settings_is_never_touched(arena: Path) -> None:
     settings_of(arena).write_text("[1,2,3]", encoding="utf-8")
     before = settings_of(arena).read_bytes()
     decision = run_hook(arena)
-    assert settings_of(arena).read_bytes() == before, (
-        "JSON-array settings: file byte-identical"
-    )
+    assert settings_of(arena).read_bytes() == before, "JSON-array settings: file byte-identical"
     assert decision.exit_code == 0  # (extra) exit is ALWAYS 0
-    assert re.search(
-        r"not a valid.*JSON", decision.stdout, re.S
-    )  # (extra) reported, not silently skipped
+    assert re.search(r"not a valid.*JSON", decision.stdout, re.S)  # (extra) reported, not silently skipped
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -189,27 +169,21 @@ def test_json_array_settings_is_never_touched(arena: Path) -> None:
 # ---------------------------------------------------------------------------------------------------------
 
 
-def test_broken_write_machinery_exits_0_and_speaks(
-    arena: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_broken_write_machinery_exits_0_and_speaks(arena: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """bash: python/python3 shims that `exit 9`. Here the atomic write itself fails: the hook must fall back
     to the notice, write nothing, and still exit 0."""
 
     def boom(*_args: object, **_kwargs: object) -> None:
         raise OSError(9, "repair machinery unavailable (shim exit 9)")
 
-    monkeypatch.setattr(
-        gate_scoped_temp, "tempfile", types.SimpleNamespace(NamedTemporaryFile=boom)
-    )
+    monkeypatch.setattr(gate_scoped_temp, "tempfile", types.SimpleNamespace(NamedTemporaryFile=boom))
     decision = run_hook(arena)
     assert decision.exit_code == 0, "broken python: exit 0"
     assert "settings.local.json" in decision.stdout, (
         f"broken python: notice names the settings file; got {decision.stdout!r}"
     )
     assert not settings_of(arena).exists(), "broken python: nothing written"
-    assert (arena / "tmp" / "os-temp").is_dir(), (
-        "broken python: tmp/os-temp still created"
-    )
+    assert (arena / "tmp" / "os-temp").is_dir(), "broken python: tmp/os-temp still created"
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -218,9 +192,7 @@ def test_broken_write_machinery_exits_0_and_speaks(
 
 
 def test_project_dir_resolution_order(tmp_path: Path) -> None:
-    by_env, by_payload, by_cwd = (
-        tmp_path / name for name in ("by-env", "by-payload", "by-cwd")
-    )
+    by_env, by_payload, by_cwd = (tmp_path / name for name in ("by-env", "by-payload", "by-cwd"))
     for root in (by_env, by_payload, by_cwd):
         (root / ".claude").mkdir(parents=True)
 
@@ -231,9 +203,7 @@ def test_project_dir_resolution_order(tmp_path: Path) -> None:
         cwd=by_cwd,
     )
     assert (
-        settings_of(by_env).is_file()
-        and not settings_of(by_payload).exists()
-        and not settings_of(by_cwd).exists()
+        settings_of(by_env).is_file() and not settings_of(by_payload).exists() and not settings_of(by_cwd).exists()
     ), "CLAUDE_PROJECT_DIR wins over the payload cwd and the process cwd"
 
     run_hook(

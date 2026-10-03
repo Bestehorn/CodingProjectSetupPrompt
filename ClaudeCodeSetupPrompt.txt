@@ -1033,7 +1033,7 @@ could only request:
           {
             "type": "command",
             "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "pre-tool-use"],
+            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
             "timeout": 30
           }
         ]
@@ -1054,8 +1054,29 @@ each hook exited 1 before its first line (a non-blocking error, visible only in 
 transcript) and every gate was inert: 399,278 of 400,015 recorded hook runs in one clone.
 A shell-form registration would have made every gate depend on a Git Bash installation
 instead. Python is already a dependency of every project this prompt sets up.
-`python .claude/hooks/hooks.py selftest` spawns the dispatcher exactly as the harness does
-and proves each event blocks — run it after installing, on every machine.
+
+`<LAUNCHER>` is a fixed one-line Python program, the `LAUNCHER` constant in `hooks.py`.
+NEVER type it by hand: `python .claude/hooks/hooks.py registration` prints the complete
+`hooks` block to paste into `settings.json`. The launcher does three things, each from a
+measured incident: `-X utf8` reads the payload and writes the decision in UTF-8 whatever
+the console code page (a piped Windows python defaulted to cp1252 and changed 33 of 117
+corpus decisions); it locates `hooks.py` through the `CLAUDE_PROJECT_DIR` the harness
+exports, so the registration carries no path; and it checks that the file EXISTS before
+running it — `python <missing file>` exits 2, which the harness reads as a BLOCK, and a
+session resumed in a worktree checked out from a branch that predates the install had
+every Bash and Write call refused until the worktree was deleted. With the launcher a
+missing dispatcher exits 0 (fail open, as the bash hooks did at exit 127).
+`python .claude/hooks/hooks.py selftest` spawns the launcher exactly as the harness does
+and proves each event decides — run it after installing, on every machine.
+
+A project extends the dispatcher without a second registration: a `gate_<name>.py` beside
+`hooks.py` that declares `HOOK`, `EVENT` (`session-start` | `pre-tool-use` | `stop`),
+`ORDER` (above 100; the framework's gates use 10..90), optionally `TOOLS` (the tool names it
+judges — a `Write`/`Edit` gate declares `{"Write", "Edit"}` and the project widens the
+PreToolUse `matcher` to `Bash|Write|Edit`), and `run(ctx) -> Decision`. A project that must
+switch a framework gate off writes `.claude/hooks/hooks.config.json` with
+`{"disabled_gates": ["<HOOK name>"]}`; the self-test honours it. A project gate that fails to
+import is skipped with a note and never takes the framework's gates down with it.
 
 The gates the PreToolUse dispatcher runs (all ship in `claude-agents/spec-workflow/hooks/`):
 - `no-env-vars` (`gate_no_env_vars.py`): if the Bash command sets AWS_*/GITHUB_TOKEN/
@@ -1738,9 +1759,14 @@ this prompt (leave any existing one alone).
    `--fix` plus ruff-format) as a side effect of a verification step — a
    destructive surprise mid-setup, and it buries the actual answer in a reformat
    diff. One already-clean file enumerates the same hooks and changes nothing.
-   Confirm the inverse too, the same way: `--hook-stage pre-push --files README.md`
-   lists mypy, and `--hook-stage manual pytest` is how the suite is invoked by
-   hand.
+   Confirm the inverse with the pre-push stage run the way git runs it:
+   `pre-commit run --hook-stage pre-push --all-files` must list mypy AND pass.
+   `--all-files` is safe here — mypy rewrites nothing — and it is the only form
+   that reproduces the push: `--files README.md` proved mypy was in the stage
+   without ever running it, and the first project update found every push
+   refused by a fatal `Duplicate module named ...` once mypy was handed the
+   iteration-numbered scripts under `.claude/specs/**/evidence/`. Then
+   `--hook-stage manual pytest` is how the suite is invoked by hand.
 4. Checks — `python scripts/run_checks.py` runs and reports on the existing
    codebase (flag pre-existing issues; do not silently fix them). Verify it does
    not fail fast: seed TWO independent failures (a lint error in one file and a
@@ -2013,9 +2039,17 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     PreToolUse stops at the first block and skips a gate that raises (fail OPEN on an
     ordinary command — the push gate fails closed on a push itself); Stop runs BOTH gates,
     delivers every block message, and treats a gate that raises as a refusal (fail CLOSED).
-    `python .claude/hooks/hooks.py selftest` spawns the dispatcher exactly as the harness
-    does and asserts that SessionStart injects and logs, PreToolUse blocks a bypass and reads
-    a quoted command, and Stop refuses a registered unfinished run.
+    `python .claude/hooks/hooks.py selftest` installs the directory into a scratch project
+    and spawns the LAUNCHER exactly as the harness does: a missing dispatcher fails open,
+    SessionStart injects and logs, PreToolUse blocks a bypass, reads a quoted lower-case
+    non-ASCII command in UTF-8 and leaves a non-shell tool alone, and Stop refuses a
+    registered unfinished run. `python .claude/hooks/hooks.py registration` prints the
+    `settings.json` block (Part 12.2). Gates are DISCOVERED: every `gate_*.py` beside it
+    declaring `EVENT`, `ORDER` and `run(ctx)` (plus `TOOLS` for a PreToolUse gate) is run in
+    ORDER, so a project adds its own gate as a file, never as a registration (Part 6).
+  - `hooks.config.json` (optional, project-written) — `{"disabled_gates": ["<HOOK name>"]}`
+    switches a framework gate off for this project; the self-test honours it. Record the
+    reason in the project's CLAUDE.md.
   - `hooklib.py` — the ONE identity-and-state library every gate imports: session-keyed run
     resolution, the `OWNED`/`UNREGISTERED`/`BROKEN` verdicts, the `Name: value` state-field
     reader (last occurrence wins, fences ignored, bold invisible, trimmed, case-insensitive),
@@ -2198,7 +2232,14 @@ blind `*.md`, or remove `.claude/agents/README.md` afterward.
 
 ### Part 12.2 — Wire the TDD/evidence gates into settings.json
 
-Add to `.claude/settings.json` (merge with Part 6's hooks):
+Replace the `hooks` block of `.claude/settings.json` with the output of
+
+```bash
+python .claude/hooks/hooks.py registration
+```
+
+which prints exactly this shape (the `<LAUNCHER>` is the one-line program from `hooks.py`;
+copy the printed block, never a retyped one):
 
 ```json
 {
@@ -2207,7 +2248,7 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
       {
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "session-start"],
+            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "session-start"],
             "timeout": 30 }
         ]
       }
@@ -2217,7 +2258,7 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "pre-tool-use"],
+            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
             "timeout": 30 }
         ]
       }
@@ -2226,7 +2267,7 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
       {
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/hooks.py", "stop"],
+            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "stop"],
             "timeout": 60 }
         ]
       }
@@ -2235,15 +2276,17 @@ Add to `.claude/settings.json` (merge with Part 6's hooks):
 }
 ```
 
-Four details in that block are deliberate rather than stylistic:
+Five details in that block are deliberate rather than stylistic:
 
-- **One entry per event, exec form, `python`.** Exec form (`command` plus `args`) spawns the
-  executable directly with no shell, so nothing can rewrite an argument and no shell profile
-  can print on stdout. It is `python` because `bash` resolved to the WSL launcher on Windows
-  hosts and left every gate inert (Part 6); a shell-form string would instead have made the
-  gates depend on a Git Bash installation. One entry per event because one interpreter start
-  per event is the whole latency budget — the previous four PreToolUse scripts cost four
-  starts on every shell command.
+- **One entry per event, exec form, `python`, through the launcher.** Exec form (`command`
+  plus `args`) spawns the executable directly with no shell, so nothing can rewrite an
+  argument and no shell profile can print on stdout. It is `python` because `bash` resolved
+  to the WSL launcher on Windows hosts and left every gate inert (Part 6); a shell-form
+  string would instead have made the gates depend on a Git Bash installation. One entry per
+  event because one interpreter start per event is the whole latency budget — the previous
+  four PreToolUse scripts cost four starts on every shell command. The launcher (Part 6)
+  adds UTF-8 I/O and the existence check that keeps a worktree without the dispatcher from
+  having every tool call refused.
 - The SessionStart entry has NO `matcher`, so it runs on every SessionStart source: the
   `session-register` gate is what CREATES this run's state, and a run whose state was never
   created is a run every gate is inert for. The `continuous-work-reinject` gate's
@@ -2256,6 +2299,10 @@ Four details in that block are deliberate rather than stylistic:
   NOT registered anywhere. The dispatcher imports the gates, the conductor invokes the helper,
   and the version file is read. Registering any of them is a defect — and so is any remaining
   `"command": "bash"` entry: delete the `.sh` predecessors when installing.
+- **A project never adds a registration of its own.** Its gates are files: `gate_<name>.py`
+  beside `hooks.py` (discovered by `EVENT`/`ORDER`/`TOOLS`), and `hooks.config.json` for a
+  framework gate it switches off. The only settings change a project gate can need is a
+  wider PreToolUse `matcher` (`Bash|Write|Edit`) when its `TOOLS` name a non-shell tool.
 
 What the dispatcher's gates do:
 
@@ -2478,8 +2525,14 @@ What to know here:
    **Other machines** are reached by the freshness check in the same two hooks: the moment a
    clone there fetches a trunk whose `CONTRACT_VERSION` is newer than its checkout's, every
    registered run on it is refused once with the instruction to fast-forward the clean,
-   strictly-behind checkout (or ask the operator) — so pushing the project update is the
-   whole rollout; no one has to visit each machine.
+   strictly-behind checkout (or ask the operator). That check reaches only a checkout that
+   already carries it: a session runs the hooks of the checkout it started in, read from disk
+   at every event, and a checkout older than the freshness check has nothing that could
+   announce a newer trunk. So the rollout is the merge plus ONE fast-forward of each machine's
+   main checkout: the first fast-forward on a machine is done by hand (or by the
+   framework-update run for its own machine, when that checkout is clean and strictly behind —
+   the one sanctioned move of local main); from then on the installed freshness check announces
+   every later revision to every registered run on that machine.
 5. **Loading is not engaging — and this is the part most likely to be missed.** A live session
    whose registry entry was never written resolves `UNREGISTERED`, which every gate treats as
    benign (it is indistinguishable from an ordinary chat session), so it loads the new code and

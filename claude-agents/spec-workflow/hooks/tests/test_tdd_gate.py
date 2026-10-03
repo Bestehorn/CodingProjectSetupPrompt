@@ -76,9 +76,7 @@ class Arena:
 
     @staticmethod
     def tasksfile(spec_dir: Path, *lines: str) -> None:
-        (spec_dir / "tasks.md").write_text(
-            "# Tasks\n" + "".join(line + "\n" for line in lines), encoding="utf-8"
-        )
+        (spec_dir / "tasks.md").write_text("# Tasks\n" + "".join(line + "\n" for line in lines), encoding="utf-8")
 
     @staticmethod
     def write(path: Path, text: str) -> None:
@@ -123,9 +121,7 @@ def arena(tmp_path: Path) -> Arena:
 
 def make_newest(path: Path, *others: Path) -> None:
     """Give `path` an mtime strictly later than every `others` — the deterministic form of the suite's `touch`."""
-    latest = max(
-        [p.stat().st_mtime for p in others if p.exists()] + [path.stat().st_mtime]
-    )
+    latest = max([p.stat().st_mtime for p in others if p.exists()] + [path.stat().st_mtime])
     stamp = latest + 100
     os.utime(str(path), (stamp, stamp))
 
@@ -176,9 +172,7 @@ def test_stash_push_is_not_a_remote_push(arena: Arena) -> None:
 
 
 def test_plain_commit_no_workflow_allowed(arena: Arena) -> None:
-    check(
-        "plain commit, no workflow at all -> allow", ALLOW, arena.run("git commit -m x")
-    )
+    check("plain commit, no workflow at all -> allow", ALLOW, arena.run("git commit -m x"))
 
 
 def test_plain_push_no_workflow_allowed(arena: Arena) -> None:
@@ -222,9 +216,7 @@ def test_checked_task_without_capture_blocks_push(arena: Arena) -> None:
 def test_phase_design_is_outside_the_gate(arena: Arena) -> None:
     arena.workflow(arena.conductor, "DESIGN", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
-    check(
-        "phase DESIGN (outside IMPLEMENT/VERIFY) -> allow", ALLOW, arena.run("git push")
-    )
+    check("phase DESIGN (outside IMPLEMENT/VERIFY) -> allow", ALLOW, arena.run("git push"))
 
 
 def test_lowercase_implement_still_gates(arena: Arena) -> None:
@@ -257,9 +249,7 @@ def test_clean_green_capture_allows(arena: Arena) -> None:
     arena.workflow(arena.conductor, "IMPLEMENT", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
     arena.write(arena.spec / "evidence" / "green" / "3.txt", "5 passed in 1.2s\n")
-    check(
-        "checked task with clean green capture -> allow", ALLOW, arena.run("git push")
-    )
+    check("checked task with clean green capture -> allow", ALLOW, arena.run("git push"))
 
 
 def test_wave_capture_covers_every_task_it_names(arena: Arena) -> None:
@@ -270,9 +260,7 @@ def test_wave_capture_covers_every_task_it_names(arena: Arena) -> None:
         arena.spec / "evidence" / "green" / "wave-1.txt",
         "# tasks: 1.1, 1.2\n7 passed in 1.3s\n",
     )
-    check(
-        "wave capture naming both checked tasks -> allow", ALLOW, arena.run("git push")
-    )
+    check("wave capture naming both checked tasks -> allow", ALLOW, arena.run("git push"))
 
 
 def test_wave_capture_covers_only_the_tasks_it_names(arena: Arena) -> None:
@@ -287,9 +275,7 @@ def test_wave_capture_covers_only_the_tasks_it_names(arena: Arena) -> None:
         arena.spec / "evidence" / "green" / "wave-1.txt",
         "# tasks: 1.1, 1.2\n7 passed in 1.3s\n",
     )
-    check(
-        "checked task no wave capture names -> BLOCK push", BLOCK, arena.run("git push")
-    )
+    check("checked task no wave capture names -> BLOCK push", BLOCK, arena.run("git push"))
 
 
 def test_checked_heading_needs_no_capture(arena: Arena) -> None:
@@ -317,18 +303,14 @@ def test_failed_and_passed_counts_block(arena: Arena) -> None:
     reporting BOTH counts was allowed. Real pytest output almost always reports both."""
     arena.workflow(arena.conductor, "IMPLEMENT", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
-    arena.write(
-        arena.spec / "evidence" / "green" / "3.txt", "3 failed, 5 passed in 2.1s\n"
-    )
+    arena.write(arena.spec / "evidence" / "green" / "3.txt", "3 failed, 5 passed in 2.1s\n")
     check("'3 failed, 5 passed' -> BLOCK (was ALLOWED)", BLOCK, arena.run("git push"))
 
 
 def test_errors_and_passed_counts_block(arena: Arena) -> None:
     arena.workflow(arena.conductor, "IMPLEMENT", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
-    arena.write(
-        arena.spec / "evidence" / "green" / "3.txt", "2 errors, 5 passed in 2.1s\n"
-    )
+    arena.write(arena.spec / "evidence" / "green" / "3.txt", "2 errors, 5 passed in 2.1s\n")
     check("'2 errors, 5 passed' -> BLOCK", BLOCK, arena.run("git push"))
 
 
@@ -336,18 +318,14 @@ def test_zero_failed_does_not_over_block(arena: Arena) -> None:
     """...while a zero count must NOT over-block, which is why the predicate needs no escape clause."""
     arena.workflow(arena.conductor, "IMPLEMENT", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
-    arena.write(
-        arena.spec / "evidence" / "green" / "3.txt", "0 failed, 5 passed in 2.1s\n"
-    )
+    arena.write(arena.spec / "evidence" / "green" / "3.txt", "0 failed, 5 passed in 2.1s\n")
     check("'0 failed, 5 passed' -> allow (no over-block)", ALLOW, arena.run("git push"))
 
 
 def test_skip_counter_is_a_vacuous_green(arena: Arena) -> None:
     arena.workflow(arena.conductor, "IMPLEMENT", ".claude/specs/demo")
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
-    arena.write(
-        arena.spec / "evidence" / "green" / "3.txt", "4 passed, 1 skipped in 1.0s\n"
-    )
+    arena.write(arena.spec / "evidence" / "green" / "3.txt", "4 passed, 1 skipped in 1.0s\n")
     check(
         "capture containing a SKIP -> BLOCK (vacuous green)",
         BLOCK,
@@ -401,9 +379,7 @@ def test_ci_outage_mode_owes_a_green_full_suite_capture(arena: Arena) -> None:
 
     check("outage declared, NO regress capture -> BLOCK", BLOCK, arena.run("git push"))
     arena.write(regress, "3 failed, 90 passed in 60s\n")
-    check(
-        "outage declared, RED full-suite capture -> BLOCK", BLOCK, arena.run("git push")
-    )
+    check("outage declared, RED full-suite capture -> BLOCK", BLOCK, arena.run("git push"))
     arena.write(regress, "93 passed in 61s\n")
     check(
         "outage declared, GREEN full-suite capture -> allow",
@@ -431,16 +407,12 @@ def test_push_is_judged_on_this_sessions_own_run(arena: Arena) -> None:
     arena.tasksfile(arena.spec, "- [x] 3. Do the thing")
 
     sibling = arena.orch / "runs" / "99999999"
-    arena.write(
-        sibling / lib.RESUME_FILENAME, "SESSION_ID: someone-else\nStatus: IN_PROGRESS\n"
-    )
+    arena.write(sibling / lib.RESUME_FILENAME, "SESSION_ID: someone-else\nStatus: IN_PROGRESS\n")
     arena.workflow(sibling, "IMPLEMENT", ".claude/specs/other")
     arena.tasksfile(arena.spec_other, "- [x] 9. Their thing")
     other_capture = arena.spec_other / "evidence" / "green" / "9.txt"
     arena.write(other_capture, "5 passed in 1.0s\n")
-    make_newest(
-        sibling / lib.STATE_FILENAME, own / lib.STATE_FILENAME
-    )  # newest, so an mtime rung would pick it
+    make_newest(sibling / lib.STATE_FILENAME, own / lib.STATE_FILENAME)  # newest, so an mtime rung would pick it
     check(
         "sibling's proven spec does NOT excuse my unproven one",
         BLOCK,
@@ -477,10 +449,7 @@ def broken_hooks_copy(tmp_path: Path, variant: str) -> Path:
     copy = tmp_path / f"broken-{variant}" / "hooks"
     copy.mkdir(parents=True)
     for source in HOOKS_DIR.iterdir():
-        if source.is_file() and (
-            source.suffix == ".py"
-            or source.name in ("CONTRACT_VERSION", "REVISION_NOTICE.md")
-        ):
+        if source.is_file() and (source.suffix == ".py" or source.name in ("CONTRACT_VERSION", "REVISION_NOTICE.md")):
             shutil.copy(str(source), str(copy / source.name))
     library = copy / "hooklib.py"
     if variant == "partial":
@@ -565,9 +534,7 @@ def test_broken_library_leaves_a_commit_free(tmp_path: Path, variant: str) -> No
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_broken_library_commit_bypass_ban_still_fires(
-    tmp_path: Path, variant: str
-) -> None:
+def test_broken_library_commit_bypass_ban_still_fires(tmp_path: Path, variant: str) -> None:
     """...and the bypass bans must still fire, since they sit above the library section."""
     copy = broken_hooks_copy(tmp_path, variant)
     project = tmp_path / "project"
@@ -580,9 +547,7 @@ def test_broken_library_commit_bypass_ban_still_fires(
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_broken_library_push_bypass_ban_still_fires(
-    tmp_path: Path, variant: str
-) -> None:
+def test_broken_library_push_bypass_ban_still_fires(tmp_path: Path, variant: str) -> None:
     copy = broken_hooks_copy(tmp_path, variant)
     project = tmp_path / "project"
     project.mkdir()

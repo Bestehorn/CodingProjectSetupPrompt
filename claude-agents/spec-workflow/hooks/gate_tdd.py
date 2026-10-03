@@ -19,6 +19,10 @@ from typing import List, Optional
 import hooklib as lib
 
 HOOK = "spec-tdd-gate"
+EVENT = "pre-tool-use"  # the dispatcher runs this gate on this event
+ORDER = 20  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
+SHELL_TOOLS = {"Bash", "shell", "execute_bash", "execute_cmd", "executeBash"}
+TOOLS = SHELL_TOOLS  # PreToolUse only: the tool names this gate judges
 BYPASS_COMMIT_RE = re.compile(r"(--no-verify|\s-n(\s|$))")
 
 
@@ -58,12 +62,10 @@ def run(ctx: lib.Context) -> lib.Decision:
         )
 
 
-def _judge_push(ctx: lib.Context) -> lib.Decision:
+def _judge_push(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one check per push precondition
     state_file = ctx.owned_state_file()
     if state_file is None or not state_file.is_file():
-        return (
-            lib.allow()
-        )  # no spec workflow this session owns; the bypass bans were enforced above
+        return lib.allow()  # no spec workflow this session owns; the bypass bans were enforced above
 
     phase = ctx.field(state_file, "Phase")
     spec_value = ctx.field(state_file, "CURRENT_SPEC")
@@ -95,9 +97,7 @@ def _judge_push(ctx: lib.Context) -> lib.Decision:
     if latest is not None:
         body = lib.capture_body(latest)
         if lib.has_failures(body):
-            problems.append(
-                f"  - newest green capture ({latest}) shows failures/errors.\n"
-            )
+            problems.append(f"  - newest green capture ({latest}) shows failures/errors.\n")
         if lib.has_skips(body):
             problems.append(
                 f"  - newest green capture ({latest}) contains skipped/xfail tests — resolve them, "
@@ -115,9 +115,7 @@ def _judge_push(ctx: lib.Context) -> lib.Decision:
                 "'python scripts/run_tests.py' and capture it.\n"
             )
         elif lib.has_failures(lib.capture_body(regress)):
-            problems.append(
-                f"  - CI-OUTAGE MODE is declared and the newest full-suite capture ({regress}) is red.\n"
-            )
+            problems.append(f"  - CI-OUTAGE MODE is declared and the newest full-suite capture ({regress}) is red.\n")
 
     if problems:
         return lib.block(

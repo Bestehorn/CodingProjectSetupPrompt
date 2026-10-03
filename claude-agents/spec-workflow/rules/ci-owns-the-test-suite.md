@@ -101,7 +101,8 @@ worktree pays for a full local suite.
 
 A pipeline takes as long as it takes; what is yours to decide is what happens meanwhile.
 Start the wrapper's blocking wait (`pipeline wait <id>` on GitLab, `wait-run <id>` on
-GitHub; both poll internally and exit with the terminal verdict) as a BACKGROUND task and
+GitHub; both poll internally and exit with the terminal verdict — 0 success, 10 not
+success, 11 timeout, distinct from the wrapper's own 1/2/3) as a BACKGROUND task and
 continue with work that does not depend on the verdict — the next wave, the docs, the
 issue note, another issue in another worktree. The completion re-invokes you. A `sleep N`
 inside a tool call, repeated, is the measured shape of a thousand hours of nothing

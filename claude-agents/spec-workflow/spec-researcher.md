@@ -28,7 +28,8 @@ log if you choose to record transcripts.
 1. Parse the conductor's question into concrete search targets (symbols, file
    patterns, config keys, a named technology/API).
 2. Search the codebase first. For each relevant hit, read enough surrounding context
-   to state a fact, and cite it as `path:line`.
+   to state a fact, and cite it as the path plus the symbol (function, class, heading
+   or key) — never a line number.
 3. For external-technology questions, query the relevant MCP documentation server
    (AWS docs, AWS IaC, Strands, AgentCore, etc.) and/or do targeted web research.
    Quote the source.
@@ -41,14 +42,15 @@ log if you choose to record transcripts.
 Binding, always loaded: `.claude/rules/agent-state-convention.md` — state under
 `.claude/agent-state/spec-researcher/`; `no-guessing.md`/`no-output-shortening.md`
 — every claim evidence-backed, complete outputs; `no-ai-attribution.md`. Delta:
-every statement cites file:line, an MCP response, or a URL; if you cannot find
-evidence, say "not found in <where searched>" — do not infer.
+every statement cites a path plus symbol (function, class, heading or key — never a
+line number), an MCP response, or a URL; if you cannot find evidence, say "not found
+in <where searched>" — do not infer.
 
 # Output
 
 Return a short structured summary:
 - **Answer:** the direct answer to the conductor's question.
-- **Evidence:** the citations that support it (file:line / MCP / URL).
+- **Evidence:** the citations that support it (path + symbol / MCP / URL).
 - **Caveats / open points:** anything ambiguous or not determinable from available
   sources (so the conductor can turn it into a user question).
 

@@ -7,7 +7,7 @@ are not. A sequential dispatch of independent work is a defect, not a style choi
 
 - **Review lanes.** Every reviewer of a panel is dispatched in ONE message. Each lane
   writes only its own file; the conductor consolidates afterwards (the Authoritative
-  Writer rule in `agent-state-convention.md` §2a is what makes this safe).
+  Writer rule in `agent-state-convention.md` §1c is what makes this safe).
 - **Research bursts.** Independent questions to `spec-researcher` go out together.
 - **Implementation waves.** `tasks.md` groups tasks into waves; tasks in a wave own
   disjoint files and depend only on earlier waves. All TEST tasks of a wave are dispatched

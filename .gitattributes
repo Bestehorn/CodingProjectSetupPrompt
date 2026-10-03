@@ -5,8 +5,14 @@
 
 # The same reasoning applies to every shell script this repo SHIPS (templates such as
 # setup-hooks.sh): a CRLF bash script fails on Linux/macOS and produces confusing
-# '<CR>: command not found' errors even in Git Bash. The agent hooks themselves are
-# Python since 2026-10-01 and need no line-ending rule.
+# '<CR>: command not found' errors even in Git Bash.
 *.sh text eol=lf
+
+# The agent hooks are Python and run under either line ending, but they are COPIED byte-for-byte into
+# projects by the setup and update prompts: keep the shipped bytes LF so a copy made from a
+# core.autocrlf=true checkout does not carry CRLF into a project whose own .gitattributes says otherwise.
+# (A project installs the matching rule for its copy: `.claude/hooks/** text eol=lf`.)
+claude-agents/spec-workflow/hooks/** text eol=lf
+cli-agents/spec-workflow/hooks/** text eol=lf
 # CONTRACT_VERSION is read line-wise by the hooks; keep it LF for the same reason.
 claude-agents/spec-workflow/hooks/CONTRACT_VERSION text eol=lf

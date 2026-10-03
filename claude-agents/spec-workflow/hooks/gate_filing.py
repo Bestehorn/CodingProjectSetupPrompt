@@ -19,6 +19,17 @@ import re
 import hooklib as lib
 
 HOOK = "issue-filing-gate"
+# DELIBERATE DIFFERENCES from the bash predecessor, so a reader does not take them for porting slips:
+#   * the text-tool exemption matches the FIRST line only (`re.match`), where the bash `grep -E '^...'` matched
+#     any line — a multi-line command whose second line starts with `grep` is still a create call;
+#   * `\s+` spans a line break, so an `issue create` split by a shell line continuation is still recognised
+#     as a create call;
+#   * CRLF in the command is normalised by `Payload.command`, so a carriage return cannot flip a decision;
+#   * a non-string `command` reads as empty and is allowed: fail open on an unknown payload shape.
+EVENT = "pre-tool-use"  # the dispatcher runs this gate on this event
+ORDER = 40  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
+SHELL_TOOLS = {"Bash", "shell", "execute_bash", "execute_cmd", "executeBash"}
+TOOLS = SHELL_TOOLS  # PreToolUse only: the tool names this gate judges
 TEXT_TOOL_RE = re.compile(
     r"^\s*(grep|rg|ag|echo|printf|cat|sed|awk|less|more|head|tail|Select-String|Get-Content|"
     r"Write-Output|git\s+grep)\s"
@@ -39,7 +50,7 @@ SPAWNED_RE = re.compile(r"Origin:\s*spawned-(discovery|residual)", re.IGNORECASE
 SPAWNED_FROM_RE = re.compile(r"Spawned-from:\s*#?[0-9]+", re.IGNORECASE)
 
 
-def run(ctx: lib.Context) -> lib.Decision:
+def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — provenance checks, one per line, in order
     command = ctx.payload.command
     if not command:
         return lib.allow()

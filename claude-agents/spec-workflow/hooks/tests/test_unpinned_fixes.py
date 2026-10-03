@@ -45,9 +45,7 @@ RUN8 = "abcd1234"
 ALLOW = 0
 BLOCK = 2
 
-DEPLOYED_VERSION = "".join(
-    (HOOKS_DIR / "CONTRACT_VERSION").read_text(encoding="utf-8").splitlines()[0].split()
-)
+DEPLOYED_VERSION = "".join((HOOKS_DIR / "CONTRACT_VERSION").read_text(encoding="utf-8").splitlines()[0].split())
 
 HANDSHAKE_NEEDLE = "continuous-work contract"
 BRAKE_NEEDLE = "records itself as UNFINISHED"
@@ -90,13 +88,9 @@ class Arena:
         shutil.rmtree(self.root / ".claude", ignore_errors=True)
         for folder in (self.run_dir, self.hooks, self.green):
             folder.mkdir(parents=True, exist_ok=True)
-        registry = {
-            SID: {"session_id": SID, "run_id": RUN8, "state_dir": f"runs/{RUN8}/"}
-        }
+        registry = {SID: {"session_id": SID, "run_id": RUN8, "state_dir": f"runs/{RUN8}/"}}
         (self.orch / "registry.json").write_text(json.dumps(registry), encoding="utf-8")
-        shutil.copy(
-            str(HOOKS_DIR / "CONTRACT_VERSION"), str(self.hooks / "CONTRACT_VERSION")
-        )
+        shutil.copy(str(HOOKS_DIR / "CONTRACT_VERSION"), str(self.hooks / "CONTRACT_VERSION"))
 
     def seed_resume(self, status: str, phase: str, awaiting: str, issue: str) -> None:
         (self.run_dir / lib.RESUME_FILENAME).write_text(
@@ -105,18 +99,14 @@ class Arena:
             encoding="utf-8",
         )
 
-    def seed_workflow(
-        self, phase: str, current_spec: str, status: str = "IN_PROGRESS"
-    ) -> None:
+    def seed_workflow(self, phase: str, current_spec: str, status: str = "IN_PROGRESS") -> None:
         (self.run_dir / lib.STATE_FILENAME).write_text(
             f"SESSION_ID: {SID}\nCURRENT_SPEC: {current_spec}\nPhase: {phase}\nStatus: {status}\nCURRENT_TASK: 1\n",
             encoding="utf-8",
         )
 
     def ack(self) -> None:
-        (self.run_dir / f"contract-ack-{DEPLOYED_VERSION}").write_text(
-            "ack\n", encoding="utf-8"
-        )
+        (self.run_dir / f"contract-ack-{DEPLOYED_VERSION}").write_text("ack\n", encoding="utf-8")
 
     def tasks(self, text: str) -> None:
         (self.spec / "tasks.md").write_text(text, encoding="utf-8")
@@ -135,12 +125,8 @@ class Arena:
         self.tasks(task_list)
 
     def ctx(self) -> lib.Context:
-        payload = json.dumps(
-            {"session_id": SID, "cwd": str(self.root), "hook_event_name": "Stop"}
-        )
-        return lib.Context(
-            lib.Payload.parse(payload), environ={}, hooks_dir=HOOKS_DIR, cwd=self.root
-        )
+        payload = json.dumps({"session_id": SID, "cwd": str(self.root), "hook_event_name": "Stop"})
+        return lib.Context(lib.Payload.parse(payload), environ={}, hooks_dir=HOOKS_DIR, cwd=self.root)
 
     def loop_gate(self) -> lib.Decision:
         return gate_issue_loop.run(self.ctx())
@@ -270,9 +256,7 @@ def test_spec_gate_releases_on_a_whole_terminal_value_only(arena: Arena) -> None
     PREFIX while the loop gate refused the same string. Whole-value only."""
     arena.prep_spec("- [x] 1 do the thing\n")
     # no capture at all, so the gate has a reason to block unless a Status releases it
-    arena.seed_workflow(
-        "IMPLEMENT", ".claude/specs/demo", "COMPLETED (was IN_PROGRESS)"
-    )
+    arena.seed_workflow("IMPLEMENT", ".claude/specs/demo", "COMPLETED (was IN_PROGRESS)")
     check(
         "spec gate: narrative Status does NOT release",
         BLOCK,

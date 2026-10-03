@@ -35,9 +35,7 @@ HOOKS = Path(__file__).resolve().parent.parent
 MINE = "5db650ab-0e97-41fe-a5e8-45e52e41386e"
 MY_RUN = "5db650ab"
 SIBLING_RUN = "54a2387f"
-AUTHORING_DATE = (
-    "2026-10-01"  # inside the real REVISION_NOTICE.md window (Valid-until: 2026-11-15)
-)
+AUTHORING_DATE = "2026-10-01"  # inside the real REVISION_NOTICE.md window (Valid-until: 2026-11-15)
 
 MY_STATE = f"""# Resume state
 SESSION_ID: {MINE}
@@ -90,9 +88,7 @@ def sibling(arena: Path) -> Path:
 def register(arena: Path, sid: str = MINE, run_id: str = MY_RUN) -> None:
     """The registry declares a run for `sid` at runs/<run_id>/ — exactly the bash printf."""
     (orch(arena) / "registry.json").write_text(
-        json.dumps(
-            {sid: {"session_id": sid, "run_id": run_id, "state_dir": f"runs/{run_id}/"}}
-        ),
+        json.dumps({sid: {"session_id": sid, "run_id": run_id, "state_dir": f"runs/{run_id}/"}}),
         encoding="utf-8",
     )
 
@@ -118,9 +114,7 @@ def payload(arena: Path, sid: Optional[str] = MINE, source: str = "compact") -> 
 
 def run_gate(arena: Path, payload_text: str, hooks_dir: Path = HOOKS) -> str:
     """bash `run`: the re-inject gate ALONE, cwd = arena, stdout and stderr merged, no environment leak."""
-    ctx = lib.Context(
-        lib.Payload.parse(payload_text), environ={}, hooks_dir=hooks_dir, cwd=arena
-    )
+    ctx = lib.Context(lib.Payload.parse(payload_text), environ={}, hooks_dir=hooks_dir, cwd=arena)
     decision = gate_reinject.run(ctx)
     return decision.stdout + decision.stderr
 
@@ -143,26 +137,18 @@ def check(label: str, needle: str, wanted: bool, out: str) -> None:
     if wanted:
         assert needle in haystack, f"{label}: wanted substring {needle!r} in:\n{out}"
     else:
-        assert needle not in haystack, (
-            f"{label}: FORBIDDEN substring {needle!r} present in:\n{out}"
-        )
+        assert needle not in haystack, f"{label}: FORBIDDEN substring {needle!r} present in:\n{out}"
 
 
 def ids(cases: Sequence[Case]) -> List[str]:
     return [case[0] for case in cases]
 
 
-def spawn_session_start(
-    hooks_copy: Path, arena: Path, payload_text: str
-) -> "subprocess.CompletedProcess[str]":
+def spawn_session_start(hooks_copy: Path, arena: Path, payload_text: str) -> "subprocess.CompletedProcess[str]":
     """`python <copy>/hooks.py session-start` exactly as the harness spawns it: payload on stdin, cwd = arena.
     CLAUDE_PROJECT_DIR and PYTHONPATH are stripped so the child can neither write into the real project nor
     import the real library behind the copy's back."""
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("CLAUDE_PROJECT_DIR", "PYTHONPATH")
-    }
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "PYTHONPATH")}
     return subprocess.run(
         [sys.executable, str(hooks_copy / "hooks.py"), "session-start"],
         input=payload_text,
@@ -217,9 +203,7 @@ CASE1: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE1, ids=ids(CASE1))
-def test_case1_unregistered_with_sibling(
-    arena: Path, pinned_clock: str, label: str, needle: str, wanted: bool
-) -> None:
+def test_case1_unregistered_with_sibling(arena: Path, pinned_clock: str, label: str, needle: str, wanted: bool) -> None:
     sibling(arena)
     check(label, needle, wanted, run_gate(arena, payload(arena)))
 
@@ -238,9 +222,7 @@ CASE2: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE2, ids=ids(CASE2))
-def test_case2_broken_registered_without_state(
-    arena: Path, label: str, needle: str, wanted: bool
-) -> None:
+def test_case2_broken_registered_without_state(arena: Path, label: str, needle: str, wanted: bool) -> None:
     sibling(arena)
     register(arena)
     check(label, needle, wanted, run_gate(arena, payload(arena)))
@@ -270,17 +252,11 @@ CASE3: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE3, ids=ids(CASE3))
-def test_case3_owned_ignores_newer_sibling(
-    arena: Path, label: str, needle: str, wanted: bool
-) -> None:
+def test_case3_owned_ignores_newer_sibling(arena: Path, label: str, needle: str, wanted: bool) -> None:
     mine = write_state(arena, MY_RUN, MY_STATE)
     register(arena)
-    newer = sibling(
-        arena
-    )  # touched AFTER mine, so an mtime rung would pick the sibling
-    assert newer.stat().st_mtime > mine.stat().st_mtime, (
-        "test setup: the sibling must be the newer file"
-    )
+    newer = sibling(arena)  # touched AFTER mine, so an mtime rung would pick the sibling
+    assert newer.stat().st_mtime > mine.stat().st_mtime, "test setup: the sibling must be the newer file"
     check(label, needle, wanted, run_gate(arena, payload(arena)))
 
 
@@ -295,9 +271,7 @@ CASE4: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE4, ids=ids(CASE4))
-def test_case4_invented_dir_recovered_by_session_id(
-    arena: Path, label: str, needle: str, wanted: bool
-) -> None:
+def test_case4_invented_dir_recovered_by_session_id(arena: Path, label: str, needle: str, wanted: bool) -> None:
     write_state(arena, "run-issue574-20260828T194800Z", MY_STATE_SHORT)
     register(arena)  # declares runs/5db650ab/, which does not exist
     sibling(arena)
@@ -315,9 +289,7 @@ CASE5: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE5, ids=ids(CASE5))
-def test_case5_no_session_id(
-    arena: Path, label: str, needle: str, wanted: bool
-) -> None:
+def test_case5_no_session_id(arena: Path, label: str, needle: str, wanted: bool) -> None:
     sibling(arena)
     check(
         label,
@@ -345,9 +317,7 @@ def test_case6a_invariant_exits_0(owned_arena: Path) -> None:
     """invariant: exits 0 (SessionStart stderr never reaches the agent). For SessionStart, exit 2 shows stderr
     TO THE USER ONLY — Claude never sees it — so a non-zero exit would deliver nothing to the agent."""
     decision = dispatch(owned_arena, payload(owned_arena))
-    assert decision.exit_code == 0, (
-        f"expected exit 0, got {decision.exit_code}: {decision.stderr}"
-    )
+    assert decision.exit_code == 0, f"expected exit 0, got {decision.exit_code}: {decision.stderr}"
 
 
 def test_case6b_invariant_stdout_is_plain_text_not_json_shaped(
@@ -357,9 +327,7 @@ def test_case6b_invariant_stdout_is_plain_text_not_json_shaped(
     PARSED as JSON, and on a parse failure the text is not added at all."""
     decision = dispatch(owned_arena, payload(owned_arena))
     assert decision.stdout.strip(), "nothing was delivered at all"
-    assert not decision.stdout.startswith("{"), (
-        "stdout begins with { and may be parsed as JSON"
-    )
+    assert not decision.stdout.startswith("{"), "stdout begins with { and may be parsed as JSON"
 
 
 def test_case6c_invariant_stdout_under_the_10000_char_cap(owned_arena: Path) -> None:
@@ -391,9 +359,7 @@ CASE6B: List[Case] = [
 
 
 @pytest.mark.parametrize("label, needle, wanted", CASE6B, ids=ids(CASE6B))
-def test_case6b_expired_revision_notice(
-    arena: Path, tmp_path: Path, label: str, needle: str, wanted: bool
-) -> None:
+def test_case6b_expired_revision_notice(arena: Path, tmp_path: Path, label: str, needle: str, wanted: bool) -> None:
     expired = tmp_path / "expired" / "hooks"
     expired.mkdir(parents=True)
     (expired / "REVISION_NOTICE.md").write_text(
@@ -423,9 +389,7 @@ def test_real_revision_notice_delivered_inside_its_window() -> None:
     """(extra) The notice shipped in the hooks directory is delivered on the suite's authoring date and is
     retired after its own Valid-until line, read from the file rather than hard-coded."""
     first = lib.read_text(HOOKS / "REVISION_NOTICE.md").splitlines()[0]
-    assert first.lower().startswith("valid-until:"), (
-        "REVISION_NOTICE.md must open with a Valid-until line"
-    )
+    assert first.lower().startswith("valid-until:"), "REVISION_NOTICE.md must open with a Valid-until line"
     until = first.split(":", 1)[1].strip()
     delivered = lib.revision_notice(HOOKS, today=AUTHORING_DATE)
     assert delivered is not None and "FRAMEWORK REVISION" in delivered
@@ -449,9 +413,7 @@ def test_case7_no_library_exits_0(arena: Path, tmp_path: Path) -> None:
     )
 
 
-def test_case7_truncated_library_exits_0_without_a_crash(
-    arena: Path, tmp_path: Path
-) -> None:
+def test_case7_truncated_library_exits_0_without_a_crash(arena: Path, tmp_path: Path) -> None:
     """(extra) A hooks copy whose hooklib.py is truncated before `def selftest` (the deliberate last definition,
     so a copy that lacks it is treated as a broken library) must still never break startup: exit 0 and no
     uncaught traceback. The dispatcher's documented degraded path delivers nothing here; the spec requires only
@@ -465,6 +427,4 @@ def test_case7_truncated_library_exits_0_without_a_crash(
     assert completed.returncode == 0, (
         f"truncated library -> expected exit 0, got {completed.returncode}\n{completed.stderr}"
     )
-    assert "Traceback" not in completed.stderr, (
-        f"uncaught exception on startup:\n{completed.stderr}"
-    )
+    assert "Traceback" not in completed.stderr, f"uncaught exception on startup:\n{completed.stderr}"

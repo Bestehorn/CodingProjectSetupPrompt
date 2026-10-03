@@ -72,6 +72,9 @@ repos:
       - id: mypy
         args: [--ignore-missing-imports]
         stages: [pre-push]
+        # Scope = CI's `mypy src` (run_checks.py too). Unscoped, --all-files at push time also fed
+        # mypy .claude/specs/**/evidence/: repeated bare filenames, fatal "Duplicate module named".
+        files: ^src/
         exclude: ^(test/|old/|workspace/|tmp/|venv/|scripts/)
         additional_dependencies: [types-requests, types-python-dateutil]
 

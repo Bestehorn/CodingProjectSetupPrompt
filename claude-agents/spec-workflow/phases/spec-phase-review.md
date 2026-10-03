@@ -20,7 +20,7 @@ read `.claude/docs/review-contract.md` first; it is the binding finding shape.
 
 **Every lane of a panel is dispatched in ONE message** (`parallel-by-default.md`). Each
 lane writes only `review/<lane>/iteration-NN.md` (≤ 8,000 bytes) and never the decision
-log; the conductor is the Authoritative Writer (`agent-state-convention.md` §2a).
+log; the conductor is the Authoritative Writer (`agent-state-convention.md` §1c).
 
 ## Before dispatching: the cap check
 

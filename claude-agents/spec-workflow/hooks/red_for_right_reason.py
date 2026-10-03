@@ -14,9 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-ANY_FAILURE_RE = re.compile(
-    r"failed|FAILED|error|Falsifying example|AssertionError", re.IGNORECASE
-)
+ANY_FAILURE_RE = re.compile(r"failed|FAILED|error|Falsifying example|AssertionError", re.IGNORECASE)
 WRONG_REASON_RE = re.compile(
     r"ModuleNotFoundError|ImportError|cannot import name|SyntaxError|IndentationError|errors during collection|"
     r"ERROR collecting|fixture .* not found|NameError|no tests ran",
@@ -32,8 +30,7 @@ RIGHT_REASON_RE = re.compile(
 def judge(content: str) -> "tuple[bool, str]":
     if not ANY_FAILURE_RE.search(content):
         return False, (
-            "red-for-right-reason: no failure detected — the test did not fail (it must be RED before "
-            "implementing)."
+            "red-for-right-reason: no failure detected — the test did not fail (it must be RED before implementing)."
         )
     if WRONG_REASON_RE.search(content) and COLLECTION_RE.search(content):
         return False, (
@@ -54,9 +51,7 @@ def judge(content: str) -> "tuple[bool, str]":
 
 def main(argv: "list[str]") -> int:
     if len(argv) < 2 or not Path(argv[1]).is_file():
-        sys.stderr.write(
-            f"red-for-right-reason: capture file not found: '{argv[1] if len(argv) > 1 else ''}'\n"
-        )
+        sys.stderr.write(f"red-for-right-reason: capture file not found: '{argv[1] if len(argv) > 1 else ''}'\n")
         return 1
     ok, message = judge(Path(argv[1]).read_text(encoding="utf-8", errors="replace"))
     (sys.stdout if ok else sys.stderr).write(message + "\n")

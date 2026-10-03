@@ -11,31 +11,60 @@ Bring this project's setup (Claude Code and/or Kiro configuration, git hooks, ch
 scripts, CI, rules, agents, commands, docs) up to the framework's current state, AND
 compile the project's accumulated memory so that a session pays only for what it needs.
 
-1. Read the applicable setup prompt completely: ClaudeCodeSetupPrompt.txt for a Claude Code
-   project, KiroProjectSetupPrompt.v2.txt for a Kiro project, both for a dual project. Its
-   global execution rules and its final verification-and-report part govern this task. The
-   framework repository's recent git log tells you what changed; record the framework
-   commit you update from.
-2. Isolate. Fetch the latest remote state and work in a git worktree on a new branch named
+You do every step yourself, including the ones that touch this clone's configuration and
+every verification. You never hand the operator a command to run, a script to execute or a
+result to check: a step you cannot perform is recorded as a residual in the PR with the
+reason, not delegated to a person.
+
+1. Pin the framework. Record `git -C <framework> rev-parse HEAD` as THE framework commit
+   of this update and export that commit once into a staging directory
+   (`git -C <framework> archive <sha> | tar -x -C <staging>`); every asset you install is
+   copied from the staging directory, never from the framework's working tree. The
+   framework moves while you work (five commits landed during one measured update); a later
+   HEAD is reported in the PR as the next update's target, never chased mid-run. Read the
+   applicable setup prompt completely from that export: ClaudeCodeSetupPrompt.txt for a
+   Claude Code project, KiroProjectSetupPrompt.v2.txt for a Kiro project, both for a dual
+   project. Its global execution rules and its final verification-and-report part govern
+   this task.
+2. Already current? Read `.claude/FRAMEWORK_COMMIT` (Kiro: `.kiro/FRAMEWORK_COMMIT`), the
+   one-line marker every update writes (`<framework sha> <ISO date>`). If it names the
+   pinned commit AND the inventory of step 4 finds no delta, the project is current: report
+   that with the marker and the empty delta table as evidence, and STOP — no branch, no
+   PR, no empty merge.
+3. Isolate. Fetch the latest remote state and work in a git worktree on a new branch named
    framework-update-<YYYYMMDD> (add `-2`, `-3`, ... when a branch of that name already exists
    locally or on the remote — a second update on the same day is normal), based on the remote
-   default branch. Other workers share this
-   clone and this machine; nothing you do may disturb them. Two things are clone-wide and
-   therefore off-limits from the worktree: `pip install -e .` (it re-points the shared
-   editable install at a worktree that will be removed; add missing tools by name instead)
-   and git config changes such as core.hooksPath (list them as post-merge steps instead).
-3. Diff before changing anything. Inventory every framework asset in this project and
-   classify it against its canonical source: up-to-date, missing, outdated, locally
-   customized, relocated (the framework moved it), or obsolete (the framework no longer has
-   it). Keep the table; it goes into the PR.
-4. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
+   default branch. Other workers share this clone and this machine; nothing you do may
+   disturb their work. ONE thing is off-limits from the worktree: `pip install -e .`, which
+   re-points the shared editable install at a worktree that will be removed (add missing
+   tools by name instead). Everything else the setup prompt installs, you install:
+   `scripts/setup-hooks.sh` (or its Python equivalent) is yours to run — `core.hooksPath` is
+   a relative path that git resolves per working tree, so setting it from the worktree is
+   both safe and the end state the merge needs — and so is every verification command.
+4. Diff before changing anything. Inventory every framework asset in this project and
+   classify it against its canonical source in the export: up-to-date, missing, outdated,
+   locally customized, relocated (the framework moved it), or obsolete (the framework no
+   longer has it). Keep the table; it goes into the PR.
+5. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
    the update procedure: project-specific values and content are preserved, conflicts are
    flagged, relocated assets are installed at the new location before the old copy is
    removed, obsolete assets are removed only when nothing references them.
-5. Run the memory compile (next section) so the update leaves the project under its
+6. Run the memory compile (next section) so the update leaves the project under its
    budgets, not merely equipped with the tools to get there.
-6. Verify per the setup prompt's checklist, push, open a PR against the default branch, fix
-   every CI failure until CI is green, then merge the PR yourself.
+7. Write the marker: `.claude/FRAMEWORK_COMMIT` (and `.kiro/FRAMEWORK_COMMIT` on a Kiro or
+   dual project) holds one line, `<pinned framework sha> <YYYY-MM-DD>`.
+8. Verify per the setup prompt's checklist (every check run by you, in this worktree), push,
+   open a PR against the default branch, fix every CI failure until CI is green, then merge
+   the PR yourself.
+9. Bring THIS machine's main checkout forward. After the merge, fetch; when the main checkout
+   has no uncommitted changes and its HEAD is an ancestor of the merged trunk, run
+   `git -C <main checkout> merge --ff-only <remote>/<default>` — the one sanctioned move of
+   local main (keep-git-clean.md): reversible through the reflog, and it is what makes every
+   session on this machine read the new hooks, rules and agents from its next event. If the
+   checkout holds work, record that as the single post-merge step in the PR and say so in
+   your final message. Then run `python .claude/hooks/hooks.py selftest` in the main
+   checkout and confirm `.claude/agent-state/issue-work-orchestrator/.hook-decisions/`
+   gains lines from sessions you did not run.
 
 ## The memory compile (mandatory on every existing project)
 
@@ -64,7 +93,9 @@ of this in the same PR, in this order, and record the before/after sizes:
    then the `/compile-memory` (Kiro: `@compile-memory`) procedure: every ledger row and
    lesson older than six weeks is promoted (recurrence or measured damage → ONE issue via
    intake), enforced (a test, a hook check or a one-line rule now catches the class — write
-   it and cite its path), or archived verbatim to `docs/archive/`. Convert
+   it and cite its path), or archived verbatim to `docs/archive/` — verbatim except that
+   the tool writes CI-skip tokens such as `[skip ci]` as `[skip-ci]`, because an archive line
+   quoted into a commit message must not suppress a pipeline. Convert
    `docs/lessons-learned.md` to the five-line `Date/Lesson/Enforced-by/Scope` format,
    archiving the narrative file whole as `docs/archive/lessons-learned-<YYYY-MM>.md`
    before rewriting. Nothing is deleted from git.
@@ -78,26 +109,43 @@ of this in the same PR, in this order, and record the before/after sizes:
    a "line-count-neutral edit" rule, a corpus size pinned to an exact figure) is removed
    with its rule, because `proportionality.md` forbids measurements in specs and the
    citation form is now symbol-and-path. Record each retirement in the PR.
-5b. **The hooks are Python.** Install `hooklib.py`, `hooks.py`, every `gate_*.py`,
+6. **The hooks are Python.** Install `hooklib.py`, `hooks.py`, every `gate_*.py`,
    `red_for_right_reason.py` and `tests/` into `.claude/hooks/` (Kiro: the same modules plus
-   `kiro_hooks.py` into `.kiro/hooks-bin/`), replace the `hooks` block of
-   `.claude/settings.json` with the three exec-form `python` registrations of Part 12.2
-   (Kiro: the agents' JSON `hooks` already name `kiro_hooks.py`), and DELETE the `.sh` hooks
-   and their bash suites — a surviving bash registration is the defect this revision
-   removes: on a Windows host the bare `bash` the harness resolves was the WSL launcher and
-   every gate was inert. A project-specific hook of its own (a `ruff-on-stop`, say) is
-   re-registered through `python` or retired; never through `bash`.
-6. **Wrapper and CI.** Implement the blocking wait in the project's wrapper (`pipeline
-   wait` / `wait-run`, per the template) if absent. Where the project deploys, confirm the
-   pipeline has a post-deploy job that runs the committed end-to-end script; add the job
-   if the project has end-to-end scripts that only an agent used to run by hand.
-7. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=` passes
-   in full; `python scripts/memory_compile.py report` exits 0; the hook suites pass
-   (`python -m pytest .claude/hooks/tests -q`) and `python .claude/hooks/hooks.py selftest`
-   passes — it spawns the dispatcher exactly as the harness does, so a hook that cannot
-   start on this host is caught here and not in a transcript;
-   grep `.claude/` and `.kiro/` for `Type1`/`Type2` (outside the issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an old
-   copy preserved over the new one.
+   `kiro_hooks.py` into `.kiro/hooks-bin/`, and the agent descriptors from `cli-agents/`,
+   whose `hooks` blocks already carry the launcher), replace the `hooks` block of
+   `.claude/settings.json` with the output of `python .claude/hooks/hooks.py registration`
+   (the launcher form of Part 12.2 — never a retyped block), add
+   `.claude/hooks/** text eol=lf` to `.gitattributes` IN THE SAME COMMIT as the files, and
+   DELETE the `.sh` hooks and their bash suites. A surviving `bash` registration is the
+   defect this revision removes: on a Windows host the bare `bash` the harness resolved was
+   the WSL launcher and every gate was inert. Where the project's bash registrations were
+   LIVE (shell form, decisions in `.hook-decisions/`), prove parity before deleting them:
+   the pytest modules and the self-test pass, and after the merge the decision log keeps
+   growing from sessions you did not run. A project-specific hook of its own (a
+   `ruff-on-stop`, say) becomes a `gate_<name>.py` beside `hooks.py` declaring `EVENT`,
+   `ORDER` above 100 and `run(ctx)` — never a second registration and never `bash`; a
+   framework gate the project must switch off is named in `.claude/hooks/hooks.config.json`
+   (`{"disabled_gates": [...]}`) with the reason in the PR.
+7. **Wrapper and CI.** Implement the blocking wait in the project's wrapper (`pipeline
+   wait` / `wait-run`, per the template) if absent. Where the project deploys, the pipeline
+   needs a post-deploy job that runs the committed end-to-end script; add it if end-to-end
+   scripts exist that only an agent used to run by hand. Shape the job to what the project
+   can afford to run on every merge: a check that is slow (a training run), externally
+   consequential (an order, a payment, a message) or infrastructure-only moves to a
+   scheduled or manually triggered pipeline job with its cadence stated in the CI file, and a
+   drill that genuinely needs a person is recorded as a residual with an issue — a human
+   step is never placed in the merge path.
+8. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=`
+   passes in full; `python scripts/memory_compile.py report` exits 0; the hook suites pass
+   (`python -m pytest .claude/hooks/tests -q -o addopts= -p no:cacheprovider` — the override
+   keeps the project's xdist/coverage settings out of a suite that must print its own totals)
+   and `python .claude/hooks/hooks.py selftest` passes — it spawns the launcher exactly as the
+   harness does, so a hook that cannot start on this host is caught here and not in a
+   transcript; grep `.claude/` and `.kiro/` for `Type1`/`Type2` (outside the
+   issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an
+   old copy preserved over the new one. A Kiro tree the project keeps as-is (marker file
+   `.kiro/FROZEN`, one line: date and reason) is exempt from the grep and from the Kiro half
+   of the budget test; say so in the PR.
 
 Spec directories already committed under `.claude/specs/` stay where they are: they are
 history, they are not loaded, and moving them would break the citations in merged work.
@@ -105,37 +153,28 @@ Exclude them from any repository-wide scan that reads their contents.
 
 ## Reaching the sessions already running
 
-You do nothing to a running session; the merged update reaches it through the hooks, and
-your job is to leave the two channels intact:
-
-- `.claude/hooks/REVISION_NOTICE.md` (Kiro: `.kiro/hooks-bin/`) is installed as-is, and
-  `.claude/hooks/CONTRACT_VERSION` is the framework's current value. Every registered run on
-  a machine whose checkout has the new files is refused once at its next turn-end, receives
-  the notice inside the contract handshake, acknowledges, and continues under the new
-  phases; every session receives it again at its next compaction.
-- On every OTHER machine the checkout is stale until it is fast-forwarded, and the
-  orchestrator never moves it. The hooks' freshness check handles that: as soon as a clone
-  there fetches the trunk with your merge, each registered run is told once to fast-forward
-  its clean, strictly-behind checkout (`git merge --ff-only <remote>/<main>`, the one
-  sanctioned move of local main) or to ask the operator if the checkout holds work. So the
-  merge is the rollout; list in the PR body only what a fast-forward cannot do (clone-wide
-  config, venv additions).
-
-Verify after the merge on this machine: `tail .claude/agent-state/issue-work-orchestrator/
-.hook-decisions/*.log` shows `contract unacknowledged` refusals followed by acks for each
-live run (or `FRAMEWORK_AUTO_ACK` for a run at its cap). The notice retires itself on its
-`Valid-until` date; do not delete it early.
+A session runs the hooks, rules and agents of the CHECKOUT it started in, read from disk at
+every event. So the merge reaches a machine only once that machine's main checkout is
+fast-forwarded — step 9 does it for this machine; on every other machine the first
+fast-forward after this update is done by hand (a checkout older than the freshness check
+carries nothing that could announce a newer trunk). From then on the installed hooks do the
+telling: `.claude/hooks/REVISION_NOTICE.md` is printed inside the contract handshake at each
+registered run's next turn-end and at every compaction, and the freshness check refuses a
+registered run once per later revision with the fast-forward instruction. Leave both
+channels intact: install `REVISION_NOTICE.md` and `CONTRACT_VERSION` as-is, and do not
+delete the notice before its `Valid-until` date.
 
 ## Deliverable
 
-A merged PR with green CI. The PR body carries the setup report in the setup prompt's
-format, the delta table, the framework commit, every flagged conflict, the memory-compile
+A merged PR with green CI, or the "already current" report of step 2. The PR body carries
+the setup report in the setup prompt's format, the delta table, the pinned framework commit
+(and the newer HEAD, if the framework moved), every flagged conflict, the memory-compile
 table (each capped file: before, after, cap; rows and lessons archived/enforced/promoted;
-rule incidents moved; retired machinery), and the steps the main checkout still needs after
-pulling (clone-wide config, venv additions). Then remove your worktree and branch, and end
-with the PR link and a "Framework feedback" section for anything in the framework that was
-wrong, ambiguous, or missing. Framework defects are reported there, never fixed in the
-framework repository or filed as issues.
+rule incidents moved; retired machinery), the hook parity evidence, and the single
+post-merge step if the main checkout could not be fast-forwarded. Then remove your worktree
+and branch, and end with the PR link and a "Framework feedback" section for anything in the
+framework that was wrong, ambiguous, or missing. Framework defects are reported there, never
+fixed in the framework repository or filed as issues.
 
 ## Project-specific notes
 

@@ -30,9 +30,17 @@ USAGE
     python scripts/run_checks.py                          # every group, aggregated
     python scripts/run_checks.py --group lint             # one group (one CI job)
     python scripts/run_checks.py --group lint --group types
+    python scripts/run_checks.py --group e2e              # the post-merge end-to-end job only
     python scripts/run_checks.py --list                   # show groups and commands
     python scripts/run_checks.py --reports-dir reports    # where the JSON lands
     python scripts/run_checks.py --summary-from reports/   # merge + final verdict (CI)
+
+THE e2e GROUP IS NOT PART OF THE DEFAULT RUN
+    A plain `python scripts/run_checks.py` is the PRE-merge pipeline. The end-to-end check is
+    the POST-merge job (a deploying project runs it after the deploy; a local-only project
+    runs `--group e2e`), so `e2e` is shown by --list and run by `--group e2e` but is never in
+    "every group". Without a `test/e2e/` directory the group PASSES with a note saying so: a
+    project that declares no end-to-end checks is a fact, not a failure.
 
 EXIT CODES
     0 = every check that ran passed.   1 = at least one failed (see the summary block).
@@ -106,9 +114,31 @@ def tests_argv() -> Argv:
     )
 
 
+E2E_DIR = Path("test") / "e2e"
+E2E_ABSENT_MESSAGE = (
+    "e2e: no end-to-end checks declared (test/e2e/ absent) — declare them there, "
+    "or point this entry at the project's end-to-end script"
+)
+
+
+def e2e_argv() -> Argv:
+    """The end-to-end check: the tests under test/e2e/, through run_tests.py like every suite.
+
+    `-o addopts=` drops pyproject's pytest addopts (coverage gate, unit-test paths), which do
+    not apply to an end-to-end run. When the project declares no test/e2e/ the group must
+    still PASS — a project without end-to-end checks is a fact, not a failure, and a SKIP here
+    would read as "tool missing" in the summary — so the command is one that prints why
+    nothing ran and exits 0.
+    """
+    if E2E_DIR.is_dir():
+        return (PY, "scripts/run_tests.py", "test/e2e", "-o", "addopts=")
+    return (PY, "-c", f"print({E2E_ABSENT_MESSAGE!r})")
+
+
 # The check inventory. Each entry: (group, name, argv-or-argv-factory).
 # `tests` delegates to run_tests.py so the test invocation has ONE definition (bounded
 # local workers, no fail-fast) shared with the pre-push hook and the agent fleet.
+# `e2e` is the post-merge end-to-end job; see e2e_argv and the module docstring.
 CHECKS: tuple[tuple[str, str, Argv | Callable[[], Argv]], ...] = (
     (
         "lint",
@@ -140,9 +170,15 @@ CHECKS: tuple[tuple[str, str, Argv | Callable[[], Argv]], ...] = (
             "reports/junit.xml",
         ),
     ),
+    ("e2e", "e2e", e2e_argv),
 )
 
+# The default run (no --group) is the PRE-merge pipeline: exactly these groups, in this order.
 GROUP_ORDER: tuple[str, ...] = ("lint", "types", "security", "tests")
+# Groups that exist, are listed, and run on request, but are NOT in the default run. `e2e`
+# is the POST-merge job: it may need a deployed environment, and a pre-merge run must not.
+ON_REQUEST_GROUPS: tuple[str, ...] = ("e2e",)
+ALL_GROUPS: tuple[str, ...] = (*GROUP_ORDER, *ON_REQUEST_GROUPS)
 
 
 @dataclass
@@ -227,6 +263,18 @@ def readable(argv: Argv) -> str:
         if len(line) <= MAX_COMMAND_CHARS
         else line[:MAX_COMMAND_CHARS] + " ...(truncated)"
     )
+
+
+LIST_MAX_ARGS = 12
+
+
+def listed(spec: Argv | Callable[[], Argv]) -> str:
+    """One line per check for --list. A file-list check shows its head and a count, not
+    every tracked file; every fixed command in the inventory fits and prints whole."""
+    argv = resolve(spec)
+    if len(argv) <= LIST_MAX_ARGS:
+        return shlex.join(argv)
+    return f"{shlex.join(argv[:LIST_MAX_ARGS])} ... (+{len(argv) - LIST_MAX_ARGS} more)"
 
 
 def run_check(group: str, name: str, spec: Argv | Callable[[], Argv]) -> Result:
@@ -359,8 +407,9 @@ def main(argv: list[str] | None = None) -> int:
         "--group",
         action="append",
         default=[],
-        choices=GROUP_ORDER,
-        help="run only this group (repeatable). Default: every group.",
+        choices=ALL_GROUPS,
+        help="run only this group (repeatable). Default: every pre-merge group "
+        f"({', '.join(GROUP_ORDER)}); {', '.join(ON_REQUEST_GROUPS)} runs on request only.",
     )
     parser.add_argument(
         "--reports-dir",
@@ -382,16 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list:
-        for group in GROUP_ORDER:
-            print(group)
+        for group in ALL_GROUPS:
+            print(group if group in GROUP_ORDER else f"{group}   (on request only)")
             for g, name, spec in CHECKS:
                 if g == group:
-                    if callable(spec):
-                        print(
-                            f"  {name}: {shlex.join(spec()[:5])} ... <git-tracked files>"
-                        )
-                    else:
-                        print(f"  {name}: {shlex.join(spec)}")
+                    print(f"  {name}: {listed(spec)}")
         return 0
 
     if args.summary_from is not None:

@@ -41,9 +41,7 @@ class Arena:
         self.run_dir = self.runs / "deadbeef"
         self.state = self.run_dir / lib.RESUME_FILENAME
         self.run_dir.mkdir(parents=True)
-        self.registry.write_text(
-            '{"%s":{"state_dir":"runs/deadbeef/"}}' % SID, encoding="utf-8"
-        )
+        self.registry.write_text('{"%s":{"state_dir":"runs/deadbeef/"}}' % SID, encoding="utf-8")
         self.write_state(f"SESSION_ID: {SID}\nStatus: IN_PROGRESS\n")
         self.hooks_dir = root / ".claude" / "hooks"
         self.hooks_dir.mkdir(parents=True)
@@ -52,9 +50,7 @@ class Arena:
     def write_state(self, text: str, run_dir: Path = None) -> Path:  # type: ignore[assignment]
         state = (run_dir or self.run_dir) / lib.RESUME_FILENAME
         state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(
-            text, encoding="utf-8", newline=""
-        )  # newline="" keeps a \r\n as written
+        state.write_text(text, encoding="utf-8", newline="")  # newline="" keeps a \r\n as written
         return state
 
     def payload_text(self) -> str:
@@ -111,9 +107,7 @@ def test_identity_still_resolves_owned_from_the_parsed_payload(arena: Arena) -> 
 # a CRLF state file
 # ==========================================================================================================
 
-CRLF_STATE = (
-    f"SESSION_ID: {SID}\r\nStatus: IN_PROGRESS\r\nPhase: DONE\r\nCURRENT_ISSUE: 574\r\n"
-)
+CRLF_STATE = f"SESSION_ID: {SID}\r\nStatus: IN_PROGRESS\r\nPhase: DONE\r\nCURRENT_ISSUE: 574\r\n"
 
 
 def test_crlf_state_status_is_clean_and_carries_no_extra_byte(arena: Arena) -> None:
@@ -157,9 +151,10 @@ def test_shipped_python_sources_exist() -> None:
     assert {"hooklib.py", "hooks.py"} <= {path.name for path in SHIPPED_PY}
 
 
-@pytest.mark.parametrize("path", SHIPPED_PY, ids=[path.name for path in SHIPPED_PY])
-def test_shipped_python_source_has_no_cr_bytes(path: Path) -> None:
-    assert b"\r" not in path.read_bytes(), f"{path.name} carries a carriage return"
+# There is deliberately NO assertion that the shipped .py files contain no CR bytes. On a clone with
+# core.autocrlf=true the checkout legitimately carries CRLF, Python reads either ending, and the dispatcher is
+# started as `python <file>` so the shebang line never runs — such a check failed a project's build for a
+# property that does not matter. The behavioural cases below are the hygiene that does.
 
 
 # ==========================================================================================================
@@ -168,9 +163,9 @@ def test_shipped_python_source_has_no_cr_bytes(path: Path) -> None:
 
 
 def test_crlf_separated_payload_parses_to_the_same_values(arena: Arena) -> None:
-    text = (
-        '{\r\n  "session_id": "%s",\r\n  "cwd": "%s",\r\n  "hook_event_name": "Stop"\r\n}\r\n'
-        % (SID, arena.root.as_posix())
+    text = '{\r\n  "session_id": "%s",\r\n  "cwd": "%s",\r\n  "hook_event_name": "Stop"\r\n}\r\n' % (
+        SID,
+        arena.root.as_posix(),
     )
     payload = lib.Payload.parse(text)
     assert payload.session_id == SID
@@ -203,27 +198,20 @@ def test_stop_event_still_reaches_the_run_through_a_cr_contaminated_payload(
     must REFUSE the stop. The incident's shape was exit 0 here: the id missed the registry, UNREGISTERED,
     every gate inert."""
     arena.write_state(
-        f"SESSION_ID: {SID}\r\nStatus: IN_PROGRESS\r\nPhase: FIX\r\nCURRENT_ISSUE: 999\r\n"
-        "AWAITING_USER: none\r\n"
+        f"SESSION_ID: {SID}\r\nStatus: IN_PROGRESS\r\nPhase: FIX\r\nCURRENT_ISSUE: 999\r\nAWAITING_USER: none\r\n"
     )
     # The contract handshake is an EARLIER rung of the loop gate than the brake; acknowledge it so the brake
     # is the gate that speaks (the handshake has its own suites).
-    lib.contract_ack_file(arena.run_dir, lib.contract_version(arena.root)).write_text(
-        "acked\n", encoding="utf-8"
+    lib.contract_ack_file(arena.run_dir, lib.contract_version(arena.root)).write_text("acked\n", encoding="utf-8")
+    text = '{\r\n"session_id":"%s\\r",\r\n"cwd":"%s",\r\n"hook_event_name":"Stop"\r\n}\r\n' % (
+        SID,
+        arena.root.as_posix(),
     )
-    text = (
-        '{\r\n"session_id":"%s\\r",\r\n"cwd":"%s",\r\n"hook_event_name":"Stop"\r\n}\r\n'
-        % (SID, arena.root.as_posix())
-    )
-    decision = hooks.dispatch(
-        "stop", text, host=lib.CLAUDE, environ={}, cwd=arena.root, hooks_dir=HOOKS_DIR
-    )
+    decision = hooks.dispatch("stop", text, host=lib.CLAUDE, environ={}, cwd=arena.root, hooks_dir=HOOKS_DIR)
     assert decision.exit_code == 2, decision.stderr
     assert "issue-loop-gate" in decision.stderr
     assert "UNFINISHED" in decision.stderr
-    assert (
-        "run deadbeef" in decision.stderr
-    )  # the run was reached BY ITS OWN id, not borrowed
+    assert "run deadbeef" in decision.stderr  # the run was reached BY ITS OWN id, not borrowed
 
 
 # ==========================================================================================================
@@ -232,9 +220,7 @@ def test_stop_event_still_reaches_the_run_through_a_cr_contaminated_payload(
 
 
 def test_crlf_contract_version_reads_clean(arena: Arena) -> None:
-    (arena.hooks_dir / "CONTRACT_VERSION").write_text(
-        "2026.09.30-continuous-work-2\r\n", encoding="utf-8", newline=""
-    )
+    (arena.hooks_dir / "CONTRACT_VERSION").write_text("2026.09.30-continuous-work-2\r\n", encoding="utf-8", newline="")
     version = lib.contract_version(arena.root)
     assert version == "2026.09.30-continuous-work-2"
     assert "\r" not in version
@@ -244,9 +230,7 @@ def test_crlf_contract_version_reads_clean(arena: Arena) -> None:
 
 
 def test_crlf_contract_version_reads_the_first_line_only(arena: Arena) -> None:
-    (arena.hooks_dir / "CONTRACT_VERSION").write_text(
-        "v-first\r\nv-second\r\n", encoding="utf-8", newline=""
-    )
+    (arena.hooks_dir / "CONTRACT_VERSION").write_text("v-first\r\nv-second\r\n", encoding="utf-8", newline="")
     assert lib.contract_version(arena.root) == "v-first"
 
 
@@ -264,9 +248,7 @@ def _spec_with_crlf_captures(tmp_path: Path) -> Path:
         encoding="utf-8",
         newline="",
     )
-    (green / "2.1.txt").write_text(
-        "$ make test\r\nOK\r\n", encoding="utf-8", newline=""
-    )
+    (green / "2.1.txt").write_text("$ make test\r\nOK\r\n", encoding="utf-8", newline="")
     return spec_dir
 
 
@@ -277,10 +259,7 @@ def test_crlf_wave_capture_header_covers_its_tasks(tmp_path: Path) -> None:
     assert lib.capture_for_task(spec_dir, "green", "1.1") == wave
     assert lib.capture_for_task(spec_dir, "green", "1.2") == wave
     assert lib.capture_for_task(spec_dir, "green", "1.10") is None
-    assert (
-        lib.capture_for_task(spec_dir, "green", "2.1")
-        == spec_dir / "evidence" / "green" / "2.1.txt"
-    )
+    assert lib.capture_for_task(spec_dir, "green", "2.1") == spec_dir / "evidence" / "green" / "2.1.txt"
 
 
 def test_crlf_capture_body_still_shows_its_pass_marker(tmp_path: Path) -> None:

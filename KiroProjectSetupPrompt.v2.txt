@@ -2720,6 +2720,17 @@ that runs the gates. Keep every run's state at the registry-derived path all the
 hand-chosen directory name is found only through the `SESSION_ID` rung, and only when the
 file carries that line.
 
+## One Authoritative Writer per artefact
+Every spec artefact, state file and log has exactly ONE writer at a time. The
+orchestrating agent (spec-conductor, issue-work-orchestrator) is the Authoritative Writer
+of the spec directory, the run's state files, the review summary, the task checkboxes, the
+evidence captures and the decision log; a subagent writes ONLY what it was dispatched to
+produce — an author its artefact, a reviewer its own lane file, an implementer the code
+and tests of its task — and reports the rest back. This is what makes parallel dispatch
+safe (`parallel-by-default.md`): concurrent subagents never touch the same file, and the
+writer of record merges their results in one place. A subagent that finds a defect in a
+file it does not own reports it; it never edits it.
+
 ## The decision log (mandatory for all agents)
 Whenever an agent makes a non-trivial decision (a design choice, a classification, a
 fix approach, a convergence/exit call, an escalation) it appends one entry to a
@@ -3246,7 +3257,8 @@ set, every push in every worktree pays for a full local suite.
 A pipeline takes as long as it takes; what is yours to decide is what happens
 meanwhile. Start the wrapper's blocking wait (`pipeline wait <id>` on GitLab,
 `wait-run <id>` on GitHub; both poll internally and exit with the terminal
-verdict) in the background and continue with work that does not depend on the
+verdict — 0 success, 10 not success, 11 timeout, distinct from the wrapper's own
+1/2/3) in the background and continue with work that does not depend on the
 verdict — the next wave, the docs, the issue note, another issue in another
 worktree. A `sleep N` in a shell call, repeated, is the measured shape of a
 thousand hours of nothing (`parallel-by-default.md`), and each wake-up re-reads
@@ -3562,11 +3574,19 @@ the copy) name ONE command per event:
 
 ```json
 "hooks": {
-  "agentSpawn": [ { "command": "python .kiro/hooks-bin/kiro_hooks.py agentSpawn" } ],
-  "preToolUse": [ { "command": "python .kiro/hooks-bin/kiro_hooks.py preToolUse", "matcher": "execute_bash" } ],
-  "stop":       [ { "command": "python .kiro/hooks-bin/kiro_hooks.py stop" } ]
+  "agentSpawn": [ { "command": "python -X utf8 -c \"<LAUNCHER>\" agentSpawn" } ],
+  "preToolUse": [ { "command": "python -X utf8 -c \"<LAUNCHER>\" preToolUse", "matcher": "execute_bash" } ],
+  "stop":       [ { "command": "python -X utf8 -c \"<LAUNCHER>\" stop" } ]
 }
 ```
+
+where `<LAUNCHER>` is the fixed one-line program already present in every shipped
+descriptor (copy a descriptor's `hooks` block rather than retyping it):
+`import os,sys,runpy;p=os.path.join(os.getcwd(),'.kiro','hooks-bin','kiro_hooks.py');sys.argv=[p]+sys.argv[1:];os.path.isfile(p) and runpy.run_path(p,run_name='__main__')`.
+It reads and writes UTF-8 whatever the console code page, and it checks that the
+dispatcher EXISTS before running it: `python <missing file>` exits 2, which `preToolUse`
+reads as a block, so a worktree checked out from a branch that predates the install would
+otherwise have every shell call refused. With the launcher a missing dispatcher exits 0.
 
 Why `python`: registered as bash scripts, the hooks depended on a `bash` the host could run,
 and on a Windows host the first `bash` on PATH was the WSL launcher alias, which exited 1
@@ -4418,9 +4438,14 @@ After completing all parts:
    `--fix` plus ruff-format) as a side effect of a verification step — a
    destructive surprise mid-setup, and it buries the actual answer in a reformat
    diff. One already-clean file enumerates the same hooks and changes nothing.
-   Confirm the inverse the same way — `pre-commit run --hook-stage pre-push
-   --files README.md` lists mypy, and `pre-commit run --hook-stage manual pytest`
-   is how the suite is invoked by hand.
+   Confirm the inverse with the pre-push stage run the way git runs it:
+   `pre-commit run --hook-stage pre-push --all-files` must list mypy AND pass.
+   `--all-files` is safe here — mypy rewrites nothing — and it is the only form
+   that reproduces the push: `--files README.md` proved mypy was in the stage
+   without ever running it, and the first project update found every push
+   refused by a fatal `Duplicate module named ...` once mypy was handed the
+   iteration-numbered `evidence/` scripts under the specs tree. Then
+   `pre-commit run --hook-stage manual pytest` is how the suite is invoked by hand.
 4. **Checks** — `python scripts/run_checks.py` runs and reports on the existing
    codebase (pre-existing failures are flagged, not fixed silently). Verify it
    does not fail fast: seed TWO independent failures (a lint error in one file

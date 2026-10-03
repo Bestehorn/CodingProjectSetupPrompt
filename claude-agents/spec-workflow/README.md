@@ -295,14 +295,19 @@ omission is silent:
 
 Then register the hooks in `.claude/settings.json`:
 
-| Event | Hook | Note |
+Paste the block that `python .claude/hooks/hooks.py registration` prints: one exec-form `python` entry per
+event, each running the LAUNCHER (`python -X utf8 -c <LAUNCHER> <event>`) — UTF-8 I/O, the dispatcher located
+through `CLAUDE_PROJECT_DIR`, and a missing dispatcher failing OPEN instead of python's exit 2 (a block).
+
+| Event | Dispatcher event | Gates it runs (discovered from `gate_*.py`, in `ORDER`) |
 |---|---|---|
-| SessionStart | `python .claude/hooks/hooks.py session-start` | ONE exec-form entry, no matcher: runs `session-register` (seeds the state the gates read), `scoped-temp-init` (creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing) and, for sources compact/resume/startup, `continuous-work-reinject` |
-| PreToolUse (`Bash`) | `python .claude/hooks/hooks.py pre-tool-use` | runs `no-env-vars`, `spec-tdd-gate`, `claim-before-worktree`, `issue-filing-gate`; the first block wins |
-| Stop | `python .claude/hooks/hooks.py stop` | runs `spec-stop-gate` (the evidence gate) and `issue-loop-gate` (the primary brake); either refusal blocks |
-| PreToolUse(Bash) | `spec-tdd-gate` | the push/evidence gate (commits carry no evidence requirement) |
-| PreToolUse(Bash) | `claim-before-worktree` | blocks a per-issue worktree until the claim is visible on the remote |
-| PreToolUse(Bash) | `issue-filing-gate` | blocks an issue-create call whose body carries no filing rationale |
+| SessionStart (no matcher) | `session-start` | `session-register` (seeds the state the gates read), `scoped-temp-init` (creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing) and, for sources compact/resume/startup, `continuous-work-reinject` |
+| PreToolUse (`Bash`; widen to `Bash\|Write\|Edit` when a project gate declares those `TOOLS`) | `pre-tool-use` | `no-env-vars`, `spec-tdd-gate`, `claim-before-worktree`, `issue-filing-gate`, then any project gate with `ORDER` above 100; the first block wins |
+| Stop | `stop` | `spec-stop-gate` (the evidence gate) and `issue-loop-gate` (the primary brake); either refusal blocks |
+
+A project switches a gate off with `.claude/hooks/hooks.config.json` (`{"disabled_gates": ["<HOOK name>"]}`) and adds
+one with a `gate_<name>.py` declaring `HOOK`, `EVENT`, `ORDER`, optional `TOOLS` and `run(ctx)` — never with a second
+registration.
 
 Registering the Stop gates without `session-register` is the configuration that produced
 the measured failure: with nothing seeding `runs/<run-id>/`, both gates resolved no state and

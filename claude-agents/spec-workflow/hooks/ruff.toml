@@ -1,0 +1,21 @@
+# Lint and format settings for the shipped hooks and their tests, matching what a project set up by the
+# framework applies (ClaudeCodeSetupPrompt.txt Part 4): 120 columns, isort, the pylint-equivalent selects ruff
+# implements. Ruff uses the nearest configuration file, so the framework repository's own pre-commit formats
+# these files the way the project will — a project no longer reformats them on every three-way merge.
+# The code stays Python 3.9-compatible (the framework's floor), so the target is py39 here even though
+# projects target py310.
+line-length = 120
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "W", "I", "C90", "PLR0912", "PLR0913", "PLR0915"]
+# The gates are decision procedures: one function per gate walks every release and every refusal in order,
+# which is the readable shape for a brake whose branches a reviewer must see together. Projects that lint
+# `.claude/hooks/` at commit time carry the same per-file ignores (see the `# noqa` lines in the modules).
+ignore = ["PLR0912", "PLR0913", "PLR0915"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.isort]
+known-first-party = ["hooklib", "hooks"]

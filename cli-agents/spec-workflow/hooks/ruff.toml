@@ -1,0 +1,15 @@
+# The Kiro entry point ships beside the shared hook modules and is linted the same way they are
+# (claude-agents/spec-workflow/hooks/ruff.toml): 120 columns, py39, isort. Ruff uses the nearest configuration
+# file, so this copy keeps the framework repository's own pre-commit from reformatting kiro_hooks.py at 88.
+line-length = 120
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "W", "I", "C90", "PLR0912", "PLR0913", "PLR0915"]
+ignore = ["PLR0912", "PLR0913", "PLR0915"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.isort]
+known-first-party = ["hooklib", "hooks"]
