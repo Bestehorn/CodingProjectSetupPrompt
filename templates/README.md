@@ -60,13 +60,14 @@ Every byte of `CLAUDE.md` plus the unscoped `.claude/rules/*.md` is read into ev
 call. Measured on three production projects, that corpus tripled after installation because
 each incident appended a narrative to a rule, and the mandatory pre-work documents reached
 1.7 MB. `test_instruction_corpus_budget.py` caps the corpus at 100,000 bytes, any single rule
-at 12,000, `docs/forLLMConsumption.md` and `docs/lessons-learned.md` at 40,000 each and the
-active `docs/findings-ledger.md` at 60,000, and fails on a rule that carries dated incident
-headings. `memory_compile.py` is the mechanical half of the repair: it reports, archives
-ledger rows and lessons older than six weeks to `docs/archive/` (verbatim, still in git), and
-moves dated incident sections out of the rules. The judgment half — promote a finding to an
-issue, turn a lesson into a test — is the `/compile-memory` command
-(`claude-commands/compile-memory.md`, Kiro: `kiro-prompts/compile-memory.md`).
+at 12,000, the `paths:`-scoped rules at 45,000 in total, `docs/forLLMConsumption.md` and
+`docs/lessons-learned.md` at 40,000 each and the active `docs/findings-ledger.md` at 60,000,
+and fails on a rule that carries dated incident headings. `memory_compile.py` is the
+mechanical half of the repair: it reports, archives ledger rows and lessons older than six
+weeks to `docs/archive/` (verbatim, still in git), and moves dated incident sections out of
+the rules. The judgment half — promote a finding to an issue, turn a lesson into a test — is
+the `/compile-memory` command (`claude-commands/compile-memory.md`, Kiro:
+`kiro-prompts/compile-memory.md`).
 
 ## Conventions
 

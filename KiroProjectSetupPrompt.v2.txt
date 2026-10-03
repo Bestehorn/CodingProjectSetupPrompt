@@ -4303,10 +4303,13 @@ mkdir -p docs/archive
 
 The caps (framework defaults; a project may lower them, and raises one only by its measured
 cost with the reason in the commit): the always-loaded corpus — every `inclusion: always`
-steering file — 100,000 bytes and no single file over 12,000; `docs/forLLMConsumption.md`
-40,000; `docs/lessons-learned.md` 40,000; the active `docs/findings-ledger.md` 60,000. The
-test also fails on a steering file carrying two or more dated headings — an incident ledger
-living inside the corpus. **On an EXISTING project, run `@compile-memory` once as part of
+steering file — 100,000 bytes and no single file over 12,000; `fileMatch` steering 45,000
+in total; `docs/forLLMConsumption.md` 40,000; `docs/lessons-learned.md` 40,000; the active
+`docs/findings-ledger.md` 60,000. The test also fails on a steering file carrying two or
+more dated headings — an incident ledger living inside the corpus. A project that keeps
+`.kiro/` as-is records that decision in the marker file `.kiro/FROZEN` (one line: date and
+reason), which the budget test and `memory_compile.py report` honour: Kiro figures are
+reported, not enforced. **On an EXISTING project, run `@compile-memory` once as part of
 setup** and report the before/after sizes.
 
 ### `docs/forLLMConsumption.md`

@@ -1604,9 +1604,10 @@ mkdir -p docs/archive
 The caps (framework defaults; a project may lower them, and raises one only by its
 measured cost with the reason in the commit): the always-loaded corpus — `CLAUDE.md` plus
 every `.claude/rules/*.md` without `paths:` — 100,000 bytes and no single rule over
-12,000; `docs/forLLMConsumption.md` 40,000; `docs/lessons-learned.md` 40,000; the active
-`docs/findings-ledger.md` 60,000. The test also fails on a rule file that carries two or
-more dated headings — an incident ledger living inside the corpus.
+12,000; `paths:`-scoped rules 45,000 in total; `docs/forLLMConsumption.md` 40,000;
+`docs/lessons-learned.md` 40,000; the active `docs/findings-ledger.md` 60,000. The test
+also fails on a rule file that carries two or more dated headings — an incident ledger
+living inside the corpus.
 
 - `docs/forLLMConsumption.md` is a MAP: purpose, architecture in brief, where things
   are, the invariants a change must respect, how to run/test/deploy, and pointers to the

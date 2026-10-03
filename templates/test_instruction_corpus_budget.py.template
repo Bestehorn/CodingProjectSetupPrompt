@@ -6,7 +6,8 @@ Installed from ``templates/test_instruction_corpus_budget.py.template`` to
 WHY THIS EXISTS
     The always-loaded instruction corpus — the root ``CLAUDE.md`` plus every ``.claude/rules/*.md``
     without a ``paths:`` frontmatter (and, on a Kiro project, every ``.kiro/steering/*.md`` with
-    ``inclusion: always``) — is read into EVERY model call of EVERY session. Measured on three
+    ``inclusion: always``, which per Kiro's documented default includes a file with no front matter
+    or no ``inclusion`` key) — is read into EVERY model call of EVERY session. Measured on three
     production projects it grew from roughly 130,000 bytes at installation to 428,000 bytes in one
     of them, because every incident appended a narrative to a rule, and the mandatory pre-work
     documents grew to 1.7 MB. The average model call then carried 400,000 tokens of context.
@@ -21,6 +22,12 @@ REPAIR ORDER when a cap assertion fails (work the branches in order, stop at the
     3. Never condense an unrelated rule to make room for a new one.
 
 The caps below are the framework defaults. A project may LOWER them; raising one is branch 2 above.
+
+FROZEN KIRO TREE
+    A project that keeps its ``.kiro/`` tree as-is records that decision in the marker file
+    ``.kiro/FROZEN`` (one line: date and reason). An assertion that would fail only because of a Kiro
+    steering file is then reported through ``pytest.skip`` for the Kiro part; the ``.claude`` side of
+    every test stays strict and names the skipped Kiro side in its message.
 """
 
 from __future__ import annotations
@@ -28,11 +35,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 CORPUS_CAP_BYTES = 100_000  # CLAUDE.md + every unscoped .claude/rules/*.md (or always-on Kiro steering)
 RULE_FILE_CAP_BYTES = 12_000  # no single rule file may swallow the budget
-SCOPED_RULES_CAP_BYTES = 30_000  # paths:-scoped rules, loaded when a matching file is read
+SCOPED_RULES_CAP_BYTES = 45_000  # paths:-scoped rules + fileMatch steering, loaded when a matching file is touched
 FOR_LLM_CAP_BYTES = 40_000  # docs/forLLMConsumption.md is a MAP, not a dump
 LESSONS_CAP_BYTES = 40_000  # docs/lessons-learned.md holds compiled, enforced lessons
 LEDGER_CAP_BYTES = 60_000  # docs/findings-ledger.md holds ACTIVE rows only
@@ -42,6 +51,7 @@ MAX_DATED_HEADINGS_PER_RULE = 1  # two or more dated headings in a rule = a ledg
 CLAUDE_MD = ROOT / "CLAUDE.md"
 RULES_DIR = ROOT / ".claude" / "rules"
 STEERING_DIR = ROOT / ".kiro" / "steering"
+KIRO_FROZEN = ROOT / ".kiro" / "FROZEN"  # present: the project keeps .kiro/ as-is; Kiro findings are skipped
 FOR_LLM = ROOT / "docs" / "forLLMConsumption.md"
 LESSONS = ROOT / "docs" / "lessons-learned.md"
 LEDGER = ROOT / "docs" / "findings-ledger.md"
@@ -49,7 +59,9 @@ LEDGER = ROOT / "docs" / "findings-ledger.md"
 _DATED_HEADING = re.compile(r"^#{1,6}\s.*\b\d{4}-\d{2}-\d{2}")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _FRONTMATTER_PATHS = re.compile(r"^paths\s*:", re.MULTILINE)
-_KIRO_ALWAYS = re.compile(r"^inclusion\s*:\s*always\s*$", re.MULTILINE)
+_KIRO_INCLUSION = re.compile(r"^inclusion\s*:\s*(\S+)\s*$", re.MULTILINE)
+
+FROZEN_NOTE = ".kiro/ is frozen (.kiro/FROZEN): the Kiro side is reported, not enforced"
 
 
 def _read(path: Path) -> str:
@@ -79,10 +91,36 @@ def _scoped_rules() -> list[Path]:
     return [p for p in _rule_files() if _FRONTMATTER_PATHS.search(_frontmatter(_read(p)))]
 
 
-def _always_on_steering() -> list[Path]:
+def _kiro_inclusion(path: Path) -> str:
+    """Kiro's documented default: no front matter, or front matter without ``inclusion``, means ``always``."""
+    match = _KIRO_INCLUSION.search(_frontmatter(_read(path)))
+    return match.group(1) if match else "always"
+
+
+def _steering(inclusion: str) -> list[Path]:
     if not STEERING_DIR.is_dir():
         return []
-    return [p for p in sorted(STEERING_DIR.glob("*.md")) if _KIRO_ALWAYS.search(_frontmatter(_read(p)))]
+    return [p for p in sorted(STEERING_DIR.glob("*.md")) if _kiro_inclusion(p) == inclusion]
+
+
+def _always_on_steering() -> list[Path]:
+    return _steering("always")
+
+
+def _filematch_steering() -> list[Path]:
+    return _steering("fileMatch")
+
+
+def _kiro_frozen() -> bool:
+    return KIRO_FROZEN.exists()
+
+
+def _enforced_and_skipped(*, claude: list[Path], kiro: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Split offenders into what the test asserts on and what it only reports: with ``.kiro/FROZEN`` the
+    Kiro side is skipped, never failed."""
+    if _kiro_frozen():
+        return claude, kiro
+    return [*claude, *kiro], []
 
 
 def _strip_fences(text: str) -> str:
@@ -106,6 +144,14 @@ def _breakdown(paths: list[Path]) -> str:
     return "\n".join(f"  {size:>8,d}  {name}" for size, name in rows)
 
 
+def _names(paths: list[Path]) -> str:
+    return ", ".join(p.relative_to(ROOT).as_posix() for p in paths)
+
+
+def _skipped_note(skipped: list[Path]) -> str:
+    return f"\nSkipped Kiro side ({FROZEN_NOTE}):\n{_breakdown(skipped)}" if skipped else ""
+
+
 REPAIR = (
     "Repair order: (1) relocate unbounded history out of the corpus "
     "(python scripts/memory_compile.py extract-rule-incidents --apply); "
@@ -125,38 +171,61 @@ def test_always_loaded_corpus_within_cap() -> None:
 def test_always_on_kiro_steering_within_cap() -> None:
     files = _always_on_steering()
     total = sum(_size(p) for p in files)
+    if total > CORPUS_CAP_BYTES and _kiro_frozen():
+        pytest.skip(f"always-on Kiro steering is {total:,d} bytes, cap {CORPUS_CAP_BYTES:,d}; {FROZEN_NOTE}")
     assert total <= CORPUS_CAP_BYTES, (
         f"always-on Kiro steering is {total:,d} bytes, cap {CORPUS_CAP_BYTES:,d}.\n{_breakdown(files)}\n{REPAIR}"
     )
 
 
 def test_no_single_rule_dominates_the_corpus() -> None:
-    offenders = [p for p in [*_rule_files(), *_always_on_steering()] if _size(p) > RULE_FILE_CAP_BYTES]
+    offenders, skipped = _enforced_and_skipped(
+        claude=[p for p in _rule_files() if _size(p) > RULE_FILE_CAP_BYTES],
+        kiro=[p for p in _always_on_steering() if _size(p) > RULE_FILE_CAP_BYTES],
+    )
     assert not offenders, (
         f"rule files over {RULE_FILE_CAP_BYTES:,d} bytes (a rule this long is carrying history, not rules):\n"
-        f"{_breakdown(offenders)}\n{REPAIR}"
+        f"{_breakdown(offenders)}\n{REPAIR}{_skipped_note(skipped)}"
     )
+    if skipped:
+        pytest.skip(f"steering files over {RULE_FILE_CAP_BYTES:,d} bytes: {_names(skipped)}; {FROZEN_NOTE}")
 
 
 def test_scoped_rules_within_cap() -> None:
-    files = _scoped_rules()
-    total = sum(_size(p) for p in files)
+    claude, kiro = _scoped_rules(), _filematch_steering()
+    claude_total = sum(_size(p) for p in claude)
+    total = claude_total + sum(_size(p) for p in kiro)
+    if _kiro_frozen():
+        assert claude_total <= SCOPED_RULES_CAP_BYTES, (
+            f"paths:-scoped rules total {claude_total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d} "
+            f"(fileMatch steering, {total - claude_total:,d} bytes, not counted: {FROZEN_NOTE}).\n{_breakdown(claude)}"
+        )
+        if total > SCOPED_RULES_CAP_BYTES:
+            pytest.skip(
+                f"paths:-scoped rules + fileMatch steering total {total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}; "
+                f"{FROZEN_NOTE}"
+            )
+        return
     assert total <= SCOPED_RULES_CAP_BYTES, (
-        f"paths:-scoped rules total {total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}.\n{_breakdown(files)}"
+        f"paths:-scoped rules + fileMatch steering total {total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}.\n"
+        f"{_breakdown([*claude, *kiro])}"
     )
 
 
 def test_rules_carry_no_incident_ledger() -> None:
-    offenders = {
-        p.relative_to(ROOT).as_posix(): _dated_headings(p)
-        for p in [*_rule_files(), *_always_on_steering()]
-        if _dated_headings(p) > MAX_DATED_HEADINGS_PER_RULE
-    }
+    offenders, skipped = _enforced_and_skipped(
+        claude=[p for p in _rule_files() if _dated_headings(p) > MAX_DATED_HEADINGS_PER_RULE],
+        kiro=[p for p in _always_on_steering() if _dated_headings(p) > MAX_DATED_HEADINGS_PER_RULE],
+    )
+    counts = {p.relative_to(ROOT).as_posix(): _dated_headings(p) for p in offenders}
     assert not offenders, (
         "rule files carrying dated incident headings (a ledger inside the always-loaded corpus): "
-        f"{offenders}. Move the narratives to docs/archive/rule-incidents/<rule>.md "
+        f"{counts}. Move the narratives to docs/archive/rule-incidents/<rule>.md "
         "(python scripts/memory_compile.py extract-rule-incidents --apply) and keep the rule normative."
+        f"{_skipped_note(skipped)}"
     )
+    if skipped:
+        pytest.skip(f"steering files carrying dated incident headings: {_names(skipped)}; {FROZEN_NOTE}")
 
 
 def test_llm_map_within_cap() -> None:

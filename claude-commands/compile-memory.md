@@ -35,8 +35,11 @@ the row verbatim with `memory_compile.py archive-ledger --apply` to
 `docs/archive/findings-ledger-<YYYY-MM>.md`. A row that has been `open` for twelve weeks
 with no recurrence is archived without discussion. If the ledger is still over its cap after the age pass — a ledger that grew 880 KB in five
 weeks has nothing six weeks old — archive oldest-first with `--until-under-cap --apply`; the
-archive stays greppable, and a row that mattered comes back through recurrence. The active
-ledger ends under 60,000 bytes.
+archive stays greppable, and a row that mattered comes back through recurrence. When the
+unresolved rows alone do not bring the file under the cap, `--until-under-cap` also moves
+resolved (`promoted`/`enforced`) rows oldest-first, and every row it archives has its CI-skip
+tokens (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `***NO_CI***`) defanged so a
+quoted row cannot silence a pipeline. The active ledger ends under 60,000 bytes.
 
 **Step 4 — Compile the lessons.** `docs/lessons-learned.md` holds entries of at most
 five lines (`Date`, `Lesson`, `Enforced-by`, `Scope`). For every entry older than the
@@ -64,6 +67,7 @@ session's lifecycle calls for one.
 ```
 | File | Before | After | Cap |
 | CLAUDE.md + unscoped rules | … | … | 100,000 |
+| paths:-scoped rules + fileMatch steering | … | … | 45,000 |
 | docs/forLLMConsumption.md | … | … | 40,000 |
 | docs/lessons-learned.md | … | … | 40,000 |
 | docs/findings-ledger.md | … | … | 60,000 |
