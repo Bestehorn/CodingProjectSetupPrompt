@@ -121,7 +121,7 @@ Five consequences worth internalising:
   match — Incident `whole-value-vs-substring` records both measured failures. **Write the
   status as a bare token and put the narrative in prose.**
 - **`AWAITING_USER` must name a real reason.** It is a self-issued permission slip, so it
-  is checked for SUBSTANCE (`hook_is_substantive_escalation`, the SAME test in both
+  is checked for SUBSTANCE (`is_substantive_escalation`, the SAME test in both
   gates): a placeholder, a one-word token (`no`, `false`, `0`, `waiting`, `blocked`,
   `?`), or anything shorter than a dozen characters is REJECTED. Measured releases
   included the literal `<reason>` — the gate's own former example string. Write the
@@ -180,8 +180,9 @@ Do not "simplify" a gate to exit 0 on a missing state file.
 
 Two bounds keep refusal from wedging a session, and neither weakens the verdict:
 
-- Each gate keeps its own consecutive-block counter (`HOOK_BLOCK_CAP`, default 8,
-  validated into [1, 64]). At the cap it allows the stop WHILE SAYING the work is not
+- Each gate keeps its own consecutive-block counter (the block cap —
+  `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8, clamped to [1, 64]). At the cap it allows
+  the stop WHILE SAYING the work is not
   done, and writes a durable `.capped` marker so the stand-down persists — without the
   marker the cap was a duty cycle (Incident `duty-cycle`: refusals 1-8, release 9,
   refusals 10-11, forever). Only a genuine release on the merits clears count and marker.

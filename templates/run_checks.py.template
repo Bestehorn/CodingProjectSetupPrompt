@@ -135,9 +135,41 @@ def e2e_argv() -> Argv:
     return (PY, "-c", f"print({E2E_ABSENT_MESSAGE!r})")
 
 
+HOOK_TESTS_DIR = Path(".claude") / "hooks" / "tests"
+HOOK_SUITE_ABSENT_MESSAGE = (
+    "hook-suite: no vendored hook suite (.claude/hooks/tests absent) — nothing to run"
+)
+
+
+def hook_suite_argv() -> Argv:
+    """The vendored hooks' own test suite: CI must run it with the project's tests.
+
+    `.claude/hooks/` is excluded from the project's ruff hooks and lives outside `test/`,
+    so without this entry nothing in the pipeline would exercise it. `-o addopts=` drops
+    pyproject's pytest addopts (coverage gate, unit-test paths), which belong to the
+    PROJECT suite; `-p no:cacheprovider` keeps pytest from writing a cache under
+    .claude/hooks/. A project without vendored hooks PASSES with a note, like e2e without
+    test/e2e/.
+    """
+    if HOOK_TESTS_DIR.is_dir():
+        return (
+            PY,
+            "-m",
+            "pytest",
+            ".claude/hooks/tests",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        )
+    return (PY, "-c", f"print({HOOK_SUITE_ABSENT_MESSAGE!r})")
+
+
 # The check inventory. Each entry: (group, name, argv-or-argv-factory).
 # `tests` delegates to run_tests.py so the test invocation has ONE definition (bounded
 # local workers, no fail-fast) shared with the pre-push hook and the agent fleet.
+# `hook-suite` runs the vendored hooks' own suite (hook_suite_argv); CI must run it.
 # `e2e` is the post-merge end-to-end job; see e2e_argv and the module docstring.
 CHECKS: tuple[tuple[str, str, Argv | Callable[[], Argv]], ...] = (
     (
@@ -170,6 +202,7 @@ CHECKS: tuple[tuple[str, str, Argv | Callable[[], Argv]], ...] = (
             "reports/junit.xml",
         ),
     ),
+    ("tests", "hook-suite", hook_suite_argv),
     ("e2e", "e2e", e2e_argv),
 )
 

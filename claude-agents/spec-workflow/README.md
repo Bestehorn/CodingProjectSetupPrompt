@@ -118,14 +118,14 @@ Neither Stop gate reads the harness's `stop_hook_active` field any more: honouri
 POLICY gate block at most ONCE per continuation chain, so the agent was nudged once and then
 free to stop on unfinished work. Loop safety is each gate's own consecutive-block counter —
 `the block cap`, default 8 to match the ceiling the harness itself enforces, overridable per
-project with `CLAUDE_CODE_STOP_the block cap` and validated into `[1, 64]` by
+project with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` and validated into `[1, 64]` by
 `resolve_block_cap`, so a typo like `abc` or a `0` cannot silently disable the brake.
 
 Reaching the cap allows the stop while stating that the work is not done — and writes a
 DURABLE `.capped` marker beside the counter, so it is a one-way stand-down rather than a duty
 cycle. That distinction is measured: the cap used to RESET the counter, which produced 8
 refusals, one release, then 8 more, forever, while printing a message claiming the session
-could not wedge. Two things clear the marker, both through `hook_counter_reset`: a genuine
+could not wedge. Two things clear the marker, both through `counter_reset`: a genuine
 release (an idle `Status`, a terminal value, a substantive `AWAITING_USER`, or — for the loop
 gate — no claimed work), and a change in the gate's own progress FINGERPRINT. The loop gate
 fingerprints the state fields it reads; the evidence gate fingerprints the phase, the spec,
@@ -280,7 +280,11 @@ cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md   .claude/hooks/   # liv
 mkdir -p .claude/hooks/tests
 cp claude-agents/spec-workflow/hooks/tests/*.py           .claude/hooks/tests/
 rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                        # the bash predecessors, if any
+grep -q '^.claude/hooks/\*\* text eol=lf' .gitattributes 2>/dev/null || printf '.claude/hooks/** text eol=lf\n' >> .gitattributes   # same commit as the files
 ```
+
+The `.gitattributes` rule lands in the SAME commit as the files: a rebase that replays the
+install first leaves CRLF copies on a `core.autocrlf=true` clone.
 
 Three of those lines exist because the `hooks/*.py` glob does not reach what they copy, and each
 omission is silent:
@@ -299,7 +303,7 @@ omission is silent:
 Then register the hooks in `.claude/settings.json`:
 
 Paste the block that `python .claude/hooks/hooks.py registration` prints: one exec-form `python` entry per
-event, each running the LAUNCHER (`python -X utf8 -c <LAUNCHER> <event>`) — UTF-8 I/O, the dispatcher located
+event, each running the LAUNCHER (`python -I -X utf8 -c <LAUNCHER> <event>`) — an isolated interpreter, UTF-8 I/O, the dispatcher located
 through `CLAUDE_PROJECT_DIR`, and a missing dispatcher failing OPEN instead of python's exit 2 (a block).
 
 | Event | Dispatcher event | Gates it runs (discovered from `gate_*.py`, in `ORDER`) |

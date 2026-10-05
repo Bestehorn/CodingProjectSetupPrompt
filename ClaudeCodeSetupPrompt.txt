@@ -542,6 +542,9 @@ already correct — verify it and move on. If not, migrate legacy formats
 
 - `[tool.ruff]` line-length 120, target py310, the pylint-equivalent selects
   (E, F, W, I, C90, PLR0401/0801/0912/0913/0914/0915), mccabe max-complexity 10.
+  Carry `extend-exclude = [".claude/hooks"]`: the vendored hooks ship with their own lint
+  profile (`ruff.toml`) and pytest suite, and a project profile stricter than theirs must
+  not fail the commit.
 - `[tool.mypy]` ignore_missing_imports, exclude `src/_version.py`.
 - `[tool.pytest.ini_options]` `addopts = "-ra"` and NO coverage flags. The
   coverage flags and the threshold (default 80, preserve a stricter existing
@@ -1054,7 +1057,7 @@ could only request:
           {
             "type": "command",
             "command": "python",
-            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
+            "args": ["-I", "-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
             "timeout": 30
           }
         ]
@@ -1078,9 +1081,11 @@ instead. Python is already a dependency of every project this prompt sets up.
 
 `<LAUNCHER>` is a fixed one-line Python program, the `LAUNCHER` constant in `hooks.py`.
 NEVER type it by hand: `python .claude/hooks/hooks.py registration` prints the complete
-`hooks` block to paste into `settings.json`. The launcher does three things, each from a
-measured incident: `-X utf8` reads the payload and writes the decision in UTF-8 whatever
-the console code page (a piped Windows python defaulted to cp1252 and changed 33 of 117
+`hooks` block to paste into `settings.json`. The launch does four things, each from a
+measured incident: `-I` runs the interpreter isolated from PYTHONHOME, PYTHONPATH and the
+other PYTHON* variables a session may carry (one leaked PYTHONHOME stops every hook with an
+interpreter that cannot find its own standard library); `-X utf8` reads the payload and
+writes the decision in UTF-8 whatever the console code page (a piped Windows python defaulted to cp1252 and changed 33 of 117
 corpus decisions); it locates `hooks.py` through the `CLAUDE_PROJECT_DIR` the harness
 exports, so the registration carries no path; and it checks that the file EXISTS before
 running it — `python <missing file>` exits 2, which the harness reads as a BLOCK, and a
@@ -2222,7 +2227,10 @@ cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md .claude/hooks/
 mkdir -p .claude/hooks/tests
 cp claude-agents/spec-workflow/hooks/tests/*.py .claude/hooks/tests/   # all TEN modules + conftest.py
 rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                      # the bash predecessors, if any
+grep -q '^.claude/hooks/\*\* text eol=lf' .gitattributes 2>/dev/null || printf '.claude/hooks/** text eol=lf\n' >> .gitattributes   # same commit as the files
 ```
+NOTE: the `.gitattributes` rule lands in the SAME commit as the files — a rebase that replays
+the install first leaves CRLF copies on a `core.autocrlf=true` clone.
 NOTE: `CONTRACT_VERSION` has no `.py` suffix, so the glob above does NOT pick it up — copy
 it explicitly. When it is absent the hooks fall back to the version string `unversioned`,
 which still works but keys every run's acknowledgement on that one name, so a later
@@ -2307,7 +2315,7 @@ copy the printed block, never a retyped one):
       {
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "session-start"],
+            "args": ["-I", "-X", "utf8", "-c", "<LAUNCHER>", "session-start"],
             "timeout": 30 }
         ]
       }
@@ -2317,7 +2325,7 @@ copy the printed block, never a retyped one):
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
+            "args": ["-I", "-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"],
             "timeout": 30 }
         ]
       }
@@ -2326,7 +2334,7 @@ copy the printed block, never a retyped one):
       {
         "hooks": [
           { "type": "command", "command": "python",
-            "args": ["-X", "utf8", "-c", "<LAUNCHER>", "stop"],
+            "args": ["-I", "-X", "utf8", "-c", "<LAUNCHER>", "stop"],
             "timeout": 60 }
         ]
       }
@@ -2343,9 +2351,10 @@ Five details in that block are deliberate rather than stylistic:
   to the WSL launcher on Windows hosts and left every gate inert (Part 6); a shell-form
   string would instead have made the gates depend on a Git Bash installation. One entry per
   event because one interpreter start per event is the whole latency budget — the previous
-  four PreToolUse scripts cost four starts on every shell command. The launcher (Part 6)
-  adds UTF-8 I/O and the existence check that keeps a worktree without the dispatcher from
-  having every tool call refused.
+  four PreToolUse scripts cost four starts on every shell command. The launch (Part 6)
+  runs the interpreter isolated from PYTHON* variables, reads and writes UTF-8, and checks
+  that the dispatcher exists, which keeps a worktree without it from having every tool call
+  refused.
 - The SessionStart entry has NO `matcher`, so it runs on every SessionStart source: the
   `session-register` gate is what CREATES this run's state, and a run whose state was never
   created is a run every gate is inert for. The `continuous-work-reinject` gate's
@@ -2433,7 +2442,7 @@ What the dispatcher's gates do:
   only Stop hook registered — a spec-only project — because a one-word token then ended a turn.
 - `issue-loop-gate` is the primary brake that keeps the orchestrator working (Part 13.3).
 - **Both Stop gates count their OWN consecutive blocks** (`the block cap`, default 8,
-  override with `CLAUDE_CODE_STOP_the block cap`, validated and clamped to `[1, 64]` so a
+  override with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, validated and clamped to `[1, 64]` so a
   typo cannot disable the brake). Two refinements over a naive counter, each measured: the
   count resets on PROGRESS — a change in the recorded fields — so a run that is actually
   advancing never reaches the cap and the "no progress" message is true when it prints; and

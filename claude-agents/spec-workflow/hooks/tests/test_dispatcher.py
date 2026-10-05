@@ -12,8 +12,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import hooks
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent
@@ -31,7 +29,7 @@ def _spawn(event: str, payload: str, project: Path) -> subprocess.CompletedProce
     env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project))
     env.pop("PYTHONPATH", None)
     return subprocess.run(
-        [sys.executable, "-X", "utf8", "-c", hooks.LAUNCHER, event],
+        [sys.executable, *hooks.INTERPRETER_FLAGS, "-c", hooks.LAUNCHER, event],
         input=payload,
         capture_output=True,
         text=True,
@@ -100,7 +98,6 @@ def test_a_broken_project_gate_does_not_take_the_framework_gates_down(tmp_path: 
     assert decision.exit_code == 2 and "forbidden" in decision.stderr
 
 
-@pytest.mark.skipif(shutil.which("python") is None and shutil.which("python3") is None, reason="no python on PATH")
 def test_launcher_fails_open_without_a_dispatcher_and_decides_with_one(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -118,7 +115,9 @@ def test_registration_block_is_the_launcher_in_exec_form() -> None:
     for key in ("SessionStart", "PreToolUse", "Stop"):
         entry = block["hooks"][key][0]["hooks"][0]
         assert entry["command"] == "python"
-        assert entry["args"][:3] == ["-X", "utf8", "-c"] and entry["args"][3] == hooks.LAUNCHER
+        flags = len(hooks.INTERPRETER_FLAGS)
+        assert entry["args"][:flags] == hooks.INTERPRETER_FLAGS and entry["args"][flags] == "-c"
+        assert entry["args"][flags + 1] == hooks.LAUNCHER
     assert block["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
     assert block["hooks"]["PreToolUse"][0]["hooks"][0]["args"][-1] == "pre-tool-use"
     assert "${" not in hooks.LAUNCHER and '"' not in hooks.LAUNCHER

@@ -6,6 +6,19 @@ Exit 1: NOT red for the right reason (import/collection/syntax/fixture error, or
 
 A helper for the conductor's TEST step and the adversarial verifier's red audit, not a hook. It reads the whole
 capture, never truncates, and is pytest/Hypothesis-aware with generic fallbacks.
+
+Test runners share no failure vocabulary, so the right-reason alphabet has four parts rather than one. Each of
+the later three was added after a genuine red was MEASURED being refused with exit 1 over a manifest
+falsification (`Expected:` / `Received:` lines in the capture) that the judge could not name:
+ (a) pytest / Hypothesis / unittest — `AssertionError`, `assert `, `Falsifying example`, `self.assert`.
+ (b) Playwright WEB-FIRST assertions print neither: `Error: expect(locator).toHaveCount(expected) failed`,
+     optionally after `Timed out 20000ms waiting for expect(locator)`. Assertion-shaped on purpose: an import or
+     collection error never prints them.
+ (c) Playwright/Vitest VALUE assertions, a third vocabulary: `expect(received).toBe(expected)` followed by
+     `Expected:` / `Received:` lines and no trailing ` failed`.
+ (d) Testing-Library QUERY failures, a fourth: `TestingLibraryElementError: Unable to find an accessible element
+     with the role ...` — the shape of a red asserting a control's ABSENCE. Raised by a query against a RENDERED
+     container, so the module has already loaded; the term cannot rescue a load error.
 """
 
 from __future__ import annotations
@@ -22,7 +35,14 @@ WRONG_REASON_RE = re.compile(
 )
 COLLECTION_RE = re.compile(r"errors during collection|ERROR collecting", re.IGNORECASE)
 RIGHT_REASON_RE = re.compile(
-    r"AssertionError|assert |Falsifying example|FAILED .*::|hypothesis\.errors|self\.assert",
+    # (a) pytest / Hypothesis / unittest
+    r"AssertionError|assert |Falsifying example|FAILED .*::|hypothesis\.errors|self\.assert"
+    # (b) Playwright web-first assertions
+    r"|expect\([^)]*\)\.[A-Za-z_]+\([^)]*\) failed|Timed out .* waiting for expect\("
+    # (c) Playwright/Vitest value assertions
+    r"|expect\(received\)\.[A-Za-z_]+\("
+    # (d) Testing-Library query failures
+    r"|TestingLibraryElementError",
     re.IGNORECASE,
 )
 

@@ -4,15 +4,19 @@
 Usage:
     python .claude/hooks/hooks.py session-start     # SessionStart: register, scoped temp, re-inject
     python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, sleep, push gate, claim, filing (+ project)
+    python .claude/hooks/hooks.py post-tool-use     # PostToolUse: project gates only (none shipped)
     python .claude/hooks/hooks.py stop              # Stop: evidence gate, loop brake
     python .claude/hooks/hooks.py selftest          # prove the registered launch form executes and blocks
     python .claude/hooks/hooks.py registration      # print the settings.json hooks block to install
 
 HOW IT IS REGISTERED (exec form, `python`, through the LAUNCHER):
     { "type": "command", "command": "python",
-      "args": ["-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"], "timeout": 30 }
-where <LAUNCHER> is the one-line program `LAUNCHER` below (print the exact block with `registration`). Three
-things the launcher buys, each from a measured incident:
+      "args": ["-I", "-X", "utf8", "-c", "<LAUNCHER>", "pre-tool-use"], "timeout": 30 }
+where <LAUNCHER> is the one-line program `LAUNCHER` below (print the exact block with `registration`). Four
+things the launch buys, each from a measured incident:
+  * `-I` (isolated mode): the interpreter ignores PYTHONHOME, PYTHONPATH and the other PYTHON* variables a
+    session may carry; one leaked PYTHONHOME otherwise stops every hook with an interpreter that cannot find
+    its own standard library. The dispatcher puts its own directory on sys.path itself.
   * `-X utf8`: the payload is read and the decision written in UTF-8 whatever the console code page. A piped
     Windows python defaulted to cp1252 and changed 33 of 117 corpus decisions (27 wrong refusals).
   * `-c` + an existence check: a MISSING dispatcher exits 0 instead of python's exit 2. A worktree checked out
@@ -34,10 +38,15 @@ first) — no second dispatcher, no second registration. A project-specific `Wri
 HOOK name; the self-test honours it.
 
 Decision semantics (the harness contract: exit 0 allows, exit 2 blocks and shows stderr to the agent):
-  * session-start: every gate runs; stdout is concatenated as context; exit is ALWAYS 0 (SessionStart cannot
-    block, and exit 2 would show stderr to the user only).
+  * session-start: every gate runs; stdout is MERGED as context — plain text is joined, and when any gate
+    returns a JSON object (`systemMessage`, `hookSpecificOutput.additionalContext`) the parts are merged into
+    ONE object, because two objects on stdout are not JSON and the harness would discard both; exit is
+    ALWAYS 0 (SessionStart cannot block, and exit 2 would show stderr to the user only).
   * pre-tool-use: gates whose TOOLS match run in ORDER; the first block wins; a gate that raises is skipped
     with a note on stderr (fail OPEN on an ordinary command — the push gate fails closed on a push itself).
+  * post-tool-use: the same, for gates a PROJECT declares with EVENT = "post-tool-use" (the framework ships
+    none); exit 2 shows stderr to the agent although the tool already ran. `registration` emits the
+    PostToolUse entry only when such a gate exists.
   * stop: EVERY gate runs so every decision-log line is written; any block wins and every block message is
     delivered; a gate that raises REFUSES the stop (fail CLOSED), because a gate whose machinery is broken
     must not look like a gate that is satisfied.
@@ -46,7 +55,9 @@ THE LIBRARY IS IMPORTED DEFENSIVELY. A missing, truncated or syntax-broken `hook
 process with exit 1 — a non-blocking error the harness proceeds past, i.e. every gate silently inert, which is
 the exact failure class this rewrite exists to end. Without the library: a Stop REFUSES (fail closed); a
 PreToolUse runs a library-free classifier that still bans `--no-verify` and still refuses a `git push` (the two
-decisions that must never depend on state), and allows everything else; a SessionStart exits 0 with a note.
+decisions that must never depend on state), and allows everything else; a SessionStart exits 0 and prints the
+one-line contract plus the reason. The degraded Stop refusal is CAPPED like every gate (default 8, the same
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`), with its own counter file, so a broken library can never wedge a session.
 """
 
 from __future__ import annotations
@@ -77,12 +88,19 @@ except Exception as _exc:  # noqa: BLE001 — any import failure takes the degra
     lib = None  # type: ignore[assignment]
     LIB_ERROR = f"{_exc.__class__.__name__}: {_exc}"
 
-VERSION = "2026.10.03-python-2"
-EVENTS = ("session-start", "pre-tool-use", "stop")
+VERSION = "2026.10.05-python-3"
+EVENTS = ("session-start", "pre-tool-use", "post-tool-use", "stop")
+EVENT_KEYS = {
+    "session-start": "SessionStart",
+    "pre-tool-use": "PreToolUse",
+    "post-tool-use": "PostToolUse",
+    "stop": "Stop",
+}
+DEFAULT_BLOCK_CAP = 8
 REINJECT_SOURCES = {"compact", "resume", "startup", ""}  # an absent source (Kiro agentSpawn) re-injects
 CONFIG_FILENAME = "hooks.config.json"
 
-# The launcher: the program the registration runs with `python -X utf8 -c <LAUNCHER> <event>`. Single quotes
+# The launcher: the program the registration runs with `python -I -X utf8 -c <LAUNCHER> <event>`. Single quotes
 # only, so it survives a JSON string and a shell double-quoted argument unchanged. `sys.argv[0]` is '-c' under
 # `-c`, so the event is `sys.argv[1]` both here and inside the dispatcher.
 LAUNCHER = (
@@ -91,8 +109,9 @@ LAUNCHER = (
     "sys.argv=[p]+sys.argv[1:];"
     "os.path.isfile(p) and runpy.run_path(p,run_name='__main__')"
 )
-REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 30, "stop": 60}
-REGISTRATION_MATCHERS = {"pre-tool-use": "Bash"}
+INTERPRETER_FLAGS = ["-I", "-X", "utf8"]
+REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 30, "post-tool-use": 30, "stop": 60}
+REGISTRATION_MATCHERS = {"pre-tool-use": "Bash", "post-tool-use": "Bash"}
 
 Gate = Tuple[str, int, Optional[Set[str]], Callable[[Any], Any]]
 
@@ -160,7 +179,7 @@ def dispatch(  # noqa: C901 — the per-event policy, in one place
     gates = [g for g in discover_gates(event, directory) if g[0] not in off]
     if event == "session-start" and payload.source not in REINJECT_SOURCES:
         gates = [g for g in gates if g[0] != "continuous-work-reinject"]
-    if event == "pre-tool-use" and payload.tool_name:
+    if event in ("pre-tool-use", "post-tool-use") and payload.tool_name:
         gates = [g for g in gates if g[2] is None or payload.tool_name in g[2]]
 
     stdout: List[str] = []
@@ -192,7 +211,50 @@ def dispatch(  # noqa: C901 — the per-event policy, in one place
                 break
     if event == "session-start":
         blocked = False
-    return lib.Decision(2 if blocked else 0, "\n".join(stdout), "".join(stderr))
+    return lib.Decision(2 if blocked else 0, merge_stdout(stdout), "".join(stderr))
+
+
+def merge_stdout(parts: List[str]) -> str:  # noqa: C901 — two output grammars merged in one pass
+    """One stdout from many gates. Plain text is joined with blank lines. When any part is a JSON object the
+    result is ONE JSON object: `systemMessage` strings are joined, `hookSpecificOutput.additionalContext`
+    strings are joined (plain-text parts join them there, so no context is lost), scalar keys keep the first
+    value, and `hookSpecificOutput.hookEventName` keeps the first. Two objects on stdout would be invalid JSON."""
+    parts = [p for p in parts if p and p.strip()]
+    objects: List[Dict[str, Any]] = []
+    texts: List[str] = []
+    for part in parts:
+        stripped = part.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                loaded = json.loads(stripped)
+            except ValueError:
+                texts.append(part)
+                continue
+            if isinstance(loaded, dict):
+                objects.append(loaded)
+                continue
+        texts.append(part)
+    if not objects:
+        return "\n".join(texts)
+    merged: Dict[str, Any] = {}
+    specific: Dict[str, Any] = {}
+    for obj in objects:
+        for key, value in obj.items():
+            if key == "hookSpecificOutput" and isinstance(value, dict):
+                for skey, svalue in value.items():
+                    if skey == "additionalContext" and isinstance(svalue, str):
+                        specific[skey] = (specific.get(skey, "") + "\n" + svalue).strip("\n")
+                    else:
+                        specific.setdefault(skey, svalue)
+            elif key == "systemMessage" and isinstance(value, str):
+                merged[key] = (merged.get(key, "") + "\n" + value).strip("\n")
+            else:
+                merged.setdefault(key, value)
+    if texts:
+        specific["additionalContext"] = (specific.get("additionalContext", "") + "\n" + "\n".join(texts)).strip("\n")
+    if specific:
+        merged["hookSpecificOutput"] = specific
+    return json.dumps(merged)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -201,43 +263,94 @@ def dispatch(  # noqa: C901 — the per-event policy, in one place
 # ---------------------------------------------------------------------------------------------------------
 
 _QUOTED_RE = re.compile(r'"[^"]*"|\'[^\']*\'')
-_COMMIT_RE = re.compile(r"(^|[;&| ])git\s+([^;&|]*\s)?commit(\s|$)")
-_PUSH_RE = re.compile(r"(^|[;&| ])git\s+([^;&|]*\s)?push(\s|$)")
+# `\s` in the separator class, not a space: a newline separates commands too, and `cd x` followed by
+# `git push --no-verify` on the next line slipped past a space-only class (measured).
+_COMMIT_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?commit(\s|$)")
+_PUSH_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?push(\s|$)")
 _STASH_RE = re.compile(r"stash\s+push")
 _BYPASS_RE = re.compile(r"(--no-verify|\s-n(\s|$))")
 
 
-def degraded(event: str, payload_text: str) -> Tuple[int, str]:
-    """-> (exit code, stderr) for an event when hooklib cannot be imported."""
-    why = f"hooks.py: the hook library cannot be loaded ({LIB_ERROR}) — "
-    if event == "stop":
+def _degraded_payload(payload_text: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(payload_text or "{}")
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _degraded_stop(payload: Dict[str, Any], why: str) -> Tuple[int, str, str]:
+    """The library-free Stop refusal, CAPPED. Without a cap a broken library refused every turn-end of every
+    session forever (measured); the cap stands the gate down after DEFAULT_BLOCK_CAP consecutive refusals,
+    saying so, exactly as the real gates do. The counter lives beside theirs, keyed on the session."""
+    sid = str(payload.get("session_id") or "")
+    sid8 = re.sub(r"[^A-Za-z0-9_-]", "", sid)[:8] or "nosession"
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or str(payload.get("cwd") or "") or os.getcwd()
+    counter = Path(project) / ".claude" / "agent-state" / "issue-work-orchestrator" / ".stop-gate-counters"
+    counter = counter / f"degraded-{sid8}.count"
+    raw_cap = os.environ.get("CLAUDE_CODE_STOP_HOOK_BLOCK_CAP", "")
+    cap = int(raw_cap) if raw_cap.isdigit() and 1 <= int(raw_cap) <= 64 else DEFAULT_BLOCK_CAP
+    try:
+        blocks = int(re.sub(r"[^0-9]", "", counter.read_text(encoding="utf-8")) or "0") if counter.is_file() else 0
+    except OSError:
+        blocks = 0
+    if blocks >= cap:
         return (
-            2,
-            why + "refusing the stop rather than allowing it unchecked. Restore hooklib.py, then continue working.\n",
+            0,
+            "",
+            why + f"standing down after {blocks} consecutive refusals so the session cannot wedge. THE WORK IS NOT\n"
+            "JUDGED: no gate has run. Restore hooklib.py (python .claude/hooks/hooks.py selftest), then continue.\n",
         )
-    if event == "pre-tool-use":
-        try:
-            payload = json.loads(payload_text or "{}")
-            command = (payload.get("tool_input") or {}).get("command", "") if isinstance(payload, dict) else ""
-        except Exception:  # noqa: BLE001
-            command = ""
+    try:
+        counter.parent.mkdir(parents=True, exist_ok=True)
+        counter.write_text(str(blocks + 1), encoding="utf-8")
+    except OSError:
+        return 0, "", why + "cannot count its refusals; standing down rather than refusing without a way out.\n"
+    return (
+        2,
+        "",
+        why + f"refusing the stop rather than allowing it unchecked (refusal {blocks + 1} of {cap}). Restore\n"
+        "hooklib.py, then continue working.\n",
+    )
+
+
+def degraded(event: str, payload_text: str) -> Tuple[int, str, str]:
+    """-> (exit code, stdout, stderr) for an event when hooklib cannot be imported."""
+    why = f"hooks.py: the hook library cannot be loaded ({LIB_ERROR}) — "
+    payload = _degraded_payload(payload_text)
+    if event == "stop":
+        return _degraded_stop(payload, why)
+    if event in ("pre-tool-use", "post-tool-use"):
+        command = (payload.get("tool_input") or {}).get("command", "")
         stripped = _QUOTED_RE.sub("", command if isinstance(command, str) else "")
         is_commit = bool(_COMMIT_RE.search(stripped))
         is_push = bool(_PUSH_RE.search(stripped)) and not _STASH_RE.search(stripped)
+        if event == "post-tool-use":
+            return 0, "", ""
         if is_commit and _BYPASS_RE.search(stripped):
-            return 2, "spec-tdd-gate: 'git commit --no-verify'/-n is forbidden. Fix the reported issue instead.\n"
+            return 2, "", "spec-tdd-gate: 'git commit --no-verify'/-n is forbidden. Fix the reported issue instead.\n"
         if is_push and "--no-verify" in stripped:
             return (
                 2,
+                "",
                 "spec-tdd-gate: 'git push --no-verify' is forbidden. Fix the cause instead of bypassing the hook.\n",
             )
         if is_push:
-            return 2, why + "refusing the PUSH rather than allowing it unverified. Restore hooklib.py, then push.\n"
-        return 0, ""
-    # session-start: never break startup. The note goes to stderr, which exit 0 routes to the debug log — the
-    # agent sees nothing, but a maintainer reading the log sees WHY the gates are not judging this session.
+            return (
+                2,
+                "",
+                why + "refusing the PUSH rather than allowing it unverified. Restore hooklib.py, then push.\n",
+            )
+        return 0, "", ""
+    # session-start: never break startup, but never lose the contract either — it is exactly when the library
+    # is broken that the agent must still hear it. Stdout is context; the reason goes to the debug log.
     return (
         0,
+        "## Continuous work is in force (.claude/rules/continuous-work.md)\n\n"
+        "A turn ends when the WORK IS FINISHED or a Proven Exception applies (irreversible action, sensitive\n"
+        "information, genuine design fork, hard blocker) — never to ask permission to continue. The hook library\n"
+        f"of this project is broken ({LIB_ERROR}); no gate is judging this session until\n"
+        "`python .claude/hooks/hooks.py selftest` passes again — repair it as part of the work.\n",
         why + "no gate ran at SessionStart; the session is unregistered and ungated until the library is restored.\n",
     )
 
@@ -247,13 +360,16 @@ def registration_block(project_dir_placeholder: str = "${CLAUDE_PROJECT_DIR}") -
     the block carries no path; the placeholder is accepted only for callers that want to show one."""
     del project_dir_placeholder
     block: Dict[str, Any] = {"hooks": {}}
-    for event, key in (("session-start", "SessionStart"), ("pre-tool-use", "PreToolUse"), ("stop", "Stop")):
+    for event in EVENTS:
+        if event == "post-tool-use" and not (lib is not None and discover_gates(event, HERE)):
+            continue  # the framework ships no PostToolUse gate; a project that adds one gets the entry
+        key = EVENT_KEYS[event]
         entry: Dict[str, Any] = {
             "hooks": [
                 {
                     "type": "command",
                     "command": "python",
-                    "args": ["-X", "utf8", "-c", LAUNCHER, event],
+                    "args": [*INTERPRETER_FLAGS, "-c", LAUNCHER, event],
                     "timeout": REGISTRATION_TIMEOUTS[event],
                 }
             ]
@@ -275,7 +391,7 @@ def _utf8_streams() -> None:
             pass
 
 
-def main(argv: List[str]) -> int:
+def main(argv: List[str]) -> int:  # noqa: C901 — one subcommand dispatch, in order
     _utf8_streams()
     if len(argv) < 2:
         sys.stderr.write(__doc__ or "")
@@ -296,7 +412,9 @@ def main(argv: List[str]) -> int:
         return 2
     payload_text = sys.stdin.read() if not sys.stdin.isatty() else ""
     if lib is None:
-        code, message = degraded(event, payload_text)
+        code, out, message = degraded(event, payload_text)
+        if out:
+            sys.stdout.write(out)
         if message:
             sys.stderr.write(message)
         return code
@@ -388,7 +506,7 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
         def spawn(event: str, payload: str, project_dir: Path) -> subprocess.CompletedProcess:
             env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project_dir))
             return subprocess.run(  # nosec B603 — exactly the harness's own launch
-                [python, "-X", "utf8", "-c", LAUNCHER, event],
+                [python, *INTERPRETER_FLAGS, "-c", LAUNCHER, event],
                 input=payload,
                 capture_output=True,
                 text=True,

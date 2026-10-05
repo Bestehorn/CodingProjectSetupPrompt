@@ -69,24 +69,24 @@ experiences (the tie-break for deploy/build tooling), else `process`.
 
 ## The findings ledger
 
-`docs/findings-ledger.md` is the durable, append-only home for everything the evaluation
-did NOT file — sub-threshold findings, theoretical gaps, deferred checklist items. Same
-evidence standard as an issue, NO obligation of work: this is what makes "nothing may be
-dropped" compatible with "do not file it". Create on first use with a `# Findings Ledger`
-header and this table; append one row per finding:
+`docs/findings-ledger.md` is the durable home for everything the evaluation did NOT file —
+sub-threshold findings, theoretical gaps, deferred checklist items. Same evidence standard
+as an issue, NO obligation of work: this is what makes "nothing may be dropped" compatible
+with "do not file it".
 
-```
-| Date | Subject | Finding | Evidence | Why not filed | Status |
-```
+**Rows are written ONLY with** `python scripts/memory_compile.py ledger add --subject S
+--finding F --evidence E --why W [--status open]` — never by editing the file. A row is one
+line of at most 240 bytes: a POINTER, never the analysis. The analysis lives in the decision
+log or the issue, and the row names where; the tool rejects an oversize row (exit 2) and
+creates the file on first use. `Status` is `open`, `promoted #N` or `enforced <path>` (a
+test, hook or rule line).
 
-`Status` is `open`, `promoted #N`, `enforced <path>` (turned into a test, hook or rule
-line), or `archived`. **The ledger is compiled, not accumulated.** Only active rows live
-in it, and it is capped at 60,000 bytes. A row older than six weeks is resolved by
-`/compile-memory` in one of three ways: promoted to an issue (it recurred or caused
-measured damage); enforced by a mechanism (a test, a hook, a one-line rule statement);
-or moved verbatim to `docs/archive/findings-ledger-<YYYY-MM>.md`, which stays in git and
-is grepped when a finding looks familiar, but is never loaded into a session. Nothing is
-deleted; what changes is what every session pays to read.
+**The active file is a size-bounded window** (60,000 bytes) and the cap drives retention:
+when it is full the tool rolls the oldest rows into `docs/archive/findings-ledger-<YYYY-MM>.md`
+(verbatim, still in git) — at write time and again from the pre-commit hook. Recurrence is
+checked with `python scripts/memory_compile.py search <terms>`, which spans the active file
+and the archive, never by reading the ledger. `/compile-memory` keeps only the judgment:
+promote a recurring row to an issue, or enforce it with a mechanism.
 
 Anti-patterns: filing what you could fix in the time the body took; filing "for the
 record"; hardening ideas for machinery that never failed; splitting one root cause into

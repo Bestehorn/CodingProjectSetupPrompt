@@ -2,7 +2,8 @@
 # it runs, and the tracked git hooks in .githooks/ run whole STAGES rather than named ids —
 # so this file is the single source of truth for the commit/push/CI split:
 #
-#   pre-commit  ruff, ruff-format, bandit, detect-secrets, detect-private-key   (< 2 s)
+#   pre-commit  ruff, ruff-format, bandit, detect-secrets, detect-private-key,
+#               memory-reconcile                                              (< 2 s)
 #   pre-push    mypy                                                           (seconds)
 #   manual      pytest — CI owns the suite; see below
 #
@@ -27,13 +28,14 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
+      # .claude/hooks/ is excluded: the vendored hooks carry their own lint profile and suite.
       - id: ruff
         args: [--fix]
         stages: [pre-commit]
-        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
+        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py|\.claude/hooks/)
       - id: ruff-format
         stages: [pre-commit]
-        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py)
+        exclude: ^(old/|workspace/|tmp/|venv/|src/_version\.py|\.claude/hooks/)
 
   # Security at the commit boundary. bandit is fast because pre-commit passes it only the
   # STAGED files; the full recursive scan is CI's `security` group.
@@ -80,6 +82,18 @@ repos:
 
   - repo: local
     hooks:
+      # The safety net for a HAND edit of the ledger or the lessons: the cap drives retention,
+      # so `reconcile` rolls the oldest rows into docs/archive/ until the file fits. Like
+      # ruff-format, it modifies the file and fails the commit once so the agent re-stages (the
+      # file AND the archive file it wrote). The tool's own `ledger add` / `lesson add` already
+      # reconcile at write time, so a row written through them never trips this hook.
+      - id: memory-reconcile
+        name: memory-reconcile (ledger and lessons under their caps)
+        entry: python scripts/memory_compile.py reconcile --apply
+        language: system
+        pass_filenames: false
+        files: ^docs/(findings-ledger|lessons-learned)\.md$
+        stages: [pre-commit]
       # On demand only. The invocation lives in scripts/run_tests.py so that this hook, the
       # pre-push outage path, the CI test job and the agent fleet cannot drift apart:
       # bounded local workers, no fail-fast, complete failure list.

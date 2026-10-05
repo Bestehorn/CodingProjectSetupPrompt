@@ -3053,14 +3053,18 @@ experiences (the tie-break for deploy/build tooling), else `process`.
 **The findings ledger** `docs/findings-ledger.md` is the home for everything NOT filed:
 sub-threshold findings, theoretical hardening gaps, adjacent observations, deferred
 checklist items. Same evidence standard as an issue, no obligation of work — this is what
-makes "nothing may be dropped" compatible with "do not file it". Columns: Date | Subject |
-Finding | Evidence | Why not filed | Status (`open` / `promoted #N` / `enforced <path>` /
-`archived`). **The ledger is compiled, not accumulated:** it holds ACTIVE rows only, capped
-at 60,000 bytes. A row older than six weeks is resolved by `@compile-memory` — promoted to
-an issue (it recurred or caused measured damage), enforced by a test, hook or one-line rule,
-or moved verbatim to `docs/archive/findings-ledger-<YYYY-MM>.md`, which stays in git and is
-grepped when a finding looks familiar but is never loaded into a session. Nothing is
-deleted; what changes is what every session pays to read.
+makes "nothing may be dropped" compatible with "do not file it". **Rows are written ONLY
+with** `python scripts/memory_compile.py ledger add --subject S --finding F --evidence E
+--why W [--status open]`, never by editing the file: one line of at most 240 bytes, a
+POINTER to the decision log or the issue, never the analysis (the tool rejects an oversize
+row and creates the file on first use). `Status` is `open`, `promoted #N` or
+`enforced <path>`. **The active file is a size-bounded window** (60,000 bytes) and the cap
+drives retention: when it is full the tool rolls the oldest rows into
+`docs/archive/findings-ledger-<YYYY-MM>.md` (verbatim, still in git) at write time and from
+the pre-commit hook. Recurrence is checked with `python scripts/memory_compile.py search
+<terms>`, which spans the active file and the archive, never by reading the ledger.
+`@compile-memory` keeps only the judgment: promote a recurring row to an issue, or enforce
+it with a test, hook or one-line rule.
 
 **Anti-patterns:** filing something you could have fixed in the time the issue body took;
 filing "for the record"; filing a hardening idea for machinery that never failed; turning
@@ -3631,17 +3635,17 @@ the copy) name ONE command per event:
 
 ```json
 "hooks": {
-  "agentSpawn": [ { "command": "python -X utf8 -c \"<LAUNCHER>\" agentSpawn" } ],
-  "preToolUse": [ { "command": "python -X utf8 -c \"<LAUNCHER>\" preToolUse", "matcher": "execute_bash" } ],
-  "stop":       [ { "command": "python -X utf8 -c \"<LAUNCHER>\" stop" } ]
+  "agentSpawn": [ { "command": "python -I -X utf8 -c \"<LAUNCHER>\" agentSpawn" } ],
+  "preToolUse": [ { "command": "python -I -X utf8 -c \"<LAUNCHER>\" preToolUse", "matcher": "execute_bash" } ],
+  "stop":       [ { "command": "python -I -X utf8 -c \"<LAUNCHER>\" stop" } ]
 }
 ```
 
 where `<LAUNCHER>` is the fixed one-line program already present in every shipped
 descriptor (copy a descriptor's `hooks` block rather than retyping it):
 `import os,sys,runpy;p=os.path.join(os.getcwd(),'.kiro','hooks-bin','kiro_hooks.py');sys.argv=[p]+sys.argv[1:];os.path.isfile(p) and runpy.run_path(p,run_name='__main__')`.
-It reads and writes UTF-8 whatever the console code page, and it checks that the
-dispatcher EXISTS before running it: `python <missing file>` exits 2, which `preToolUse`
+It runs the interpreter isolated from PYTHON* variables (`-I`), reads and writes UTF-8
+whatever the console code page, and checks that the dispatcher EXISTS before running it: `python <missing file>` exits 2, which `preToolUse`
 reads as a block, so a worktree checked out from a branch that predates the install would
 otherwise have every shell call refused. With the launcher a missing dispatcher exits 0.
 

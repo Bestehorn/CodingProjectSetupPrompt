@@ -11,6 +11,20 @@ not accumulated), `use-lessons-learned.md` (a lesson becomes a mechanism or is a
 `proportionality.md`, `continuous-work.md` (this command runs to completion; the only
 question it may ask is a genuine product decision about promoting a finding to an issue).
 
+**What is automatic, and what is yours.** Size is not this command's job any more. The cap
+drives retention: `python scripts/memory_compile.py reconcile --apply` keeps
+`docs/findings-ledger.md` and `docs/lessons-learned.md` under their caps by rolling the
+OLDEST rows and entries into `docs/archive/` (status ignored; undated items count as oldest),
+and it runs on every write path — `ledger add` and `lesson add` call it — and from the
+pre-commit hook `memory-reconcile`. Agents write rows ONLY with
+`python scripts/memory_compile.py ledger add --subject S --finding F --evidence E --why W`
+(one line, at most 240 bytes: a pointer, never the analysis) and lessons ONLY with
+`python scripts/memory_compile.py lesson add --lesson L --enforced-by X --scope S`; they
+check recurrence with `python scripts/memory_compile.py search <terms>`, which spans the
+archive. What stays with this command is the human-judgment part: PROMOTE a row that
+recurred or caused measured damage to an issue, ENFORCE one with a test, hook or rule line,
+fill in a lesson's `Enforced-by`.
+
 **Step 1 — Measure.** Run `python scripts/memory_compile.py report`. It prints every
 capped file with its size and cap: the always-loaded corpus (`CLAUDE.md` + every
 `.claude/rules/*.md` without `paths:`), `docs/forLLMConsumption.md`,
@@ -32,22 +46,20 @@ window (default six weeks; `memory_compile.py report` lists them): decide one of
 DESIGN-OPTIONS | OUT-OF-SCOPE`. `enforced <path>` — a test, a hook check or a one-line
 rule statement now catches the class: write it, cite its path. `archived` — neither: move
 the row verbatim with `memory_compile.py archive-ledger --apply` to
-`docs/archive/findings-ledger-<YYYY-MM>.md`. A row that has been `open` for twelve weeks
-with no recurrence is archived without discussion. If the ledger is still over its cap after the age pass — a ledger that grew 880 KB in five
-weeks has nothing six weeks old — archive oldest-first with `--until-under-cap --apply`; the
-archive stays greppable, and a row that mattered comes back through recurrence. When the
-unresolved rows alone do not bring the file under the cap, `--until-under-cap` also moves
-resolved (`promoted`/`enforced`) rows oldest-first, and every row it archives has its CI-skip
-tokens (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `***NO_CI***`) defanged so a
-quoted row cannot silence a pipeline. The active ledger ends under 60,000 bytes.
+`docs/archive/findings-ledger-<YYYY-MM>.md`, or leave it to `reconcile`, which rolls it out
+when the window fills. A row that has been `open` for twelve weeks with no recurrence is
+archived without discussion. Then run `python scripts/memory_compile.py reconcile --apply`
+once; every row it archives has its CI-skip tokens (`[skip ci]`, `[ci skip]`, `[no ci]`,
+`[skip actions]`, `***NO_CI***`) defanged so a quoted row cannot silence a pipeline. The
+active ledger ends under 60,000 bytes.
 
 **Step 4 — Compile the lessons.** `docs/lessons-learned.md` holds entries of at most
 five lines (`Date`, `Lesson`, `Enforced-by`, `Scope`). For every entry older than the
 window whose `Enforced-by` is `none`: enforce it (test, hook, rule line — then fill in the
 path) or archive it with `memory_compile.py archive-lessons --apply` to
-`docs/archive/lessons-learned-<YYYY-MM>.md`. Entries longer than five lines are cut to the
-format; the narrative goes to `docs/archive/incidents/<date>-<slug>.md`. The file ends
-under 40,000 bytes.
+`docs/archive/lessons-learned-<YYYY-MM>.md` (or leave it to `reconcile`). Entries longer
+than five lines are rewritten through `memory_compile.py lesson add`; the narrative goes to
+`docs/archive/incidents/<date>-<slug>.md`. The file ends under 40,000 bytes.
 
 **Step 5 — The map stays a map.** `docs/forLLMConsumption.md` is ≤ 40,000 bytes: purpose,
 architecture in brief, where things are, the invariants a change must respect, how to run,

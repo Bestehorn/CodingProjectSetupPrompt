@@ -173,8 +173,11 @@ at session start and never refused.
 ```
 1. Copy the hooks into <project>/.claude/hooks/:
        hooks.py  hooklib.py  gate_*.py  red_for_right_reason.py
-       CONTRACT_VERSION  MIGRATION.md  REVISION_NOTICE.md  tests/
+       CONTRACT_VERSION  MIGRATION.md  REVISION_NOTICE.md  tests/  tests/pytest.ini
    and delete any *.sh predecessor there (a bash registration left behind is the inert hook).
+   Merge, never overwrite: the project's own gate_<name>.py (ORDER above 100), its
+   hooks.config.json and the tests/ modules it added stay; a framework gate the project
+   modified is merged on top, never replaced blind.
 2. Copy rules/continuous-work.md into <project>/.claude/rules/ and reference it from CLAUDE.md.
 3. Register the three exec-form `python` entries in <project>/.claude/settings.json
    (ClaudeCodeSetupPrompt.txt Part 12.2), replacing every `"command": "bash"` entry.

@@ -130,19 +130,39 @@ CLAIMING_MODE_RE = re.compile(r"^(ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO)", r
 
 # Runner-summary predicates, anchored on a NON-ZERO COUNTER, never a bare word: a test NAMED
 # `test_reports_skipped_reason` is not a skip, and `0 failed` is not a failure.
-FAILURE_RE = re.compile(r"[1-9][0-9]* (failed|failure|failures|error|errors)\b", re.IGNORECASE)
-SKIP_RE = re.compile(r"[1-9][0-9]* (skipped|xfailed|xfail|xpassed|deselected)\b", re.IGNORECASE)
+FAILURE_RE = re.compile(
+    r"[1-9][0-9]* (failed|failure|failures|error|errors)\b|\bFAILED \((failures|errors)=[1-9]", re.IGNORECASE
+)
+# `deselected` is NOT a dodge: `-k` and `-m` deselect legitimately, and a capture of the paired tests of one
+# task deselects every other test by design (measured over-block).
+SKIP_RE = re.compile(r"[1-9][0-9]* (skipped|xfailed|xfail|xpassed)\b", re.IGNORECASE)
 PASS_RE = re.compile(
     r"[1-9][0-9]* passed|passed in |^OK$|all tests passed|[1-9][0-9]* tests? ok",
     re.IGNORECASE | re.MULTILINE,
 )
-CHECKED_TASK_RE = re.compile(r"^\s*-\s*\[[xX]\]\s*(\d+(?:\.\d+)*)")
+# A task id: `1`, `1.2`, `24a`, `T-01`, `T7`, `1.2a` — digits with an optional short letter prefix (with or
+# without a hyphen), optional trailing letter per component, dotted components; ends at whitespace or
+# `.`/`:`/`)`/`]`. Measured: the digits-only grammar read `24a` as `24` and dropped `T-01` entirely.
+CHECKED_TASK_RE = re.compile(
+    r"^\s*-\s*\[[xX]\]\s*\**\s*((?:[A-Za-z]{1,3}-?)?\d+[A-Za-z]?(?:\.\d+[A-Za-z]?)*)\**(?=[\s.:)\]]|$)"
+)
 CHECKED_LINE_RE = re.compile(r"^\s*-\s*\[[xX]\]")
 COMMENT_LINE_RE = re.compile(r"^\s*#")
 WAVE_HEADER_RE = re.compile(r"^\s*#\s*tasks\s*:(.*)$", re.IGNORECASE)
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 FIELD_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*$")
 RUNS_RELATIVE_RE = re.compile(r"^runs/")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# A test runner's SUMMARY line: pytest's `=== N passed, M failed in Ts ===` (or the `-q` form without the
+# rules), unittest's `Ran N tests` / `OK` / `FAILED (failures=N)`. When a capture carries one, the LAST such
+# line decides; prose elsewhere in the capture ("earlier 5 failed, now fixed") cannot (measured over-block).
+SUMMARY_LINE_RE = re.compile(
+    r"^\s*=+\s.*\b\d+\s+(passed|failed|error|errors|skipped|xfailed|xpassed|deselected|warnings?)\b.*=+\s*$"
+    r"|^\s*\d+\s+(passed|failed)\b.*$"
+    r"|^\s*(OK|FAILED)\b.*$"
+    r"|^\s*Ran\s+\d+\s+tests?\b.*$",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -208,7 +228,13 @@ class Payload:
 
     @property
     def session_id(self) -> str:
-        return self.string("session_id").strip()
+        """The session id, or "" when the payload carries none OR carries one that is not an identifier.
+
+        The id is interpolated into paths (`runs/<first 8>/`, counter files, the registry key), so it is
+        constrained to letters, digits, `_`, `-` and `.`: measured, `../../../x` as a session id made the
+        re-inject gate print a file from outside the run directory. An invalid id reads as NO id."""
+        value = self.string("session_id").strip()
+        return value if SESSION_ID_RE.match(value) else ""
 
     @property
     def cwd(self) -> str:
@@ -755,9 +781,12 @@ def capture_for_task(spec_dir: Path, kind: str, task_id: str) -> Optional[Path]:
 
 
 def capture_body(path: Path) -> str:
-    """The capture with COMMENT lines removed — an agent's own `# earlier this run: 3 failed` annotation is
-    not a runner summary."""
-    return "\n".join(line for line in read_text(path).splitlines() if not COMMENT_LINE_RE.match(line))
+    """The text the capture predicates judge: the LAST runner summary line when the capture carries one, else
+    the whole capture with COMMENT lines removed (an agent's own `# earlier this run: 3 failed` annotation is
+    not a runner summary). Prose around a summary line can neither block nor release."""
+    lines = [line for line in read_text(path).splitlines() if not COMMENT_LINE_RE.match(line)]
+    summaries = [line for line in lines if SUMMARY_LINE_RE.match(line)]
+    return summaries[-1] if summaries else "\n".join(lines)
 
 
 def has_failures(text: str) -> bool:
@@ -828,8 +857,10 @@ def strip_quoted(command: str) -> str:
     return re.sub(r"'[^']*'", "", re.sub(r'"[^"]*"', "", command))
 
 
-GIT_COMMIT_RE = re.compile(r"(^|[;&| ])git\s+([^;&|]*\s)?commit(\s|$)")
-GIT_PUSH_RE = re.compile(r"(^|[;&| ])git\s+([^;&|]*\s)?push(\s|$)")
+# `\s`, not a space, in the separator class: a newline separates commands too (measured: a bypass on the
+# second line of a two-line command slipped past a space-only class).
+GIT_COMMIT_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?commit(\s|$)")
+GIT_PUSH_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?push(\s|$)")
 STASH_PUSH_RE = re.compile(r"stash\s+push")
 
 
@@ -916,19 +947,15 @@ class Context:
 
     @property
     def state_base(self) -> Path:
-        """<config>/agent-state. A ladder: the first candidate root that CONTAINS an orchestrator tree wins,
-        so a stray empty directory cannot shadow the real one; otherwise the first resolvable root."""
+        """<config>/agent-state under the DECLARED project: the harness's project-dir variable, else the
+        payload's cwd. Only when neither is present does the ladder consult the git top level and the
+        process cwd. The declared root wins even when its state tree does not exist yet — a previous rung
+        skipped any candidate without an orchestrator tree and so resolved a fresh project (or a test
+        fixture) to the ENCLOSING repository's real agent state (measured)."""
         if self._state_base is None:
-            first: Optional[Path] = None
-            for candidate in self._candidates(with_git=True):
-                base = candidate / self.host.config_dir / "agent-state"
-                if first is None:
-                    first = base
-                if (base / ORCHESTRATOR_DIRNAME).is_dir():
-                    self._state_base = base
-                    break
-            if self._state_base is None:
-                self._state_base = first or (self.process_cwd / self.host.config_dir / "agent-state")
+            declared = list(self._candidates(with_git=False))[:-1]  # env and payload cwd only
+            roots = declared or list(self._candidates(with_git=True))
+            self._state_base = roots[0] / self.host.config_dir / "agent-state"
         return self._state_base
 
     @property

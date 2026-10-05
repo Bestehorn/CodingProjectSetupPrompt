@@ -29,20 +29,27 @@ if str(HERE) not in sys.path:
 
 import hooks  # noqa: E402
 
-EVENTS = {"agentSpawn": "session-start", "preToolUse": "pre-tool-use", "stop": "stop"}
+EVENTS = {
+    "agentSpawn": "session-start",
+    "preToolUse": "pre-tool-use",
+    "postToolUse": "post-tool-use",
+    "stop": "stop",
+}
 
 
-def main(argv: "list[str]") -> int:
+def main(argv: "list[str]") -> int:  # noqa: C901 — Kiro's block conventions per event, in one place
     if len(argv) < 2 or argv[1] not in EVENTS:
         sys.stderr.write(__doc__ or "")
         return 2
     event = EVENTS[argv[1]]
     payload_text = sys.stdin.read() if not sys.stdin.isatty() else ""
     if hooks.lib is None:
-        code, message = hooks.degraded(event, payload_text)
+        code, out, message = hooks.degraded(event, payload_text)
         if event == "stop" and code == 2:
             sys.stdout.write(json.dumps({"decision": "block", "reason": message}) + "\n")
             return 0
+        if out:
+            sys.stdout.write(out)
         if message:
             sys.stderr.write(message)
         return code

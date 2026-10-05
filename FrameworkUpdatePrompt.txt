@@ -125,7 +125,13 @@ of this in the same PR, in this order, and record the before/after sizes:
    `ruff-on-stop`, say) becomes a `gate_<name>.py` beside `hooks.py` declaring `EVENT`,
    `ORDER` above 100 and `run(ctx)` — never a second registration and never `bash`; a
    framework gate the project must switch off is named in `.claude/hooks/hooks.config.json`
-   (`{"disabled_gates": [...]}`) with the reason in the PR.
+   (`{"disabled_gates": [...]}`) with the reason in the PR. Merge, never overwrite: a
+   project's own `gate_<name>.py` (`ORDER` above 100) and its `hooks.config.json` are NEVER
+   overwritten; a framework gate file the project has locally modified — its content differs
+   from the previous framework commit's copy, found through the staging export of the OLD
+   commit named in `.claude/FRAMEWORK_COMMIT` — is classified "locally customized" in the
+   delta table and MERGED (framework change applied on top, project change kept, conflicts
+   flagged in the PR), never replaced blind; `tests/` modules the project added stay.
 7. **Runner, wrapper and CI.** Install `scripts/suite_semaphore.py` from its template and
    bring `scripts/run_tests.py` to the current template's shape — a run wider than named
    test files holds one of the host-wide suite slots; keep the project's own worker policy
@@ -146,7 +152,9 @@ of this in the same PR, in this order, and record the before/after sizes:
    keeps the project's xdist/coverage settings out of a suite that must print its own totals)
    and `python .claude/hooks/hooks.py selftest` passes — it spawns the launcher exactly as the
    harness does, so a hook that cannot start on this host is caught here and not in a
-   transcript; `python scripts/suite_semaphore.py selftest` passes; grep `.claude/` and
+   transcript; a project that extends the hooks runs its own tests too — parity is the
+   framework suite AND the project's own `tests/` modules passing in that same invocation;
+   `python scripts/suite_semaphore.py selftest` passes; grep `.claude/` and
    `.kiro/` for `Type1`/`Type2` (outside the
    issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an
    old copy preserved over the new one. A Kiro tree the project keeps as-is (marker file

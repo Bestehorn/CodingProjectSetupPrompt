@@ -426,8 +426,9 @@ class Freshness:
 
 @pytest.fixture
 def fw(tmp_path: Path) -> Freshness:
-    if shutil.which("git") is None:
-        pytest.skip("the freshness handshake fixture needs git on PATH")
+    # git is a prerequisite of the framework, so its absence is a FAILURE of this suite, never a skip (projects
+    # forbid skips as a dodge, and a skipped freshness suite would hide an unarmed handshake).
+    assert shutil.which("git") is not None, "git must be on PATH: the freshness handshake reads tracking refs"
     fixture = Freshness(tmp_path / "fw")
     fixture.build()
     return fixture
