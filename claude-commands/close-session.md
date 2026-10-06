@@ -161,14 +161,23 @@ deciding number).
       removed, and randomized `cdk.out<hash>` assemblies accumulate in the OS temp dir (one
       report reached 170 GB in two days). An aborted bundling also leaves `bundling-temp-*` /
       empty `asset.<hash>` that makes the NEXT deploy fail, so this is correctness, not just
-      disk. Run the reaper:
+      disk. Run the reaper with `run_in_background: true` — its default 28-minute budget
+      fits the background form's 30-minute cap; a foreground call must pass
+      `--budget-minutes 9` and the maximum timeout:
       ```bash
       python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply
       ```
       It removes your session-scoped temp contents wholesale (provably yours) and, in the
-      shared OS temp dir, only known residue patterns untouched for 30+ minutes — so a
-      sibling's in-flight `cdk synth` is never harmed. Its reclaimed total is row 5's Detail;
-      anything it reports as skipped or failed is named in that same cell, never expanded.
+      shared OS temp dir, only known residue patterns untouched for 30+ minutes whose rename
+      succeeds — a sibling's in-flight `cdk synth` holds files open and refuses the rename,
+      so it is never harmed. Each candidate is moved into `.reap-quarantine/` before
+      deletion, so even a killed run has removed the poison directories from where tooling
+      looks. Exit 0 is done; exit 1 names an entry that would not delete; exit 3 means the
+      budget ran out with the rest quarantined — run the same command again until it exits
+      0 or 1 (each run is bounded and visibly further along; a quarantine is deleted first
+      by the next run, whichever session's). Its reclaimed total, summed over the runs, is
+      row 5's Detail; anything it reports as in use, skipped or failed is named in that same
+      cell, never expanded.
    3. If `tmp/os-temp` is not configured as this tree's `TMPDIR`/`TEMP`/`TMP`, row 5's Detail
       says `unscoped temp` — the reaper then falls back to pattern matching in the shared temp
       dir, which is best-effort. The `scoped-temp-init` gate self-writes the env block at session

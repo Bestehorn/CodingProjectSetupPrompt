@@ -1,0 +1,372 @@
+"""Tests for scripts/reap_agent_temp.py, the OS-temp reaper.
+
+Installed from ``templates/test_reap_agent_temp.py.template`` to ``test/test_reap_agent_temp.py``.
+Run by CI's tests group; ``/close-session`` relies on the behaviour proven here.
+
+Every test works in its own temporary tree and passes ``--no-default-roots``, so the machine's real
+temp directories are never read, let alone reaped. ``main()`` is called in-process. There are no
+skips: a behaviour that differs by OS is asserted per OS, with the difference printed.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import stat
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "reap_agent_temp.py"
+TWO_HOURS = 2 * 3600
+FILE_BYTES = 100
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("reap_agent_temp", SCRIPT)
+    assert spec is not None and spec.loader is not None, f"{SCRIPT} is missing"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve postponed annotations through sys.modules
+    spec.loader.exec_module(module)
+    return module
+
+
+reaper = _load()
+
+
+def make_tree(base: Path, name: str, files: int = 5, depth: int = 2) -> Path:
+    """A residue-shaped directory holding `files` files of FILE_BYTES bytes, `depth` levels down."""
+    target = base / name
+    folder = target
+    for level in range(depth):
+        folder = folder / f"d{level}"
+    folder.mkdir(parents=True)
+    for index in range(files):
+        (folder / f"f{index}.txt").write_bytes(b"x" * FILE_BYTES)
+    return target
+
+
+def age(path: Path, seconds: int = TWO_HOURS) -> None:
+    """Make a top-level entry look untouched for `seconds`. Call it LAST: adding a child resets mtime."""
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def reap(*argv: str, apply: bool = True) -> list[str]:
+    args = ["--no-default-roots", "--json", *argv]
+    if apply:
+        args.append("--apply")
+    return args
+
+
+def run_json(capsys, *argv: str) -> tuple[int, dict]:
+    code = reaper.main(list(argv))
+    out = capsys.readouterr().out
+    return code, json.loads(out)
+
+
+@pytest.fixture
+def temp_root(tmp_path: Path) -> Path:
+    root = tmp_path / "ostemp"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    directory = tmp_path / "proj"
+    directory.mkdir()
+    return directory
+
+
+def test_patterns_are_anchored_and_case_insensitive():
+    assert reaper.matches_residue("JSII-KERNEL-abc123")
+    assert reaper.matches_residue("cdk.out") and reaper.matches_residue("cdk.outAbC")
+    assert reaper.matches_residue("asset.0123456789abcdef0123") == r"asset\.[0-9a-f]{16,}"
+    assert not reaper.matches_residue("not-jsii-kernel-abc")
+    assert not reaper.matches_residue("my-cdk.out")
+    assert not reaper.matches_residue("_cacache")
+
+
+def test_report_mode_counts_matched_only_and_deletes_nothing(temp_root, project, capsys):
+    old = make_tree(temp_root, "jsii-kernel-aaa", files=4)
+    age(old)
+    make_tree(temp_root, "keep-me", files=2)
+    recent = make_tree(temp_root, "cdk.out1234", files=3)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project), apply=False))
+
+    assert code == 0 and data["applied"] is False and data["complete"] is True
+    assert data["reclaimable_bytes"] == 4 * FILE_BYTES and data["reclaimed_bytes"] == 0
+    assert [e["path"] for e in data["entries"]] == [str(old)]
+    assert [e["path"] for e in data["skipped_recent"]] == [str(recent)]
+    assert data["roots"] == [{"path": str(temp_root), "kind": "shared", "note": "", "unmatched": 1}]
+    assert old.exists() and recent.exists() and (temp_root / "keep-me").exists()
+    assert not (temp_root / reaper.QUARANTINE_NAME).exists()
+
+
+def test_apply_deletes_old_residue_counting_files_and_bytes(temp_root, project, capsys):
+    a = make_tree(temp_root, "jsii-kernel-aaa", files=4)
+    read_only = a / "d0" / "readonly.txt"
+    read_only.write_bytes(b"y" * 10)
+    read_only.chmod(stat.S_IREAD)
+    age(a)
+    b = make_tree(temp_root, "bundling-temp-bbb", files=6)
+    age(b)
+    make_tree(temp_root, "keep-me", files=1)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and data["complete"] is True
+    assert not a.exists() and not b.exists() and (temp_root / "keep-me").exists()
+    assert data["deleted_entries"] == 2 and data["deleted_files"] == 11
+    assert data["reclaimed_bytes"] == 10 * FILE_BYTES + 10
+    assert data["remaining_entries"] == 0 and data["failed"] == []
+    assert not (temp_root / reaper.QUARANTINE_NAME).exists(), "the root is left as it was found"
+
+
+def test_a_path_beyond_max_path_is_deleted(temp_root, project, capsys):
+    top = temp_root / "cdk.outdeep"
+    deep = top.joinpath(*(["x" * 60] * 6))  # > 360 characters, beyond Windows' 260-character MAX_PATH
+    os.makedirs(reaper.long_path(str(deep)))
+    with open(reaper.long_path(str(deep / "f.txt")), "wb") as handle:
+        handle.write(b"z" * 7)
+    age(top)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and not top.exists()
+    assert data["deleted_files"] == 1 and data["reclaimed_bytes"] == 7
+
+
+def test_scoped_temp_contents_go_wholesale_and_the_root_stays(tmp_path, project, capsys):
+    scoped = project / "tmp" / "os-temp"
+    scoped.mkdir(parents=True)
+    make_tree(scoped, "anything-at-all", files=5)  # no pattern, no age: provably ours
+    (scoped / "loose.bin").write_bytes(b"q" * 7)
+
+    code, data = run_json(capsys, *reap("--scoped-temp", str(scoped), "--project-dir", str(project)))
+
+    assert code == 0
+    assert scoped.is_dir() and list(scoped.iterdir()) == []
+    assert data["reclaimed_bytes"] == 5 * FILE_BYTES + 7 and data["deleted_entries"] == 2
+    assert data["roots"][0]["kind"] == "scoped"
+
+
+def test_a_missing_scoped_temp_is_reported_not_created(tmp_path, project, capsys):
+    scoped = project / "tmp" / "os-temp"
+
+    code, data = run_json(capsys, *reap("--scoped-temp", str(scoped), "--project-dir", str(project)))
+
+    assert code == 0 and not scoped.exists()
+    assert data["roots"][0]["kind"] == "refused" and "unscoped temp" in data["roots"][0]["note"]
+
+
+def test_a_recent_shared_entry_is_left_alone(temp_root, project, capsys):
+    recent = make_tree(temp_root, "jsii-kernel-live", files=2)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and recent.exists()
+    assert data["deleted_entries"] == 0 and len(data["skipped_recent"]) == 1
+
+
+def test_a_refused_rename_means_in_use_and_is_not_a_failure(temp_root, project, monkeypatch, capsys):
+    busy = make_tree(temp_root, "jsii-kernel-busy", files=2)
+    age(busy)
+    free = make_tree(temp_root, "jsii-kernel-free", files=2)
+    age(free)
+    real_rename = os.rename
+
+    def refusing(src, dst, *args, **kwargs):
+        if os.path.basename(str(src)) == "jsii-kernel-busy":
+            raise PermissionError(13, "The process cannot access the file because it is being used")
+        return real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(reaper.os, "rename", refusing)
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0, "in use is reported, not failed"
+    assert busy.exists() and not free.exists()
+    assert data["in_use"] == 1 and data["deleted_entries"] == 1 and data["failed"] == []
+    states = {Path(e["path"]).name: e["state"] for e in data["entries"]}
+    assert states["jsii-kernel-busy"] == "in_use"
+
+
+def test_an_open_handle_refuses_the_rename_on_windows(temp_root, project, capsys):
+    held = make_tree(temp_root, "jsii-kernel-held", files=2)
+    age(held)
+
+    with open(held / "d0" / "d1" / "f0.txt", "rb"):
+        code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0
+    if os.name == "nt":
+        assert held.exists() and data["in_use"] == 1, "Windows refuses to rename a directory with an open file inside"
+    else:
+        print("note: POSIX permits renaming a directory with open files; the quiet window is the only in-use test")
+        assert not held.exists() and data["in_use"] == 0
+
+
+def test_a_sibling_that_took_the_entry_first_is_not_an_error(temp_root, project, monkeypatch, capsys):
+    gone = make_tree(temp_root, "jsii-kernel-gone", files=2)
+    age(gone)
+    real_rename = os.rename
+
+    def vanished(src, dst, *args, **kwargs):
+        if os.path.basename(str(src)) == "jsii-kernel-gone":
+            raise FileNotFoundError(2, "taken by a sibling run")
+        return real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(reaper.os, "rename", vanished)
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and data["taken_by_sibling"] == 1 and data["failed"] == []
+
+
+def test_budget_exhaustion_quarantines_the_rest_exits_3_and_the_next_run_finishes(
+    temp_root, project, monkeypatch, capsys
+):
+    for index in range(6):
+        age(make_tree(temp_root, f"jsii-kernel-{index}", files=3))
+    started: list[Path] = []
+    real_delete = reaper.delete_tree
+
+    def counting(path: Path):
+        started.append(path)
+        return real_delete(path)
+
+    monkeypatch.setattr(reaper, "delete_tree", counting)
+    monkeypatch.setattr(reaper.Clock, "expired", lambda self: len(started) >= 2)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project), "--workers", "1"))
+
+    assert code == 3 and data["complete"] is False and data["exit_code"] == 3
+    first_deleted = data["deleted_entries"]
+    assert 0 < first_deleted < 6
+    assert data["remaining_entries"] == 6 - first_deleted
+    assert not [p for p in temp_root.iterdir() if p.name.startswith("jsii-kernel")], "every candidate was quarantined"
+    quarantine = temp_root / reaper.QUARANTINE_NAME
+    subdirs = [p for p in quarantine.iterdir() if p.is_dir()]
+    assert len(subdirs) == 1
+    owner = (subdirs[0] / reaper.OWNER_FILE).read_text(encoding="utf-8")
+    assert "released=1" in owner and f"budget_minutes={reaper.DEFAULT_BUDGET_MINUTES:g}" in owner
+
+    monkeypatch.undo()
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and data["complete"] is True
+    assert data["adopted"] == 1
+    assert data["deleted_entries"] == 6 - first_deleted and data["remaining_entries"] == 0
+    assert not quarantine.exists(), "a finished run leaves no quarantine behind"
+
+
+def test_a_live_owner_keeps_its_quarantine(temp_root, project, capsys):
+    """A quarantine whose OWNER declares a budget that has not elapsed belongs to a run that may
+    still be alive: on POSIX it is left alone; on Windows the open OWNER handle refuses the rename."""
+    live = reaper.Quarantine(temp_root, budget_minutes=28.0)
+    assert live.claim() == ""
+    make_tree(live.own, "jsii-kernel-theirs", files=2)
+    try:
+        code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+    finally:
+        live.finish(leftovers=True)
+
+    assert code == 0 and data["adopted"] == 0
+    assert (live.own / "jsii-kernel-theirs").exists()
+    live.finish(leftovers=False)
+
+
+def test_the_budget_also_bounds_the_renames(temp_root, project, monkeypatch, capsys):
+    for index in range(3):
+        age(make_tree(temp_root, f"cdk.out{index}", files=1))
+    monkeypatch.setattr(reaper.Clock, "expired", lambda self: True)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 3 and data["deleted_entries"] == 0 and data["remaining_entries"] == 3
+    assert all(e["state"] == "remaining" for e in data["entries"])
+    untouched = sorted(p.name for p in temp_root.iterdir() if p.name.startswith("cdk.out"))
+    assert untouched == ["cdk.out0", "cdk.out1", "cdk.out2"]
+
+
+def test_a_temp_root_containing_the_project_is_refused(tmp_path, capsys):
+    root = tmp_path / "ostemp"
+    project = root / "proj"
+    project.mkdir(parents=True)
+    residue = make_tree(root, "jsii-kernel-x", files=1)
+    age(residue)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(root), "--project-dir", str(project)))
+
+    assert code == 0 and residue.exists()
+    assert data["roots"][0]["kind"] == "refused" and "project" in data["roots"][0]["note"]
+
+
+def test_a_scoped_temp_that_is_the_project_is_refused(project):
+    with pytest.raises(SystemExit) as exc:
+        reaper.main(["--no-default-roots", "--scoped-temp", str(project), "--project-dir", str(project), "--apply"])
+    assert exc.value.code == 2
+
+
+def _make_link(link: Path, target: Path) -> bool:
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            os.symlink(str(target), str(link), target_is_directory=True)
+        return True
+    except (OSError, AttributeError, ImportError):
+        return False
+
+
+def test_links_are_removed_not_followed(temp_root, tmp_path, project, capsys):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    keep = outside / "keep.txt"
+    keep.write_text("keep", encoding="utf-8")
+    target = temp_root / "jsii-kernel-link"
+    target.mkdir()
+    linked = _make_link(target / "link", outside)
+    age(target)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and not target.exists()
+    assert keep.exists(), "nothing outside the temp root may be touched"
+    if not linked:
+        print("note: no symlink/junction privilege on this host; the follow-guard was not exercised")
+    else:
+        assert data["deleted_files"] == 1, "the link itself counts as one removed entry"
+
+
+def test_text_output_names_the_total_the_groups_and_the_verdict(temp_root, project, capsys):
+    age(make_tree(temp_root, "jsii-kernel-t", files=2))
+    age(make_tree(temp_root, "pytest-of-me", files=1))
+    make_tree(temp_root, "cdk.outrecent", files=1)
+
+    code = reaper.main(["--no-default-roots", "--temp-root", str(temp_root), "--project-dir", str(project), "--apply"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Cleaned: 300 B (2 entries, 3 files)" in out
+    assert "1x jsii-kernel-.+  (200 B)" in out and "1x pytest-of-.+  (100 B)" in out
+    assert "skipped 1 touched <30 min ago" in out
+    assert "INCOMPLETE" not in out
+
+
+def test_report_text_lists_a_reclaimable_total_and_the_apply_hint(temp_root, project, capsys):
+    age(make_tree(temp_root, "jsii-kernel-r", files=3))
+
+    code = reaper.main(["--no-default-roots", "--temp-root", str(temp_root), "--project-dir", str(project)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Reclaimable: 300 B (1 entries, 3 files)" in out
+    assert "(report only - re-run with --apply to delete)" in out

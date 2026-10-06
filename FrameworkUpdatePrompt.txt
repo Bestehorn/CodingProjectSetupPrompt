@@ -137,6 +137,13 @@ of this in the same PR, in this order, and record the before/after sizes:
    test files holds one of the host-wide suite slots; keep the project's own worker policy
    and flags — so eight bounded suites from eight sessions can no longer stack on one
    host; `python scripts/suite_semaphore.py selftest` proves the slots work there.
+   Replace `scripts/reap_agent_temp.py` with the current template and install
+   `test/test_reap_agent_temp.py` beside the budget test: the 2026-10-06 reaper judges the
+   top level of a temp root only, quarantines each candidate by rename, deletes with a
+   thread pool under a 28-minute budget and exits 3 when it must be run again — the version
+   it replaces walked every candidate twice with a stat per file and was killed at the
+   harness cap on real backlogs. A reaper carries no project value, so it is replaced, never
+   merged; a project that changed its residue patterns re-applies that one change.
    Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run`, per
    the template) if absent. Where the project deploys, the pipeline
    needs a post-deploy job that runs the committed end-to-end script; add it if end-to-end
@@ -147,7 +154,10 @@ of this in the same PR, in this order, and record the before/after sizes:
    drill that genuinely needs a person is recorded as a residual with an issue — a human
    step is never placed in the merge path.
 8. **Prove it.** `python scripts/run_tests.py test/test_instruction_corpus_budget.py -o addopts=`
-   passes in full; `python scripts/memory_compile.py report` exits 0; the hook suites pass
+   and `python scripts/run_tests.py test/test_reap_agent_temp.py -o addopts=` pass in full;
+   `python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --budget-minutes 2` lists a
+   reclaimable total (report only; no `--apply` in an update);
+   `python scripts/memory_compile.py report` exits 0; the hook suites pass
    (`python -m pytest .claude/hooks/tests -q -o addopts= -p no:cacheprovider` — the override
    keeps the project's xdist/coverage settings out of a suite that must print its own totals)
    and `python .claude/hooks/hooks.py selftest` passes — it spawns the launcher exactly as the

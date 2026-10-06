@@ -75,6 +75,15 @@
 #     OS file locks; `run_tests.py` takes one for any run wider than named files). The
 #     trunk-freshness check is cached on the tracking refs' fingerprint instead of spawning
 #     git three times per turn-end.
+#   - 2026-10-06: THE REAPER FINISHES. `scripts/reap_agent_temp.py` judges the top level of
+#     a temp root only, quarantines each candidate by rename (the in-use test on Windows),
+#     deletes with a thread pool while counting, prints flushed progress, stops at a
+#     28-minute budget (just under the Bash tool's 30-minute background cap) and exits 3 to
+#     say "run again"; a quarantine left behind is deleted first by the next run. The
+#     version it replaces walked every candidate twice with a stat per file and was killed
+#     at the cap on real backlogs with nothing in the transcript. `/close-session` runs it
+#     in the background and re-runs it while it exits 3; `test/test_reap_agent_temp.py`
+#     proves the behaviour (Part 5.4).
 
 ---
 
@@ -765,11 +774,13 @@ because shared hardware means shared state — and the DEFAULT here is the worst
 every project writing into one global temp dir so nobody can safely clean any of it.
 Scoping makes each artifact attributable to the tree that made it.
 
-**2. Install the reaper.** Copy `templates/reap_agent_temp.py.template` to
-`scripts/reap_agent_temp.py`. It is report-only by default; `--apply` deletes:
+**2. Install the reaper and its tests.** Copy `templates/reap_agent_temp.py.template` to
+`scripts/reap_agent_temp.py` and `templates/test_reap_agent_temp.py.template` to
+`test/test_reap_agent_temp.py`. It is report-only by default; `--apply` deletes:
 
 ```bash
 cp templates/reap_agent_temp.py.template scripts/reap_agent_temp.py
+cp templates/test_reap_agent_temp.py.template test/test_reap_agent_temp.py
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp          # report
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
 ```
@@ -777,19 +788,39 @@ python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
 Its ownership rule is what makes it safe beside concurrent sessions, and it needs no
 cross-run bookkeeping: anything under `--scoped-temp` is provably this tree's, so its
 CONTENTS are removed wholesale (the root is kept, so a live session's `TMPDIR` stays
-valid); outside it, an entry is removed only when it matches a known residue pattern AND
-has not been modified for `--quiet-minutes` (default 30). That second half is the
-ownership proxy — these tools never touch a temp directory again after their process
-exits, so an entry untouched for 30 minutes belongs to a process that is gone, while a
-sibling's long `cdk synth` keeps writing and is skipped. Unmatched entries are reported and
-never touched, package caches are deliberately excluded (bounded and self-managing —
-deleting them costs rebuild time without fixing a leak), and a temp root that CONTAINS the
-project directory is refused outright so a mistyped `TMPDIR` cannot turn it into a
-source-tree deleter. On Windows it uses the `\\?\` prefix to defeat MAX_PATH and falls back
-to `robocopy /purge` for a tree that still refuses to go.
+valid); in a shared root, an entry is removed only when its NAME matches a known residue
+pattern, it has not been modified for `--quiet-minutes` (default 30) AND it can be
+renamed. These tools never touch a temp directory again after their process exits, so an
+entry untouched for 30 minutes belongs to a process that is gone; the rename is the
+stronger test — on Windows a directory with an open file inside cannot be renamed, so a
+sibling's running `cdk synth` refuses it and is left alone whatever its timestamps say.
+Unmatched entries are counted and never touched, package caches are deliberately excluded
+(bounded and self-managing — deleting them costs rebuild time without fixing a leak), a
+temp root that CONTAINS the project directory is refused outright so a mistyped `TMPDIR`
+cannot turn it into a source-tree deleter, and the shared roots are found WITHOUT
+consulting `TMPDIR` (under a scoped session `tempfile.gettempdir()` IS the scoped
+directory). On Windows it uses the `\\?\` prefix to defeat MAX_PATH and falls back to
+`robocopy /MIR` for a single tree that still refuses to go.
+
+**Why it finishes, and what to do when it does not.** The first version walked every
+candidate twice with a stat per file before deleting anything, deleted sequentially and
+printed only at the end; on a measured backlog of 5,273 residue directories the harness
+killed it at its 30-minute cap with nothing in the transcript. Now it judges the TOP LEVEL
+only (the listing carries the stat data), RENAMES each candidate into
+`<root>/.reap-quarantine/<run>/` (one syscall that removes it from the namespace and
+doubles as the in-use test), deletes the quarantine with a thread pool while counting
+files and bytes (no separate census), prints a flushed progress line every few seconds,
+and stops starting work at `--budget-minutes` (default 28, just under the 30-minute cap of
+the Bash tool's background form) to print its summary. Exit codes: 0 complete; 1 complete
+with a named entry that would not delete; 3 INCOMPLETE — the budget ran out, the rest is
+quarantined, run the same command again. Everything in a quarantine is provably reaper
+property, so the next run (any session's) deletes it first without a check: a killed or
+budget-stopped run loses nothing but time. Run it with `run_in_background: true` (the
+default budget fits the background cap); a foreground call must lower the budget to fit
+its timeout (`--budget-minutes 9` for a 10-minute call).
 
 `/close-session` (Part 6.1) runs it as part of close-out, which is where the routine
-reclaim happens.
+reclaim happens, and re-runs it while it exits 3.
 
 ---
 
@@ -955,7 +986,8 @@ it is as load-bearing as the steps). Nine steps, and the early ones can change t
 4. **Tree clean** — `git status --porcelain` plus `--untracked-files=all`, in ITS OWN tree.
 5. **Leftovers DELETED, not just reported** — `tmp/`, self-created scratch, and the OS temp
    residue via `python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply`
-   (Part 5.4). Only files this session created; never another session's scratch.
+   (Part 5.4; in the background, re-run while it exits 3). Only files this session created;
+   never another session's scratch.
 6. **Its own worktree/branch/lock AND claim markers gone** — worktree/branch torn down
    (venv first, or locked DLLs block removal on Windows), this run's own claim set
    unclaimed (derived from its lock records/registry entry, never topical adjacency;
@@ -1888,12 +1920,16 @@ this prompt (leave any existing one alone).
     missing — fresh clones and worktrees need no manual step — so a missing block here
     means the hook is not wired, not that a setup step was skipped.) Prove the reaper is safe before trusting it with `--apply`:
     ```bash
-    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp
+    python scripts/run_tests.py test/test_reap_agent_temp.py -o addopts=
+    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --budget-minutes 2
     ```
-    Report-only must list a reclaimable total and must NOT list any unmatched entry as
-    reclaimable. A run whose output claims 0 B while the shared OS temp dir visibly holds
-    `jsii-kernel-*` means `TMPDIR` is pointed somewhere unexpected — check the env block
-    before concluding the disk is clean.
+    The suite passes in full (quarantine and resume after a budget stop, in-use refusal,
+    MAX_PATH, links not followed, the project-root refusals). Report-only must list a
+    reclaimable total and must NOT list any unmatched entry as reclaimable; a census that
+    stops at the budget says so and is a lower bound. A run whose output claims 0 B while
+    the shared OS temp dir visibly holds `jsii-kernel-*` means the shared root was not
+    inspected — the reaper finds it without `TMPDIR`, so check the `refused` lines and
+    `--temp-root` before concluding the disk is clean.
 11a. CI capacity fallback — `docs/codebuild-ci-backup-mechanism.md` exists
     (Part 9) and still reads as project-agnostic (its placeholder table is intact;
     no concrete stack/account/repository name has crept in). Then verify the
@@ -3168,7 +3204,8 @@ expected outcome, not a sign that something was missed.
   `gitlab.json.template`, `gitlab_wrapper.py.template`,
   `github_wrapper.py.template`,
   `reap_agent_temp.py.template` (→ `scripts/reap_agent_temp.py`; the OS-temp reaper,
-  Part 5.4),
+  Part 5.4) and `test_reap_agent_temp.py.template` (→ `test/test_reap_agent_temp.py`; its
+  suite),
   `test_instruction_corpus_budget.py.template` (→ `test/test_instruction_corpus_budget.py`;
   the memory-budget guard, Part 9),
   `memory_compile.py.template` (→ `scripts/memory_compile.py`; the mechanical half of

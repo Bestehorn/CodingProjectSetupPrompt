@@ -24,6 +24,13 @@
 #     `scripts/suite_semaphore.py` (host-wide suite slots that `run_tests.py` takes for
 #     any run wider than named files). The trunk-freshness check is cached on the
 #     tracking refs' fingerprint.
+#   - 2026-10-06: THE REAPER FINISHES. `scripts/reap_agent_temp.py` judges the top level
+#     of a temp root only, quarantines each candidate by rename (the in-use test on
+#     Windows), deletes with a thread pool while counting, prints flushed progress, stops
+#     at a 28-minute budget (just under a 30-minute harness cap) and exits 3 to say "run
+#     again"; a quarantine left behind is deleted first by the next run. The version it
+#     replaces walked every candidate twice with a stat per file and was killed at the cap
+#     on real backlogs. `test/test_reap_agent_temp.py` proves the behaviour (PART 6.1).
 #   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
 #   - Aligns every MCP server config with the canonical install snippet from
 #     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,
@@ -1080,24 +1087,40 @@ CORRECTNESS problem: an aborted bundling leaves `bundling-temp-*` or an empty
 `asset.<hash>`, and CDK SKIPS re-bundling when that directory exists, so one interrupted
 session makes a LATER deploy fail (aws/aws-cdk#33201, #25711).
 
-**Install the reaper** (report-only by default; `--apply` deletes):
+**Install the reaper and its tests** (report-only by default; `--apply` deletes):
 
 ```bash
 cp templates/reap_agent_temp.py.template scripts/reap_agent_temp.py
+cp templates/test_reap_agent_temp.py.template test/test_reap_agent_temp.py
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp          # report
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
 ```
 
 Its ownership rule is what makes it safe beside concurrent runs, with no cross-run
 bookkeeping: anything under `--scoped-temp` is provably this tree's, so its CONTENTS go
-wholesale (the root is kept, so a live run's `TMPDIR` stays valid); outside it, an entry is
-removed only when it matches a known residue pattern AND has not been modified for
-`--quiet-minutes` (default 30) — these tools never touch a temp directory again once their
-process exits, so an entry untouched that long belongs to a dead process, while a sibling's
-long `cdk synth` keeps writing and is skipped. Unmatched entries are reported, never
-touched; package caches are excluded on purpose (bounded and self-managing); a temp root
-CONTAINING the project is refused so a mistyped `TMPDIR` cannot become a source-tree
-deleter.
+wholesale (the root is kept, so a live run's `TMPDIR` stays valid); in a shared root, an
+entry is removed only when its NAME matches a known residue pattern, it has not been
+modified for `--quiet-minutes` (default 30) AND it can be renamed — these tools never touch
+a temp directory again once their process exits, so an entry untouched that long belongs to
+a dead process, and on Windows a directory with an open file inside cannot be renamed, so a
+sibling's running `cdk synth` refuses the rename and is left alone whatever its timestamps
+say. Unmatched entries are counted, never touched; package caches are excluded on purpose
+(bounded and self-managing); a temp root CONTAINING the project is refused so a mistyped
+`TMPDIR` cannot become a source-tree deleter; the shared roots are found without
+consulting `TMPDIR`, which under a scoped run points at the scoped directory itself.
+
+**Why it finishes.** It judges the TOP LEVEL only (the listing carries the stat data),
+RENAMES each candidate into `<root>/.reap-quarantine/<run>/` — one syscall that removes it
+from where tooling looks and doubles as the in-use test — deletes the quarantine with a
+thread pool while counting files and bytes, prints a flushed progress line every few
+seconds, and stops starting work at `--budget-minutes` (default 28, just under a 30-minute
+harness cap; lower it to fit a shorter tool timeout) to print its summary. Exit 0 is
+complete; exit 1 names an entry that would not delete; exit 3 is INCOMPLETE — the budget
+ran out, the rest is quarantined, run the same command again. A quarantine is provably
+reaper property, so the next run (any session's) deletes it first: a killed or
+budget-stopped run loses nothing but time. The first version walked every candidate twice
+with a stat per file and was killed at the harness cap on real backlogs; this one is
+measured in the template's docstring.
 
 **Scoping temp per tree — and the Kiro-specific limitation, stated plainly.**
 `TMPDIR`/`TEMP`/`TMP` are what `tempfile.gettempdir()` (Python, pytest) and `os.tmpdir()`
@@ -4216,7 +4239,8 @@ a registered run its scope is simply the current working tree.
   onto the issue, finish them, and only then close it again with the checklist
   complete — do not ask permission, reopening is reversible. Then CI, tree
   clean, leftovers deleted (`python scripts/reap_agent_temp.py --scoped-temp
-  tmp/os-temp --apply`), worktree/branch/lock/claims gone, issues closed with
+  tmp/os-temp --apply`, re-run while it exits 3), worktree/branch/lock/claims gone,
+  issues closed with
   evidence, shared local `main` untouched, and a terminal state appended to this
   run's `resume_state.md`. Scope is THIS session only — never inspect or mention
   another run's worktrees, branches, locks or issues. The reply is the FIXED FORM
@@ -4569,15 +4593,18 @@ After completing all parts:
 9. **Git wrapper** — for the detected host, the wrapper exists and
    credential stub is in place. If a real token is configured, run
    one read-only command to confirm auth.
-9b. **Temp-leak containment** (PART 6.1) — `scripts/reap_agent_temp.py` exists and
-    `tmp/os-temp` exists. Run it report-only and confirm it lists a reclaimable total
-    without listing any unmatched entry as reclaimable:
+9b. **Temp-leak containment** (PART 6.1) — `scripts/reap_agent_temp.py` and
+    `test/test_reap_agent_temp.py` exist and `tmp/os-temp` exists. The suite passes in
+    full; the report-only run lists a reclaimable total without listing any unmatched
+    entry as reclaimable (a census that stops at the budget says so and is a lower bound):
     ```bash
-    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp
+    python scripts/run_tests.py test/test_reap_agent_temp.py -o addopts=
+    python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --budget-minutes 2
     ```
     State which scoping mode the project uses — per-command prefix, wrapper script, or
     none (best-effort pattern matching only). A 0 B report while the shared OS temp dir
-    visibly holds `jsii-kernel-*` means temp is not scoped, not that the disk is clean.
+    visibly holds `jsii-kernel-*` means the shared root was not inspected (check the
+    `refused` lines and `--temp-root`), not that the disk is clean.
 9a. **CI capacity fallback** — `docs/codebuild-ci-backup-mechanism.md` exists (PART 12)
     and still reads as project-agnostic (its placeholder table is intact; no concrete
     stack/account/repository name has crept in); `docs/ci-capacity-ladder.md` exists
