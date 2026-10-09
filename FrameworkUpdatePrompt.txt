@@ -140,9 +140,9 @@ of this in the same PR, in this order, and record the before/after sizes:
    Replace `scripts/reap_agent_temp.py` with the current template and install
    `test/test_reap_agent_temp.py` beside the budget test: the 2026-10-06 reaper judges the
    top level of a temp root only, quarantines each candidate by rename, deletes with a
-   thread pool under a 28-minute budget and exits 3 when it must be run again — the version
-   it replaces walked every candidate twice with a stat per file and was killed at the
-   harness cap on real backlogs. A reaper carries no project value, so it is replaced, never
+   thread pool under a 28-minute budget checked before every unlink, and exits 3 when it
+   must be run again — the version it replaces walked every candidate twice with a stat per
+   file, had no clock inside an entry, and was killed at the harness cap on real backlogs. A reaper carries no project value, so it is replaced, never
    merged; a project that changed its residue patterns re-applies that one change.
    Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run`, per
    the template) if absent. Where the project deploys, the pipeline

@@ -179,14 +179,16 @@ the deciding number).
       It removes your session-scoped temp contents wholesale (provably yours) and, in the
       shared OS temp dir, only known residue patterns untouched for 30+ minutes whose rename
       succeeds — a sibling's in-flight `cdk synth` holds files open and refuses the rename,
-      so it is never harmed. Each candidate is moved into `.reap-quarantine/` before
-      deletion, so even a killed run has removed the poison directories from where tooling
-      looks. Exit 0 is done; exit 1 names an entry that would not delete; exit 3 means the
-      budget ran out with the rest quarantined — run the same command again until it exits
-      0 or 1 (each run is bounded and visibly further along; a quarantine is deleted first
-      by the next run, whichever session's). Its reclaimed total, summed over the runs, is
-      row 5's Detail; anything it reports as in use, skipped or failed is named in that same
-      cell, never expanded.
+      so it is never harmed. The residue that poisons the next deploy goes first; each
+      candidate is moved into `.reap-quarantine/` just before its deletion; and the budget
+      is checked before every file, so the run returns on time even on a host whose
+      security agent scans each delete. Exit 0 is done; exit 1 names an entry that would
+      not delete; exit 3 means the budget ran out with the rest quarantined or not yet
+      reached — run the same command again until it exits 0 or 1 (each run is bounded and
+      visibly further along; a quarantine is deleted first by the next run, whichever
+      session's). Its reclaimed total, summed over the runs, is row 5's Detail; anything it
+      reports as in use, skipped or failed is named in that same cell, never expanded, and
+      a `SLOW HOST` line is quoted there as the reason the backlog outlives the session.
    3. If `tmp/os-temp` is not this tree's `TMPDIR`/`TEMP`/`TMP`, row 5's Detail says
       `unscoped temp` — the reaper then falls back to pattern matching in the shared temp dir,
       which is best-effort. The scoped form (a settings-file `env` block or a per-command

@@ -76,14 +76,17 @@
 #     trunk-freshness check is cached on the tracking refs' fingerprint instead of spawning
 #     git three times per turn-end.
 #   - 2026-10-06: THE REAPER FINISHES. `scripts/reap_agent_temp.py` judges the top level of
-#     a temp root only, quarantines each candidate by rename (the in-use test on Windows),
-#     deletes with a thread pool while counting, prints flushed progress, stops at a
-#     28-minute budget (just under the Bash tool's 30-minute background cap) and exits 3 to
-#     say "run again"; a quarantine left behind is deleted first by the next run. The
-#     version it replaces walked every candidate twice with a stat per file and was killed
-#     at the cap on real backlogs with nothing in the transcript. `/close-session` runs it
-#     in the background and re-runs it while it exits 3; `test/test_reap_agent_temp.py`
-#     proves the behaviour (Part 5.4).
+#     a temp root only, quarantines each candidate by rename just before deleting it (the
+#     in-use test on Windows), deletes with a thread pool while counting, prints flushed
+#     progress with live files/s, checks a 28-minute budget (just under the Bash tool's
+#     30-minute background cap) before EVERY unlink and exits 3 to say "run again"; a
+#     quarantine left behind is deleted first by the next run. The version it replaces
+#     walked every candidate twice with a stat per file, had no clock inside an entry, and
+#     was killed at the cap on real backlogs with nothing in the transcript — on a host whose
+#     security agent scans each old file on delete (measured 22 to 25 files/s whatever the
+#     thread count) one entry alone ran for 40 minutes; the summary now names such a host.
+#     `/close-session` runs it in the background and re-runs it while it exits 3;
+#     `test/test_reap_agent_temp.py` proves the behaviour (Part 5.4).
 
 ---
 
@@ -806,18 +809,25 @@ directory). On Windows it uses the `\\?\` prefix to defeat MAX_PATH and falls ba
 candidate twice with a stat per file before deleting anything, deleted sequentially and
 printed only at the end; on a measured backlog of 5,273 residue directories the harness
 killed it at its 30-minute cap with nothing in the transcript. Now it judges the TOP LEVEL
-only (the listing carries the stat data), RENAMES each candidate into
-`<root>/.reap-quarantine/<run>/` (one syscall that removes it from the namespace and
-doubles as the in-use test), deletes the quarantine with a thread pool while counting
-files and bytes (no separate census), prints a flushed progress line every few seconds,
-and stops starting work at `--budget-minutes` (default 28, just under the 30-minute cap of
-the Bash tool's background form) to print its summary. Exit codes: 0 complete; 1 complete
-with a named entry that would not delete; 3 INCOMPLETE — the budget ran out, the rest is
-quarantined, run the same command again. Everything in a quarantine is provably reaper
-property, so the next run (any session's) deletes it first without a check: a killed or
-budget-stopped run loses nothing but time. Run it with `run_in_background: true` (the
-default budget fits the background cap); a foreground call must lower the budget to fit
-its timeout (`--budget-minutes 9` for a 10-minute call).
+only (the listing carries the stat data), queues the residue that poisons the next deploy
+first, RENAMES each candidate into `<root>/.reap-quarantine/<run>/` just before deleting
+it (one syscall that removes it from where tooling looks and doubles as the in-use test),
+deletes with a thread pool while counting files and bytes (no separate census), prints a
+flushed progress line with live counters and the files/s rate every few seconds, and
+checks `--budget-minutes` (default 28, just under the 30-minute cap of the Bash tool's
+background form) before EVERY unlink — at the deadline each worker stops at its next file,
+so one slow entry can never carry the run past the budget. Exit codes: 0 complete; 1
+complete with a named entry that would not delete; 3 INCOMPLETE — the budget ran out, the
+rest is quarantined or not yet reached, run the same command again; the summary estimates
+how much longer the backlog needs at this run's rate. Everything in a quarantine is
+provably reaper property, so the next run (any session's) deletes it first without a
+check: a killed or budget-stopped run loses nothing but time. A `SLOW HOST` line means a
+file-system filter (an endpoint security agent) scans each old file on delete — measured
+at 22 to 25 files/s whatever the thread count on one host — and the backlog needs more
+runs or an exclusion for the temp directory in the agent's policy, not more threads. Run
+it with `run_in_background: true` (the default budget fits the background cap); a
+foreground call must lower the budget to fit its timeout (`--budget-minutes 9` for a
+10-minute call).
 
 `/close-session` (Part 6.1) runs it as part of close-out, which is where the routine
 reclaim happens, and re-runs it while it exits 3.

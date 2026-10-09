@@ -65,17 +65,38 @@ WHY IT IS FAST, AND WHY IT STOPS ON TIME
     only as the last resort for a single tree that will not go. Hence the design:
       1. Only the TOP LEVEL of a root is listed and judged; its entries carry their stat
          data, so judging 50,000 entries costs milliseconds.
-      2. A candidate is RENAMED into a quarantine directory on the same volume. One syscall
-         removes it from the namespace at once (an aborted bundling's poison directory
-         stops poisoning right there), and on Windows the rename is the in-use test.
+      2. A candidate is RENAMED into a quarantine directory on the same volume just before
+         its deletion starts, never further ahead than the pool's window. One syscall
+         (measured 5 ms on weeks-old residue) removes it from where tooling looks, and on
+         Windows the rename is the in-use test. The residue that poisons the NEXT deploy
+         (bundling-temp-*, asset.*) is queued first, then the cloud assemblies (the bytes),
+         then the kernels (the files).
       3. The quarantine is deleted by a thread pool — `unlink` releases the GIL — counting
          files and bytes as it goes, so there is no separate census in --apply mode.
       4. A TIME BUDGET (default 28 minutes, just under the 30-minute cap of Claude Code's
-         background shell and similar harnesses) stops the deletion phase in time to print
-         its summary and exit 3: "incomplete, run again". Progress lines are printed and
-         flushed throughout, so even a killed run leaves a trail.
+         background shell and similar harnesses) is checked before EVERY unlink, not merely
+         between entries: at the deadline each worker stops at its next file, the partly
+         emptied tree stays in quarantine, the summary prints and the run exits 3:
+         "incomplete, run again". One slow entry can never run past the budget by more
+         than one unlink per worker. Progress lines with LIVE counters (files, bytes,
+         files/s) are printed and flushed every few seconds, so a slow entry is
+         distinguishable from a hang and even a killed run leaves a trail.
       5. Everything in a quarantine is provably ours, so the next run deletes it FIRST,
          without any check. A killed or budget-stopped run loses nothing but time.
+
+SLOW HOSTS
+    An endpoint security agent's file-system filter can scan every OLD file on delete.
+    Measured on one Windows host (CrowdStrike Falcon and Tanium present; Defender off): the
+    first 30 unlinks of weeks-old residue ran at 151 files/s, then the host settled at 22 to
+    25 files/s whatever the thread count — 32 threads 23/s, 128 threads 15/s, one thread
+    22/s — with the CPU idle, while fresh files delete in about 1 ms. One jsii-kernel-*
+    directory of 4,000 files is then about three minutes, and a 28-minute run clears some
+    40,000 files. The previous version's one shutil.rmtree per entry had no clock inside
+    the entry and was killed at the harness cap on exactly such a host. Here the budget
+    holds regardless; the summary prints the rate, flags a slow host (below 20 files/s per
+    worker over at least 2,000 files and 10 s), and estimates how much longer the backlog
+    needs at that rate. More threads do not help against a serializing filter; an exclusion
+    for the temp directory in the agent's policy does.
 
 CONCURRENT RUNS
     Each run quarantines into its own subdirectory, `<root>/.reap-quarantine/<token>/`,
@@ -111,6 +132,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -131,6 +153,19 @@ RESIDUE_PATTERNS: tuple[str, ...] = (
     r"cdk-docker-.+",
     r"pytest-of-.+",             # pytest self-prunes to 3, but an aborted run can orphan
 )
+
+#: Deletion order in a shared root: the residue that poisons the NEXT deploy first, then the cloud
+#: assemblies (the bulk of the bytes), then the kernels (the bulk of the files).
+PRIORITY: dict[str, int] = {
+    r"bundling-temp-.+": 0,
+    r"asset\.[0-9a-f]{16,}": 0,
+    r"cdk\.out.*": 1,
+    r"cdk-outdir-.+": 1,
+    r"cdk-docker-.+": 1,
+}
+PRIORITY_DEFAULT = 2
+#: Below this many files per second per worker the host, not the reaper, is the bottleneck.
+SLOW_HOST_FILES_PER_SECOND_PER_WORKER = 20.0
 
 DEFAULT_QUIET_MINUTES = 30.0
 #: Just under the 30-minute cap of Claude Code's background shell (and similar harnesses): the
@@ -193,6 +228,7 @@ class RootReport:
 
 @dataclass
 class Report:
+    applied: bool = False
     roots: list[RootReport] = field(default_factory=list)
     entries: list[Candidate] = field(default_factory=list)
     skipped_recent: list[Candidate] = field(default_factory=list)
@@ -204,17 +240,41 @@ class Report:
         return [entry for entry in self.entries if entry.state in states]
 
     @property
+    def files(self) -> int:
+        return sum(entry.files for entry in self.entries)
+
+    @property
     def reclaimable(self) -> int:
         return sum(entry.size for entry in self.entries)
 
     @property
     def reclaimed(self) -> int:
-        return sum(entry.size for entry in self.in_state("deleted"))
+        """Bytes an --apply run actually removed: finished entries AND the partly emptied ones."""
+        return self.reclaimable if self.applied else 0
 
     @property
     def remaining(self) -> list[Candidate]:
-        """Entries an --apply run did not get to: quarantined but not started, or never reached."""
+        """Entries an --apply run did not finish: partly emptied, quarantined but not started, or
+        never reached."""
         return self.in_state("remaining")
+
+    @property
+    def partial(self) -> list[Candidate]:
+        return [entry for entry in self.remaining if entry.files]
+
+    @property
+    def rate(self) -> float:
+        return self.files / self.elapsed if self.elapsed > 0 else 0.0
+
+    def estimated_remaining_seconds(self) -> Optional[float]:
+        """How long the rest would take at this run's rate, from this run's finished entries. None
+        when nothing finished or nothing was removed, because then there is no basis for a figure."""
+        finished = self.in_state("deleted")
+        if not finished or self.rate <= 0 or not self.remaining:
+            return None
+        per_entry = sum(e.files for e in finished) / len(finished)
+        left = per_entry * len(self.remaining) - sum(e.files for e in self.partial)
+        return max(left, 0.0) / self.rate
 
 
 def human(n: int) -> str:
@@ -319,15 +379,19 @@ def robocopy_purge(path: Path) -> bool:
     return not os.path.lexists(long_path(str(path)))
 
 
-def _delete_listing(current: str, stack: list[tuple[str, bool]]) -> tuple[int, int, list[str]]:
+def _delete_listing(
+    current: str, stack: list[tuple[str, bool]], clock: Clock, progress: Optional[Progress]
+) -> tuple[int, int, list[str], bool]:
     """Remove the non-directory entries of one directory and push its subdirectories onto the stack.
-    Returns (files, bytes, errors)."""
+    The budget is checked before EVERY unlink. Returns (files, bytes, errors, stopped)."""
     files = 0
     size = 0
     errors: list[str] = []
     try:
         with os.scandir(current) as it:
             for entry in it:
+                if clock.expired():
+                    return files, size, errors, True
                 try:
                     st = entry.stat(follow_symlinks=False)
                     if stat.S_ISDIR(st.st_mode) and not is_reparse(st):
@@ -339,31 +403,46 @@ def _delete_listing(current: str, stack: list[tuple[str, bool]]) -> tuple[int, i
                     else:
                         files += 1
                         size += st.st_size
+                        if progress is not None:
+                            progress.tick(st.st_size)
                 except OSError as exc:
                     errors.append(f"{entry.path}: {type(exc).__name__}: {exc}")
     except FileNotFoundError:
         pass
     except OSError as exc:
         errors.append(f"{current}: {type(exc).__name__}: {exc}")
-    return files, size, errors
+    return files, size, errors, False
 
 
-def delete_tree(path: Path) -> tuple[int, int, str]:
-    """Delete one quarantined entry, counting files and bytes as it goes.
+def _outcome(path: Path, raw: str, files: int, size: int, errors: list[str]) -> tuple[int, int, str, bool]:
+    if errors and os.name == "nt" and os.path.lexists(raw) and robocopy_purge(path):
+        errors = []
+    if not errors:
+        return files, size, "", False
+    more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+    return files, size, errors[0] + more, False
+
+
+def delete_tree(path: Path, clock: Clock, progress: Optional[Progress] = None) -> tuple[int, int, str, bool]:
+    """Delete one quarantined entry, counting files and bytes as it goes, WITHIN the budget.
 
     Iterative post-order over scandir entries, whose stat data comes with the listing. A symlink
-    or junction is removed as one entry and never followed. Returns (files, bytes, error); the
-    error names the first failure and how many there were."""
+    or junction is removed as one entry and never followed. The budget is checked before every
+    unlink: at the deadline the walk stops and the partly emptied tree stays in quarantine for the
+    next run, so one slow entry can never run past the budget by more than one unlink.
+    Returns (files, bytes, error, stopped); the error names the first failure and how many there were."""
     raw = long_path(str(path))
     try:
         top = os.lstat(raw)
     except FileNotFoundError:
-        return 0, 0, ""
+        return 0, 0, "", False
     except OSError as exc:
-        return 0, 0, f"{type(exc).__name__}: {exc}"
+        return 0, 0, f"{type(exc).__name__}: {exc}", False
     if not stat.S_ISDIR(top.st_mode) or is_reparse(top):
         error = _remove_entry(raw, top)
-        return (0, 0, error) if error else (1, top.st_size, "")
+        if not error and progress is not None:
+            progress.tick(top.st_size)
+        return (0, 0, error, False) if error else (1, top.st_size, "", False)
 
     files = 0
     size = 0
@@ -377,17 +456,13 @@ def delete_tree(path: Path) -> tuple[int, int, str]:
                 errors.append(f"{current}: {error}")
             continue
         stack.append((current, True))
-        more_files, more_size, more_errors = _delete_listing(current, stack)
+        more_files, more_size, more_errors, stopped = _delete_listing(current, stack, clock, progress)
         files += more_files
         size += more_size
         errors += more_errors
-
-    if errors and os.name == "nt" and os.path.lexists(raw) and robocopy_purge(path):
-        errors = []
-    if not errors:
-        return files, size, ""
-    more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
-    return files, size, errors[0] + more
+        if stopped:
+            return files, size, "", True
+    return _outcome(path, raw, files, size, errors)
 
 
 def census(path: Path, clock: Clock) -> tuple[int, int, bool]:
@@ -653,67 +728,103 @@ class Quarantine:
 
 
 class Progress:
-    """Flushed progress lines, so a killed run still leaves a trail in the transcript."""
+    """Flushed progress lines with LIVE counters: every worker thread ticks per unlink, so a slow
+    host shows as a low files/s rate instead of a silent run, and a killed run leaves a trail."""
 
     def __init__(self, total: int, clock: Clock, stream: IO[str]) -> None:
         self.total = total
         self.clock = clock
         self.stream = stream
-        self.done = 0
+        self.finished = 0
+        self.partial = 0
+        self.failed = 0
         self.files = 0
         self.size = 0
-        self.failed = 0
         self.last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def tick(self, size: int) -> None:
+        with self._lock:
+            self.files += 1
+            self.size += size
+
+    def drop(self) -> None:
+        """An entry that will never finish here (in use, or taken by a sibling) leaves the total."""
+        with self._lock:
+            self.total -= 1
 
     def record(self, candidate: Candidate) -> None:
-        self.done += 1
-        self.files += candidate.files
-        self.size += candidate.size
-        if candidate.state == "failed":
-            self.failed += 1
+        with self._lock:
+            if candidate.state == "deleted":
+                self.finished += 1
+            elif candidate.state == "failed":
+                self.failed += 1
+            else:
+                self.partial += 1
+
+    def rate(self) -> float:
+        elapsed = self.clock.elapsed()
+        return self.files / elapsed if elapsed > 0 else 0.0
 
     def maybe_print(self, force: bool = False) -> None:
         now = time.monotonic()
         if not force and now - self.last < PROGRESS_EVERY_SECONDS:
             return
         self.last = now
-        line = (
-            f"[{clock_text(self.clock.elapsed())}] {self.done:,}/{self.total:,} entries"
-            f" | {self.files:,} files | {human(self.size)}"
-        )
-        if self.failed:
-            line += f" | {self.failed} failed"
+        with self._lock:
+            line = (
+                f"[{clock_text(self.clock.elapsed())}] {self.finished:,}/{self.total:,} entries"
+                f" | {self.files:,} files | {human(self.size)} | {self.rate():,.0f} files/s"
+            )
+            if self.failed:
+                line += f" | {self.failed} failed"
         print(line, file=self.stream, flush=True)
 
 
-def _delete_candidate(candidate: Candidate) -> Candidate:
-    files, size, error = delete_tree(candidate.path)
+def _delete_candidate(candidate: Candidate, clock: Clock, progress: Progress) -> Candidate:
+    files, size, error, stopped = delete_tree(candidate.path, clock, progress)
     candidate.files = files
     candidate.size = size
     candidate.error = error
-    candidate.state = "failed" if error else "deleted"
+    if error:
+        candidate.state = "failed"
+    elif stopped:
+        candidate.state = "remaining"  # partly emptied; the next run finishes it
+    else:
+        candidate.state = "deleted"
     return candidate
 
 
-def drain(tasks: list[Candidate], workers: int, clock: Clock, progress: Progress) -> int:
-    """Delete quarantined entries with a thread pool until done or the budget runs out. Work in
-    flight at the deadline is finished, nothing more is started. Returns how many were not started."""
+def _priority(candidate: Candidate) -> tuple[int, str]:
+    """Correctness residue first (it poisons the NEXT deploy), then cloud assemblies, then kernels."""
+    return PRIORITY.get(candidate.reason, PRIORITY_DEFAULT), candidate.path.name.lower()
+
+
+def drain(queue: list[Candidate], quarantine: Quarantine, workers: int, clock: Clock, progress: Progress) -> None:
+    """Delete the queue with a thread pool until done or the budget runs out. A candidate still in
+    place is quarantined just before it is submitted, so the renames never run ahead of the deleting
+    by more than the pool's window. Work in flight at the deadline stops at its next unlink."""
     pending: set[Future[Candidate]] = set()
     index = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         while True:
-            while index < len(tasks) and len(pending) < 2 * workers and not clock.expired():
-                pending.add(pool.submit(_delete_candidate, tasks[index]))
+            while index < len(queue) and len(pending) < 2 * workers and not clock.expired():
+                candidate = queue[index]
                 index += 1
+                if candidate.state == "pending":
+                    quarantine.take(candidate)
+                if candidate.state == "quarantined":
+                    pending.add(pool.submit(_delete_candidate, candidate, clock, progress))
+                else:
+                    progress.drop()
             if not pending:
                 break
             done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
             for future in done:
                 progress.record(future.result())
             progress.maybe_print()
-    for candidate in tasks[index:]:
-        candidate.state = "remaining"
-    return len(tasks) - index
+    for candidate in queue[index:]:
+        candidate.state = "remaining"  # never reached: the budget ran out first
 
 
 def plan_roots(
@@ -772,36 +883,30 @@ def _apply_root(
         report.entries += candidates
         return
     report.adopted += quarantine.adopt(now)
-    for candidate in candidates:
-        if clock.expired():
-            break
-        quarantine.take(candidate)
-    adopted = quarantine.adopted_tasks()
-    tasks = [c for c in candidates if c.state == "quarantined"] + adopted
-    report.entries += candidates + adopted
+    adopted = quarantine.adopted_tasks()  # partly deleted already: finish them first
+    queue = adopted + sorted(candidates, key=_priority)
+    report.entries += queue
 
-    if tasks:
+    if queue:
         print(
-            f"{kind} {root}: {len(tasks):,} entries to delete"
+            f"{kind} {root}: {len(queue):,} entries to delete"
             f" ({len(adopted):,} adopted from earlier runs) | {args.workers} workers",
             file=stream,
             flush=True,
         )
-    progress = Progress(len(tasks), clock, stream)
-    not_started = drain(tasks, args.workers, clock, progress)
-    if tasks:
+    progress = Progress(len(queue), clock, stream)
+    drain(queue, quarantine, args.workers, clock, progress)
+    if queue:
         progress.maybe_print(force=True)
-    for candidate in candidates:
-        if candidate.state == "pending":
-            candidate.state = "remaining"  # never reached: the budget ran out during the renames
-    quarantine.finish(leftovers=not_started > 0)
+    leftovers = any(c.state == "remaining" and QUARANTINE_NAME in c.path.parts for c in queue)
+    quarantine.finish(leftovers=leftovers)
 
 
 def run(
     args: argparse.Namespace, scoped: Optional[Path], shared: list[Path], project: Path,
     clock: Clock, stream: IO[str],
 ) -> tuple[Report, int]:
-    report = Report()
+    report = Report(applied=args.apply)
     for root, kind in plan_roots(scoped, shared, project, report):
         reap_root(root, kind, args, clock, report, stream)
     report.elapsed = clock.elapsed()
@@ -823,6 +928,25 @@ def _groups(entries: Iterable[Candidate]) -> list[tuple[str, int, int]]:
     return [(key, count, size) for key, (count, size) in sorted(groups.items(), key=lambda kv: -kv[1][1])]
 
 
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return "under a minute"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} days"
+
+
+def _slow_host(report: Report, workers: int) -> bool:
+    """Enough work to judge a rate, and a rate that says the host serializes deletes."""
+    return (
+        report.files >= 2000
+        and report.elapsed >= 10
+        and report.rate < SLOW_HOST_FILES_PER_SECOND_PER_WORKER * workers
+    )
+
+
 def emit_text(report: Report, args: argparse.Namespace) -> None:  # noqa: C901 — one line per fact, in order
     """One-glance output. Sizes first; detail only where it is actionable."""
     for root in report.roots:
@@ -835,12 +959,20 @@ def emit_text(report: Report, args: argparse.Namespace) -> None:  # noqa: C901 �
 
     deleted = report.in_state("deleted")
     if args.apply:
+        partly = f" + {len(report.partial):,} partly" if report.partial else ""
         print(
-            f"Cleaned: {human(report.reclaimed)} ({len(deleted):,} entries,"
-            f" {sum(e.files for e in deleted):,} files) in {clock_text(report.elapsed)}"
+            f"Cleaned: {human(report.reclaimed)} ({len(deleted):,} entries{partly}, {report.files:,} files)"
+            f" in {clock_text(report.elapsed)} | {report.rate:,.0f} files/s"
         )
         for key, count, size in _groups(deleted):
             print(f"  {count}x {key}  ({human(size)})")
+        if _slow_host(report, args.workers):
+            print(
+                f"  SLOW HOST: {report.rate:,.0f} files/s across {args.workers} workers with the CPU idle means a"
+                " file-system filter (an endpoint security agent) scans each old file on delete; more threads do"
+                " not help. The budget still holds; the backlog needs more runs, or an exclusion for the temp"
+                " directory in the agent's policy."
+            )
     else:
         files = sum(e.files for e in report.entries)
         suffix = "" if report.census_complete else " - census stopped at the budget: a lower bound"
@@ -872,6 +1004,9 @@ def emit_text(report: Report, args: argparse.Namespace) -> None:  # noqa: C901 �
             f" ({quarantined:,} quarantined, {len(remaining) - quarantined:,} not yet reached);"
             f" run the same command again (exit {EXIT_INCOMPLETE})"
         )
+        estimate = report.estimated_remaining_seconds()
+        if estimate is not None:
+            print(f"  at this run's rate that is roughly {_duration(estimate)} more")
     elif not args.apply and report.reclaimable:
         print("  (report only - re-run with --apply to delete)")
 
@@ -889,19 +1024,25 @@ def emit_json(report: Report, args: argparse.Namespace, code: int) -> None:
         }
 
     deleted = report.in_state("deleted")
+    estimate = report.estimated_remaining_seconds()
     print(json.dumps({
         "applied": args.apply,
         "complete": not report.remaining and report.census_complete,
         "exit_code": code,
         "elapsed_seconds": round(report.elapsed, 1),
         "budget_minutes": args.budget_minutes,
+        "workers": args.workers,
+        "files_per_second": round(report.rate, 1),
+        "estimated_remaining_seconds": None if estimate is None else round(estimate),
+        "slow_host": _slow_host(report, args.workers),
+        "partial_entries": len(report.partial),
         "roots": [
             {"path": str(r.root), "kind": r.kind, "note": r.note, "unmatched": r.unmatched} for r in report.roots
         ],
         "reclaimable_bytes": report.reclaimable,
         "reclaimed_bytes": report.reclaimed,
         "deleted_entries": len(deleted),
-        "deleted_files": sum(e.files for e in deleted),
+        "deleted_files": report.files,
         "remaining_entries": len(report.remaining),
         "in_use": len(report.in_state("in_use")),
         "taken_by_sibling": len(report.in_state("taken")),

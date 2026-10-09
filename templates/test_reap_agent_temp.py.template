@@ -236,9 +236,9 @@ def test_budget_exhaustion_quarantines_the_rest_exits_3_and_the_next_run_finishe
     started: list[Path] = []
     real_delete = reaper.delete_tree
 
-    def counting(path: Path):
+    def counting(path: Path, *args, **kwargs):
         started.append(path)
-        return real_delete(path)
+        return real_delete(path, *args, **kwargs)
 
     monkeypatch.setattr(reaper, "delete_tree", counting)
     monkeypatch.setattr(reaper.Clock, "expired", lambda self: len(started) >= 2)
@@ -249,7 +249,8 @@ def test_budget_exhaustion_quarantines_the_rest_exits_3_and_the_next_run_finishe
     first_deleted = data["deleted_entries"]
     assert 0 < first_deleted < 6
     assert data["remaining_entries"] == 6 - first_deleted
-    assert not [p for p in temp_root.iterdir() if p.name.startswith("jsii-kernel")], "every candidate was quarantined"
+    in_place = [p for p in temp_root.iterdir() if p.name.startswith("jsii-kernel")]
+    assert in_place, "candidates are quarantined just before deletion, never all up front"
     quarantine = temp_root / reaper.QUARANTINE_NAME
     subdirs = [p for p in quarantine.iterdir() if p.is_dir()]
     assert len(subdirs) == 1
@@ -262,7 +263,96 @@ def test_budget_exhaustion_quarantines_the_rest_exits_3_and_the_next_run_finishe
     assert code == 0 and data["complete"] is True
     assert data["adopted"] == 1
     assert data["deleted_entries"] == 6 - first_deleted and data["remaining_entries"] == 0
+    assert data["reclaimed_bytes"] + first_deleted * 3 * FILE_BYTES == 6 * 3 * FILE_BYTES
     assert not quarantine.exists(), "a finished run leaves no quarantine behind"
+    assert not [p for p in temp_root.iterdir() if p.name.startswith("jsii-kernel")]
+
+
+def test_the_budget_stops_inside_an_entry_and_the_next_run_finishes_it(temp_root, project, monkeypatch, capsys):
+    """The 2026-10-08 report: one slow entry of thousands of files ran for 40 minutes because the
+    budget was checked only between entries. Now it is checked before every unlink."""
+    big = make_tree(temp_root, "jsii-kernel-big", files=200)
+    age(big)
+    unlinked: list[str] = []
+    real_unlink = os.unlink
+
+    def counting(path, *args, **kwargs):
+        unlinked.append(str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(reaper.os, "unlink", counting)
+    monkeypatch.setattr(reaper.Clock, "expired", lambda self: len(unlinked) >= 50)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 3 and data["deleted_entries"] == 0 and data["remaining_entries"] == 1
+    assert data["partial_entries"] == 1
+    assert len(unlinked) == 50, "the deadline is honoured at the very next file"
+    assert data["reclaimed_bytes"] == 50 * FILE_BYTES and data["deleted_files"] == 50
+    assert data["entries"][0]["state"] == "remaining" and reaper.QUARANTINE_NAME in data["entries"][0]["path"]
+    assert not big.exists(), "the entry was quarantined; its remains are not where tooling looks"
+
+    monkeypatch.undo()
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and data["adopted"] == 1
+    assert data["deleted_entries"] == 1 and data["reclaimed_bytes"] == 150 * FILE_BYTES
+    assert not (temp_root / reaper.QUARANTINE_NAME).exists()
+
+
+def test_poison_directories_are_deleted_first(temp_root, project, monkeypatch, capsys):
+    for name in ("jsii-kernel-a", "cdk.outb", "bundling-temp-c", "asset.0123456789abcdef"):
+        age(make_tree(temp_root, name, files=1))
+    started: list[str] = []
+    real_delete = reaper.delete_tree
+
+    def counting(path: Path, *args, **kwargs):
+        started.append(path.name)
+        return real_delete(path, *args, **kwargs)
+
+    monkeypatch.setattr(reaper, "delete_tree", counting)
+    monkeypatch.setattr(reaper.Clock, "expired", lambda self: len(started) >= 2)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project), "--workers", "1"))
+
+    assert code == 3
+    assert started[:2] == ["asset.0123456789abcdef", "bundling-temp-c"], "correctness residue before disk residue"
+    states = {Path(e["path"]).name: e["state"] for e in data["entries"]}
+    assert states["jsii-kernel-a"] == "remaining"
+
+
+def test_progress_lines_carry_live_counters_and_a_rate(temp_root, project, monkeypatch, capsys):
+    age(make_tree(temp_root, "jsii-kernel-p", files=4))
+    monkeypatch.setattr(reaper, "PROGRESS_EVERY_SECONDS", 0.0)
+
+    code = reaper.main(["--no-default-roots", "--temp-root", str(temp_root), "--project-dir", str(project), "--apply"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    progress = [line for line in out.splitlines() if line.startswith("[00:")]
+    assert progress, "a progress line is printed with the clock, even on a short run"
+    assert "1/1 entries | 4 files | 400 B" in progress[-1] and "files/s" in progress[-1]
+
+
+def test_the_summary_estimates_the_rest_from_this_runs_rate(temp_root, project, monkeypatch, capsys):
+    for index in range(4):
+        age(make_tree(temp_root, f"jsii-kernel-{index}", files=5))
+    started: list[Path] = []
+    real_delete = reaper.delete_tree
+
+    def counting(path: Path, *args, **kwargs):
+        started.append(path)
+        return real_delete(path, *args, **kwargs)
+
+    monkeypatch.setattr(reaper, "delete_tree", counting)
+    monkeypatch.setattr(reaper.Clock, "expired", lambda self: len(started) >= 2)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project), "--workers", "1"))
+
+    assert code == 3 and data["deleted_entries"] >= 1 and data["remaining_entries"] >= 1
+    assert data["files_per_second"] > 0
+    assert isinstance(data["estimated_remaining_seconds"], int) and data["estimated_remaining_seconds"] >= 0
+    assert data["slow_host"] is False, "a few files in a fraction of a second is no basis for a slow-host verdict"
 
 
 def test_a_live_owner_keeps_its_quarantine(temp_root, project, capsys):
@@ -355,10 +445,10 @@ def test_text_output_names_the_total_the_groups_and_the_verdict(temp_root, proje
     out = capsys.readouterr().out
 
     assert code == 0
-    assert "Cleaned: 300 B (2 entries, 3 files)" in out
+    assert "Cleaned: 300 B (2 entries, 3 files)" in out and "files/s" in out
     assert "1x jsii-kernel-.+  (200 B)" in out and "1x pytest-of-.+  (100 B)" in out
     assert "skipped 1 touched <30 min ago" in out
-    assert "INCOMPLETE" not in out
+    assert "INCOMPLETE" not in out and "SLOW HOST" not in out
 
 
 def test_report_text_lists_a_reclaimable_total_and_the_apply_hint(temp_root, project, capsys):
