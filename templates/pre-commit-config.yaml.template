@@ -28,7 +28,10 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
-      # .claude/hooks/ is excluded: the vendored hooks carry their own lint profile and suite.
+      # .claude/hooks/ is excluded on purpose. Ruff's hierarchical config would apply the hooks' own
+      # .claude/hooks/ruff.toml there, but `ruff --fix` and `ruff-format` would still REWRITE framework files
+      # under it, and a framework file that differs from its canonical copy reads as "locally customized" at the
+      # next framework update and gets merged by hand. The hooks have their own suite and lint profile; leave them.
       - id: ruff
         args: [--fix]
         stages: [pre-commit]

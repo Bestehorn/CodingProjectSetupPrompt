@@ -51,6 +51,10 @@ Hooks read **the LAST occurrence of a plain `Name: value` line**. Therefore:
 
 ## 1c. One Authoritative Writer per artefact
 
+(Numbering: §1 to §8 and their lettered subsections are the framework's and may gain letters
+in a revision; a project's own additions to this rule are numbered §P1, §P2, … so a
+revision never collides with them — two projects had to renumber when this section landed.)
+
 Every spec artefact, state file and log has exactly ONE writer at a time. The main-session
 orchestrator (spec-conductor, issue-work-orchestrator) is the Authoritative Writer of the
 spec directory, the run's state files, `review/review-latest.md`, the task checkboxes, the

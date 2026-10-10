@@ -34,7 +34,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 — fixed argv to git and the project's wrapper, never a shell (see _git)
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -636,7 +636,7 @@ def refs_fingerprint(project_dir: Path) -> Optional[str]:
     common = _git_common_dir_noexec(project_dir)
     if common is None:
         return None
-    digest = hashlib.sha1()  # a change detector, not a security boundary
+    digest = hashlib.sha1(usedforsecurity=False)  # a change detector, not a security boundary
     try:
         packed = common / "packed-refs"
         if packed.is_file():
@@ -853,7 +853,11 @@ def is_heading_id(task_id: str, all_ids: Iterable[str]) -> bool:
 
 
 def strip_quoted(command: str) -> str:
-    """The command with quoted strings REMOVED, so `git commit -m "prepare for push"` is not a push."""
+    """The command with quoted strings REMOVED, so `git commit -m "prepare for push"` is not a push.
+
+    The fallback the TDD gate uses when shlex cannot split a command. Since 2026-10-05 `gate_no_env_vars` reads
+    quotes with its own `_strip_quoted` (adjacent strings, `$'…'`, a placeholder word), so a project test that
+    exercised the env-var gate's quoting THROUGH this function tests the wrong thing now (MIGRATION.md §8)."""
     return re.sub(r"'[^']*'", "", re.sub(r'"[^"]*"', "", command))
 
 

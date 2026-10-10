@@ -35,8 +35,10 @@ WRONG_REASON_RE = re.compile(
 )
 COLLECTION_RE = re.compile(r"errors during collection|ERROR collecting", re.IGNORECASE)
 RIGHT_REASON_RE = re.compile(
-    # (a) pytest / Hypothesis / unittest
-    r"AssertionError|assert |Falsifying example|FAILED .*::|hypothesis\.errors|self\.assert"
+    # (a) pytest / Hypothesis / unittest (Hypothesis prints `Falsifying example:`, or `Failing test case:` /
+    #     `Failing example:` for an explicit `@example` and in its explain phase)
+    r"AssertionError|assert |Falsifying example|Failing (?:test case|example)|FAILED .*::|"
+    r"hypothesis\.errors|self\.assert"
     # (b) Playwright web-first assertions
     r"|expect\([^)]*\)\.[A-Za-z_]+\([^)]*\) failed|Timed out .* waiting for expect\("
     # (c) Playwright/Vitest value assertions

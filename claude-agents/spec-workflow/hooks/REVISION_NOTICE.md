@@ -1,5 +1,5 @@
 Valid-until: 2026-11-15
-## FRAMEWORK REVISION 2026-09-30 IS IN FORCE (amended 2026-10-03, item 8) — it supersedes the phase text in your agent definition and command body
+## FRAMEWORK REVISION 2026-09-30 IS IN FORCE (amended 2026-10-03, item 8; 2026-10-10, item 9) — it supersedes the phase text in your agent definition and command body
 
 The rules, phase fragments, agents and hooks of this project were replaced. Apply this to
 the work in flight NOW, then continue:
@@ -31,3 +31,9 @@ the work in flight NOW, then continue:
    wrapper's `wait`. Local suites go through `scripts/run_tests.py`, which holds a host-wide
    suite slot; a synth, `npm test` or a harness runs under
    `python scripts/suite_semaphore.py run -- <command>` (`.claude/rules/native-tools-over-shell.md`).
+9. (2026-10-10) At close-out, run `python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp
+   --apply` with `run_in_background: true` and run it AGAIN while it exits 3 (its budget ran
+   out; the rest is quarantined) — never a foreground call without `--budget-minutes 9`. An
+   oversize ledger row is compacted by `python scripts/memory_compile.py reconcile --apply`,
+   not rewritten by hand. After adding a gate on another tool, re-run
+   `python .claude/hooks/hooks.py registration`: the matcher is derived from the gates present.

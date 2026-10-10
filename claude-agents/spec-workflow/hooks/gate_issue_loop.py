@@ -223,7 +223,8 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
         ctx.log(HOOK, "BLOCK", detail)
         return lib.block(message)
 
-    assert run_dir is not None
+    if run_dir is None:  # every verdict but OWNED returned above; a Stop gate that raises fails closed
+        raise RuntimeError(f"{HOOK}: verdict {verdict!r} resolved no run directory")
     if verdict == lib.BROKEN:
         if at_cap():
             return allow_at_cap("identity unrepaired")

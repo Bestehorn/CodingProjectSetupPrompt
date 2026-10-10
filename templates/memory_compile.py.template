@@ -418,7 +418,7 @@ def _move_ledger_rows(
         print(f"  -> {_rel(target)}: {len(group)} rows")
         if not apply:
             for r in group:
-                print(f"       {r.date or 'undated':<10}  {r.subject[:80]}")
+                print(f"       {str(r.date or 'undated'):<10}  {r.subject[:80]}")
         if apply:
             _append_archive(
                 path=target,
@@ -514,6 +514,79 @@ def _ledger_with_row(*, text: str, row: str) -> str:
         return text.rstrip("\n") + "\n\n" + LEDGER_HEADER + row
     blocks.insert(anchors[-1] + 1, LedgerRow(lines=[row.rstrip("\n")], date=None, status=""))
     return _render_ledger(blocks=blocks, drop=set())
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: max(limit - 3, 1)].rstrip() + "..."
+
+
+def _pointer_row(*, row: LedgerRow, target: Path) -> str:
+    """The row as a pointer: date, subject, a shortened finding, the archive file that holds the full row, the
+    marker ``compacted`` and the status, within LEDGER_ROW_MAX_BYTES."""
+    cells = _cells(row.lines[0])
+    cells += [""] * (6 - len(cells))
+    date, subject, finding, _evidence, _why, status = cells[:6]
+    evidence = f"full row: {_rel(target)}"
+    limit = 120
+    while True:
+        pointer = (
+            "| "
+            + " | ".join([date, _shorten(subject, 48), _shorten(finding, limit), evidence, "compacted", status])
+            + " |"
+        )
+        if _bytes(pointer + "\n") <= LEDGER_ROW_MAX_BYTES or limit <= 8:
+            return pointer
+        limit -= 8
+
+
+def compact_ledger(*, apply: bool) -> int:
+    """Every row over LEDGER_ROW_MAX_BYTES becomes a POINTER row in place; the full row is appended VERBATIM
+    (status included) to the month's archive file. Idempotent: a pointer row fits, so it is never compacted
+    again. This is the migration path for a ledger written before the row budget existed — four projects
+    rewrote 69 to 87 rows by hand before it existed. Returns the number of rows compacted."""
+    if not LEDGER.exists():
+        return 0
+    text = _read(LEDGER)
+    blocks = _parse_ledger(text)
+    oversize = [r for r in _ledger_rows(blocks) if _bytes(r.text()) > LEDGER_ROW_MAX_BYTES]
+    if not oversize:
+        return 0
+    by_month: dict[str, list[LedgerRow]] = {}
+    for r in oversize:
+        by_month.setdefault(_month_key(r.date), []).append(r)
+    pointers: dict[LedgerRow, str] = {}
+    for month, group in sorted(by_month.items()):
+        target = ARCHIVE / f"findings-ledger-{month}.md"
+        print(
+            f"ledger: {len(group)} rows over {LEDGER_ROW_MAX_BYTES} bytes -> pointer rows; full rows to {_rel(target)}"
+        )
+        for r in group:
+            pointers[r] = _pointer_row(row=r, target=target)
+            if not apply:
+                print(f"       {str(r.date or 'undated'):<10}  {_bytes(r.text()):>5} B  {r.subject[:70]}")
+        if apply:
+            _append_archive(
+                path=target,
+                header=f"# Findings Ledger — archived rows ({month})\n\n{LEDGER_HEADER}",
+                body="".join(r.text() for r in group),
+            )
+    if apply:
+        _write(path=LEDGER, text=_render_with_pointers(blocks=blocks, pointers=pointers))
+    return len(oversize)
+
+
+def _render_with_pointers(*, blocks: list[str | LedgerRow], pointers: dict[LedgerRow, str]) -> str:
+    """The ledger text with each row in ``pointers`` replaced by its pointer line, everything else in place."""
+    out: list[str] = []
+    for block in blocks:
+        if isinstance(block, LedgerRow) and block in pointers:
+            out.append(pointers[block])
+        elif isinstance(block, LedgerRow):
+            out.extend(block.lines)
+        else:
+            out.append(block)
+    text = "\n".join(out)
+    return text if text.endswith("\n") else text + "\n"
 
 
 def ledger_add(*, subject: str, finding: str, evidence: str, why: str, status: str, date: dt.date) -> int:
@@ -725,11 +798,16 @@ def lesson_add(*, lesson: str, enforced_by: str, scope: str, date: dt.date) -> i
 
 
 def reconcile(*, weeks: int, apply: bool) -> int:
-    """The single automatic reconciler: both files, age pass first, then oldest-first to the caps."""
+    """The single automatic reconciler: oversize ledger rows become pointer rows first, then both files get
+    the age pass and the oldest-first pass to their caps. Runs from the pre-commit hook, so a ledger written
+    before the row budget existed is brought under it without a hand edit."""
+    compacted = compact_ledger(apply=apply)
+    if compacted:
+        print(f"ledger: {compacted} oversize rows compacted to pointer rows{'' if apply else ' (dry run)'}")
     results = [_reconcile_ledger(weeks=weeks, apply=apply), _reconcile_lessons(weeks=weeks, apply=apply)]
     for result in results:
         print(result.summary(apply=apply))
-    if not apply and any(r.moved for r in results):
+    if not apply and (compacted or any(r.moved for r in results)):
         print("dry run — pass --apply to move them")
     return 0 if all(r.fits for r in results) else 1
 
@@ -975,6 +1053,11 @@ def _build_parser() -> argparse.ArgumentParser:
         row.add_argument(f"--{name}", required=True)
     row.add_argument("--status", default="open", help="open | promoted #N | enforced <path>")
     row.add_argument("--date", type=dt.date.fromisoformat, default=None, help="YYYY-MM-DD, default today")
+    compact = ledger.add_parser(
+        "compact",
+        help=f"turn every row over {LEDGER_ROW_MAX_BYTES} bytes into a pointer row, archiving the full row verbatim",
+    )
+    compact.add_argument("--apply", action="store_true", help="rewrite; without it, list the rows")
     lesson = sub.add_parser("lesson").add_subparsers(dest="action", required=True)
     entry = lesson.add_parser("add", help=f"append one compiled entry (at most {LESSON_ENTRY_MAX_BYTES} bytes)")
     for name in ("lesson", "enforced-by", "scope"):
@@ -983,6 +1066,24 @@ def _build_parser() -> argparse.ArgumentParser:
     find = sub.add_parser("search", help="case-insensitive; a line hits when it contains every term")
     find.add_argument("terms", nargs="+")
     return parser
+
+
+def _ledger_command(*, args: argparse.Namespace, today: dt.date) -> int:
+    if args.action == "compact":
+        compacted = compact_ledger(apply=args.apply)
+        if compacted and not args.apply:
+            print("dry run — pass --apply to rewrite them")
+        elif not compacted:
+            print(f"ledger: every row is within {LEDGER_ROW_MAX_BYTES} bytes")
+        return 0
+    return ledger_add(
+        subject=args.subject,
+        finding=args.finding,
+        evidence=args.evidence,
+        why=args.why,
+        status=args.status,
+        date=args.date or today,
+    )
 
 
 def main() -> int:
@@ -1000,14 +1101,7 @@ def main() -> int:
     if args.command == "reconcile":
         return reconcile(weeks=args.weeks, apply=args.apply)
     if args.command == "ledger":
-        return ledger_add(
-            subject=args.subject,
-            finding=args.finding,
-            evidence=args.evidence,
-            why=args.why,
-            status=args.status,
-            date=args.date or today,
-        )
+        return _ledger_command(args=args, today=today)
     if args.command == "lesson":
         return lesson_add(lesson=args.lesson, enforced_by=args.enforced_by, scope=args.scope, date=args.date or today)
     return search(terms=args.terms)

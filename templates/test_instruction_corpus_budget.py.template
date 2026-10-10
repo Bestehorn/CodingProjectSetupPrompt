@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 CORPUS_CAP_BYTES = 100_000  # CLAUDE.md + every unscoped .claude/rules/*.md (or always-on Kiro steering)
 RULE_FILE_CAP_BYTES = 12_000  # no single rule file may swallow the budget
-SCOPED_RULES_CAP_BYTES = 45_000  # paths:-scoped rules + fileMatch steering, loaded when a matching file is touched
+SCOPED_RULES_CAP_BYTES = 45_000  # PER HOST: paths:-scoped rules (Claude) and fileMatch steering (Kiro) are each capped
 FOR_LLM_CAP_BYTES = 40_000  # docs/forLLMConsumption.md is a MAP, not a dump
 LESSONS_CAP_BYTES = 40_000  # docs/lessons-learned.md holds compiled, enforced lessons
 LEDGER_CAP_BYTES = 60_000  # docs/findings-ledger.md holds ACTIVE rows only
@@ -234,24 +234,25 @@ def test_no_single_rule_dominates_the_corpus() -> None:
 
 
 def test_scoped_rules_within_cap() -> None:
+    """Each HOST's scoped corpus is capped on its own: a Claude session loads the ``paths:`` rules and a Kiro
+    session the ``fileMatch`` steering, never both. Summing them double-counted a dual-host project (measured:
+    30,953 bytes on the Claude side passed its cap while the sum of the two copies failed)."""
     claude, kiro = _scoped_rules(), _filematch_steering()
     claude_total = sum(_size(p) for p in claude)
-    total = claude_total + sum(_size(p) for p in kiro)
-    if _kiro_frozen():
-        assert claude_total <= SCOPED_RULES_CAP_BYTES, (
-            f"paths:-scoped rules total {claude_total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d} "
-            f"(fileMatch steering, {total - claude_total:,d} bytes, not counted: {FROZEN_NOTE}).\n{_breakdown(claude)}"
-        )
-        if total > SCOPED_RULES_CAP_BYTES:
-            _report_frozen(
-                f"paths:-scoped rules + fileMatch steering total {total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}; "
-                f"{FROZEN_NOTE}"
-            )
-            assert True
+    kiro_total = sum(_size(p) for p in kiro)
+    assert claude_total <= SCOPED_RULES_CAP_BYTES, (
+        f"paths:-scoped rules total {claude_total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}.\n{_breakdown(claude)}"
+    )
+    if kiro_total <= SCOPED_RULES_CAP_BYTES:
         return
-    assert total <= SCOPED_RULES_CAP_BYTES, (
-        f"paths:-scoped rules + fileMatch steering total {total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}.\n"
-        f"{_breakdown([*claude, *kiro])}"
+    if _kiro_frozen():
+        _report_frozen(
+            f"fileMatch steering total {kiro_total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}; {FROZEN_NOTE}"
+        )
+        assert True
+        return
+    raise AssertionError(
+        f"fileMatch steering total {kiro_total:,d} bytes, cap {SCOPED_RULES_CAP_BYTES:,d}.\n{_breakdown(kiro)}"
     )
 
 

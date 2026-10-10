@@ -37,12 +37,12 @@ def run(ctx: lib.Context) -> lib.Decision:
 
     settings = project / ctx.host.config_dir / "settings.local.json"
     try:
-        data: object = {}
+        data: dict = {}
         if settings.is_file():
-            data = json.loads(lib.read_text(settings) or "{}")
-            if not isinstance(data, dict):
+            loaded = json.loads(lib.read_text(settings) or "{}")
+            if not isinstance(loaded, dict):
                 return lib.allow(stdout=_invalid(scoped, ctx))
-        assert isinstance(data, dict)
+            data = loaded
         env = data.get("env")
         if not isinstance(env, dict):
             env = {}

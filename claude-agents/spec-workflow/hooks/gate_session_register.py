@@ -164,7 +164,6 @@ def _upsert_registry(registry, sid: str, run_id: str, state_dir: str, cwd: str, 
         if not isinstance(data, dict):
             return None
         entry = data.get(sid) if isinstance(data.get(sid), dict) else {}
-        assert isinstance(entry, dict)
         entry.update(
             {
                 "session_id": sid,

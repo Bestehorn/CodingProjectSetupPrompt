@@ -4,12 +4,10 @@ Governs HOW you touch files and wait for things. The model's work runs on the in
 side; what the local machine pays for is process creation, and a shell call is the one tool
 that creates processes.
 
-Why (measured 2026-10-01 on an 8-vCPU Windows host at 100 percent CPU, 70 to 75 percent of it
-kernel time, with eleven sessions): every Bash tool call spawned a login shell of about 21
-processes plus the hook dispatcher before the command itself ran; the sessions made about 400
-Bash calls an hour, two thirds of them from read-only reviewer subagents; one call in ten was a
-`sleep` poll; `cat`, `ls`, `grep`, `sed -n` and heredoc file writes were most of the rest. The
-Read, Grep, Glob, Write and Edit tools spawn nothing and fire no hook.
+Why: a Bash call spawns a login shell of about 21 processes plus the hook dispatcher before
+the command runs; the Read, Grep, Glob, Write and Edit tools spawn nothing and fire no hook.
+(The 2026-10-01 measurement behind this rule is recorded in the setup prompt's 2026-10-03
+changelog entry, not here.)
 
 ## The rule
 

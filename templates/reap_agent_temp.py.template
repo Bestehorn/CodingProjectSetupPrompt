@@ -61,8 +61,13 @@ WHY IT IS FAST, AND WHY IT STOPS ON TIME
         robocopy /MIR per directory (16 dirs)               27.69 s
 
     A process per entry is the wrong shape (the process start dominates), and even one
-    robocopy over the whole queue is six times slower than the pool, so robocopy is kept
-    only as the last resort for a single tree that will not go. Hence the design:
+    robocopy over the whole queue is six times slower than the pool. robocopy is not used
+    at all: two projects measured `robocopy <empty> <tree> /MIR` deleting THROUGH a
+    junction, with `/XJ` or without, and the long-path prefix removed the reason it was
+    once needed (aws/aws-cdk#11730). A tree that will not go is reported with its first
+    error. Every path the reaper renames or deletes carries that prefix, so a name ending
+    in a space or a dot is addressed as itself and can never resolve to its twin (measured
+    on a project: without it, quarantining `e2e477- ` renamed `e2e477-`). Hence the design:
       1. Only the TOP LEVEL of a root is listed and judged; its entries carry their stat
          data, so judging 50,000 entries costs milliseconds.
       2. A candidate is RENAMED into a quarantine directory on the same volume just before
@@ -126,10 +131,8 @@ import argparse
 import json
 import os
 import re
-import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -144,14 +147,14 @@ from typing import IO, Iterable, Iterator, Optional
 # Deliberately NOT included: package caches (npm _cacache, pip, uv). Those are bounded,
 # self-managing, and deleting them costs rebuild time without fixing a leak.
 RESIDUE_PATTERNS: tuple[str, ...] = (
-    r"jsii-kernel-.+",           # aws/jsii#700 — one per cdk invocation, never removed
+    r"jsii-kernel-.+",  # aws/jsii#700 — one per cdk invocation, never removed
     r"jsii-runtime-.+",
-    r"cdk\.out.*",               # aws/aws-cdk-cli#802 — randomized cloud assemblies
+    r"cdk\.out.*",  # aws/aws-cdk-cli#802 — randomized cloud assemblies
     r"cdk-outdir-.+",
-    r"bundling-temp-.+",         # aws/aws-cdk#33201 — poisons the NEXT deploy
-    r"asset\.[0-9a-f]{16,}",     # staged asset dirs orphaned by an aborted synth
+    r"bundling-temp-.+",  # aws/aws-cdk#33201 — poisons the NEXT deploy
+    r"asset\.[0-9a-f]{16,}",  # staged asset dirs orphaned by an aborted synth
     r"cdk-docker-.+",
-    r"pytest-of-.+",             # pytest self-prunes to 3, but an aborted run can orphan
+    r"pytest-of-.+",  # pytest self-prunes to 3, but an aborted run can orphan
 )
 
 #: Deletion order in a shared root: the residue that poisons the NEXT deploy first, then the cloud
@@ -249,7 +252,9 @@ class Report:
 
     @property
     def reclaimed(self) -> int:
-        """Bytes an --apply run actually removed: finished entries AND the partly emptied ones."""
+        """Bytes an --apply run actually removed: finished entries AND the partly emptied ones. The sum of
+        the unlinked files' sizes: a file with several hard links counts at each link, so on a tree that
+        shares blocks the figure is an upper bound on the space the volume gets back."""
         return self.reclaimable if self.applied else 0
 
     @property
@@ -302,10 +307,15 @@ def matches_residue(name: str) -> str:
 
 def long_path(path: str) -> str:
     r"""The \\?\ form on Windows: it lifts the 260-character MAX_PATH limit that defeats
-    ordinary deletion of nested CDK asset trees. A no-op elsewhere."""
+    ordinary deletion of nested CDK asset trees, AND it switches off Win32 name normalisation,
+    which strips a trailing space or dot — without it `e2e477- ` and `e2e477-` are the same
+    file to every call. An absolute path is prefixed as it is (abspath would normalise it);
+    only a relative one is made absolute first. A no-op elsewhere."""
     if os.name != "nt" or path.startswith(LONG_PATH_PREFIX):
         return path
-    return LONG_PATH_PREFIX + os.path.abspath(path)
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
+    return LONG_PATH_PREFIX + path.replace("/", "\\")
 
 
 def is_reparse(st: os.stat_result) -> bool:
@@ -359,26 +369,6 @@ def _remove_dir(path: str) -> str:
     return "not removed"
 
 
-def robocopy_purge(path: Path) -> bool:
-    """`robocopy <empty> <tree> /MIR`: the documented last resort for a tree rmdir cannot remove
-    (aws/aws-cdk#11730). robocopy ships with Windows; nothing is installed. True when gone."""
-    empty = Path(tempfile.mkdtemp(prefix="reap-empty-"))
-    try:
-        subprocess.run(  # nosec B603 B607 — fixed argv, no shell, a Windows system tool
-            ["robocopy", str(empty), str(path), "/MIR", "/R:0", "/W:0",
-             "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"],
-            capture_output=True,
-            check=False,
-            timeout=600,
-        )
-        _remove_dir(long_path(str(path)))
-    except (OSError, subprocess.SubprocessError):
-        pass
-    finally:
-        shutil.rmtree(empty, ignore_errors=True)
-    return not os.path.lexists(long_path(str(path)))
-
-
 def _delete_listing(
     current: str, stack: list[tuple[str, bool]], clock: Clock, progress: Optional[Progress]
 ) -> tuple[int, int, list[str], bool]:
@@ -414,9 +404,9 @@ def _delete_listing(
     return files, size, errors, False
 
 
-def _outcome(path: Path, raw: str, files: int, size: int, errors: list[str]) -> tuple[int, int, str, bool]:
-    if errors and os.name == "nt" and os.path.lexists(raw) and robocopy_purge(path):
-        errors = []
+def _outcome(files: int, size: int, errors: list[str]) -> tuple[int, int, str, bool]:
+    """The entry's result: the first error names the failure and how many there were. No robocopy
+    fallback: `/MIR` was measured deleting through a junction, exactly in the tree a walk could not empty."""
     if not errors:
         return files, size, "", False
     more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
@@ -462,7 +452,7 @@ def delete_tree(path: Path, clock: Clock, progress: Optional[Progress] = None) -
         errors += more_errors
         if stopped:
             return files, size, "", True
-    return _outcome(path, raw, files, size, errors)
+    return _outcome(files, size, errors)
 
 
 def census(path: Path, clock: Clock) -> tuple[int, int, bool]:
@@ -507,9 +497,10 @@ def os_default_temp_roots() -> list[Path]:
         local = os.environ.get("LOCALAPPDATA")
         if local:
             roots.append(Path(local) / "Temp")
-        profile = os.environ.get("USERPROFILE")
-        if profile:
-            roots.append(Path(profile) / "AppData" / "Local" / "Temp")
+        try:
+            roots.append(Path.home() / "AppData" / "Local" / "Temp")  # needs no variable of its own
+        except RuntimeError:
+            pass
     else:
         roots += [Path("/tmp"), Path("/var/tmp")]  # nosec B108 — these ARE the temp roots under inspection
     return _resolved_dirs(roots)
@@ -552,9 +543,7 @@ def scoped_problem(scoped: Path, project: Path) -> str:
     return ""
 
 
-def scan_root(
-    root: Path, kind: str, now: float, quiet_minutes: float
-) -> tuple[list[Candidate], list[Candidate], int]:
+def scan_root(root: Path, kind: str, now: float, quiet_minutes: float) -> tuple[list[Candidate], list[Candidate], int]:
     """Judge the TOP LEVEL of a root from its listing. Returns (candidates, skipped_recent, unmatched)."""
     candidates: list[Candidate] = []
     recent: list[Candidate] = []
@@ -654,7 +643,7 @@ class Quarantine:
             if not self._orphaned(sub, now):
                 continue
             try:
-                os.rename(str(sub), str(self.own / (ADOPTED_PREFIX + sub.name)))
+                os.rename(long_path(str(sub)), long_path(str(self.own / (ADOPTED_PREFIX + sub.name))))
             except OSError:
                 continue  # its owner is alive after all (Windows), or a sibling adopted it first
             adopted += 1
@@ -685,7 +674,9 @@ class Quarantine:
         """Rename one candidate into this quarantine; the outcome is the candidate's new state."""
         target = self.own / candidate.path.name
         try:
-            os.rename(str(candidate.path), str(target))
+            # Both sides in long-path form: a name ending in a space or a dot must be moved as ITSELF, never as
+            # the twin Win32 normalisation would resolve it to.
+            os.rename(long_path(str(candidate.path)), long_path(str(target)))
         except FileNotFoundError:
             candidate.state = "taken"
         except OSError as exc:
@@ -827,9 +818,7 @@ def drain(queue: list[Candidate], quarantine: Quarantine, workers: int, clock: C
         candidate.state = "remaining"  # never reached: the budget ran out first
 
 
-def plan_roots(
-    scoped: Optional[Path], shared: Iterable[Path], project: Path, report: Report
-) -> list[tuple[Path, str]]:
+def plan_roots(scoped: Optional[Path], shared: Iterable[Path], project: Path, report: Report) -> list[tuple[Path, str]]:
     plan: list[tuple[Path, str]] = []
     if scoped is not None:
         if scoped.is_dir():
@@ -848,9 +837,7 @@ def plan_roots(
     return plan
 
 
-def reap_root(
-    root: Path, kind: str, args: argparse.Namespace, clock: Clock, report: Report, stream: IO[str]
-) -> None:
+def reap_root(root: Path, kind: str, args: argparse.Namespace, clock: Clock, report: Report, stream: IO[str]) -> None:
     now = time.time()
     candidates, recent, unmatched = scan_root(root, kind, now, args.quiet_minutes)
     report.roots.append(RootReport(root, kind, unmatched=unmatched))
@@ -870,8 +857,14 @@ def _report_root(root: Path, candidates: list[Candidate], clock: Clock, report: 
 
 
 def _apply_root(
-    root: Path, kind: str, candidates: list[Candidate], args: argparse.Namespace,
-    clock: Clock, report: Report, stream: IO[str], now: float,
+    root: Path,
+    kind: str,
+    candidates: list[Candidate],
+    args: argparse.Namespace,
+    clock: Clock,
+    report: Report,
+    stream: IO[str],
+    now: float,
 ) -> None:
     """Apply mode: adopt orphaned quarantines, quarantine the candidates, delete under the budget."""
     quarantine = Quarantine(root, args.budget_minutes)
@@ -903,8 +896,12 @@ def _apply_root(
 
 
 def run(
-    args: argparse.Namespace, scoped: Optional[Path], shared: list[Path], project: Path,
-    clock: Clock, stream: IO[str],
+    args: argparse.Namespace,
+    scoped: Optional[Path],
+    shared: list[Path],
+    project: Path,
+    clock: Clock,
+    stream: IO[str],
 ) -> tuple[Report, int]:
     report = Report(applied=args.apply)
     for root, kind in plan_roots(scoped, shared, project, report):
@@ -941,14 +938,11 @@ def _duration(seconds: float) -> str:
 def _slow_host(report: Report, workers: int) -> bool:
     """Enough work to judge a rate, and a rate that says the host serializes deletes."""
     return (
-        report.files >= 2000
-        and report.elapsed >= 10
-        and report.rate < SLOW_HOST_FILES_PER_SECOND_PER_WORKER * workers
+        report.files >= 2000 and report.elapsed >= 10 and report.rate < SLOW_HOST_FILES_PER_SECOND_PER_WORKER * workers
     )
 
 
-def emit_text(report: Report, args: argparse.Namespace) -> None:  # noqa: C901 — one line per fact, in order
-    """One-glance output. Sizes first; detail only where it is actionable."""
+def _emit_roots(report: Report) -> None:
     for root in report.roots:
         if root.kind == "refused":
             print(f"refused {root.root}: {root.note}")
@@ -957,34 +951,44 @@ def emit_text(report: Report, args: argparse.Namespace) -> None:  # noqa: C901 �
         else:
             print(f"scoped  {root.root}")
 
+
+def _emit_apply_summary(report: Report, args: argparse.Namespace) -> None:
     deleted = report.in_state("deleted")
-    if args.apply:
-        partly = f" + {len(report.partial):,} partly" if report.partial else ""
+    partly = f" + {len(report.partial):,} partly" if report.partial else ""
+    print(
+        f"Cleaned: {human(report.reclaimed)} ({len(deleted):,} entries{partly}, {report.files:,} files)"
+        f" in {clock_text(report.elapsed)} | {report.rate:,.0f} files/s"
+    )
+    for key, count, size in _groups(deleted):
+        print(f"  {count}x {key}  ({human(size)})")
+    if _slow_host(report, args.workers):
         print(
-            f"Cleaned: {human(report.reclaimed)} ({len(deleted):,} entries{partly}, {report.files:,} files)"
-            f" in {clock_text(report.elapsed)} | {report.rate:,.0f} files/s"
+            f"  SLOW HOST: {report.rate:,.0f} files/s across {args.workers} workers with the CPU idle means a"
+            " file-system filter (an endpoint security agent) scans each old file on delete; more threads do"
+            " not help. The budget still holds; the backlog needs more runs, or an exclusion for the temp"
+            " directory in the agent's policy."
         )
-        for key, count, size in _groups(deleted):
-            print(f"  {count}x {key}  ({human(size)})")
-        if _slow_host(report, args.workers):
-            print(
-                f"  SLOW HOST: {report.rate:,.0f} files/s across {args.workers} workers with the CPU idle means a"
-                " file-system filter (an endpoint security agent) scans each old file on delete; more threads do"
-                " not help. The budget still holds; the backlog needs more runs, or an exclusion for the temp"
-                " directory in the agent's policy."
-            )
+
+
+def _emit_report_summary(report: Report) -> None:
+    suffix = "" if report.census_complete else " - census stopped at the budget: a lower bound"
+    print(f"Reclaimable: {human(report.reclaimable)} ({len(report.entries):,} entries, {report.files:,} files){suffix}")
+    for key, count, size in _groups(e for e in report.entries if e.state != "quarantined"):
+        print(f"  {count}x {key}  ({human(size)})")
+    earlier = report.in_state("quarantined")
+    if earlier:
+        print(
+            f"  {len(earlier)} quarantined by an earlier run, awaiting deletion ({human(sum(e.size for e in earlier))})"
+        )
+
+
+def emit_text(report: Report, args: argparse.Namespace) -> None:
+    """One-glance output. Sizes first; detail only where it is actionable."""
+    _emit_roots(report)
+    if args.apply:
+        _emit_apply_summary(report, args)
     else:
-        files = sum(e.files for e in report.entries)
-        suffix = "" if report.census_complete else " - census stopped at the budget: a lower bound"
-        print(f"Reclaimable: {human(report.reclaimable)} ({len(report.entries):,} entries, {files:,} files){suffix}")
-        for key, count, size in _groups(e for e in report.entries if e.state != "quarantined"):
-            print(f"  {count}x {key}  ({human(size)})")
-        earlier = report.in_state("quarantined")
-        if earlier:
-            print(
-                f"  {len(earlier)} quarantined by an earlier run, awaiting deletion"
-                f" ({human(sum(e.size for e in earlier))})"
-            )
+        _emit_report_summary(report)
 
     in_use = report.in_state("in_use")
     if in_use:
@@ -1025,32 +1029,38 @@ def emit_json(report: Report, args: argparse.Namespace, code: int) -> None:
 
     deleted = report.in_state("deleted")
     estimate = report.estimated_remaining_seconds()
-    print(json.dumps({
-        "applied": args.apply,
-        "complete": not report.remaining and report.census_complete,
-        "exit_code": code,
-        "elapsed_seconds": round(report.elapsed, 1),
-        "budget_minutes": args.budget_minutes,
-        "workers": args.workers,
-        "files_per_second": round(report.rate, 1),
-        "estimated_remaining_seconds": None if estimate is None else round(estimate),
-        "slow_host": _slow_host(report, args.workers),
-        "partial_entries": len(report.partial),
-        "roots": [
-            {"path": str(r.root), "kind": r.kind, "note": r.note, "unmatched": r.unmatched} for r in report.roots
-        ],
-        "reclaimable_bytes": report.reclaimable,
-        "reclaimed_bytes": report.reclaimed,
-        "deleted_entries": len(deleted),
-        "deleted_files": report.files,
-        "remaining_entries": len(report.remaining),
-        "in_use": len(report.in_state("in_use")),
-        "taken_by_sibling": len(report.in_state("taken")),
-        "adopted": report.adopted,
-        "failed": [{"path": str(e.path), "error": e.error} for e in report.in_state("failed")],
-        "entries": [entry_json(e) for e in report.entries],
-        "skipped_recent": [entry_json(e) for e in report.skipped_recent],
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "applied": args.apply,
+                "complete": not report.remaining and report.census_complete,
+                "exit_code": code,
+                "elapsed_seconds": round(report.elapsed, 1),
+                "budget_minutes": args.budget_minutes,
+                "workers": args.workers,
+                "files_per_second": round(report.rate, 1),
+                "estimated_remaining_seconds": None if estimate is None else round(estimate),
+                "slow_host": _slow_host(report, args.workers),
+                "partial_entries": len(report.partial),
+                "roots": [
+                    {"path": str(r.root), "kind": r.kind, "note": r.note, "unmatched": r.unmatched}
+                    for r in report.roots
+                ],
+                "reclaimable_bytes": report.reclaimable,
+                "reclaimed_bytes": report.reclaimed,
+                "deleted_entries": len(deleted),
+                "deleted_files": report.files,
+                "remaining_entries": len(report.remaining),
+                "in_use": len(report.in_state("in_use")),
+                "taken_by_sibling": len(report.in_state("taken")),
+                "adopted": report.adopted,
+                "failed": [{"path": str(e.path), "error": e.error} for e in report.in_state("failed")],
+                "entries": [entry_json(e) for e in report.entries],
+                "skipped_recent": [entry_json(e) for e in report.skipped_recent],
+            },
+            indent=2,
+        )
+    )
 
 
 def _utf8_streams() -> None:
@@ -1068,22 +1078,36 @@ def _utf8_streams() -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", action="store_true", help="delete; default is report only")
-    parser.add_argument("--scoped-temp", type=Path, default=None,
-                        help="this tree's own TMPDIR; its CONTENTS are removed wholesale")
-    parser.add_argument("--temp-root", type=Path, action="append", default=[],
-                        help="an additional temp root to inspect (repeatable)")
-    parser.add_argument("--no-default-roots", action="store_true",
-                        help="inspect only --scoped-temp and --temp-root, not the OS temp roots")
-    parser.add_argument("--project-dir", type=Path, default=Path.cwd(),
-                        help="project root; a temp root containing it is refused")
-    parser.add_argument("--quiet-minutes", type=float, default=DEFAULT_QUIET_MINUTES,
-                        help=f"in a shared root, skip entries touched more recently "
-                             f"(default {DEFAULT_QUIET_MINUTES:g})")
-    parser.add_argument("--budget-minutes", type=float, default=DEFAULT_BUDGET_MINUTES,
-                        help=f"stop starting work after this long, summarise and exit {EXIT_INCOMPLETE} "
-                             f"(default {DEFAULT_BUDGET_MINUTES:g}; 0 = no budget)")
-    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
-                        help=f"deletion threads (default {DEFAULT_WORKERS})")
+    parser.add_argument(
+        "--scoped-temp", type=Path, default=None, help="this tree's own TMPDIR; its CONTENTS are removed wholesale"
+    )
+    parser.add_argument(
+        "--temp-root", type=Path, action="append", default=[], help="an additional temp root to inspect (repeatable)"
+    )
+    parser.add_argument(
+        "--no-default-roots",
+        action="store_true",
+        help="inspect only --scoped-temp and --temp-root, not the OS temp roots",
+    )
+    parser.add_argument(
+        "--project-dir", type=Path, default=Path.cwd(), help="project root; a temp root containing it is refused"
+    )
+    parser.add_argument(
+        "--quiet-minutes",
+        type=float,
+        default=DEFAULT_QUIET_MINUTES,
+        help=f"in a shared root, skip entries touched more recently (default {DEFAULT_QUIET_MINUTES:g})",
+    )
+    parser.add_argument(
+        "--budget-minutes",
+        type=float,
+        default=DEFAULT_BUDGET_MINUTES,
+        help=f"stop starting work after this long, summarise and exit {EXIT_INCOMPLETE} "
+        f"(default {DEFAULT_BUDGET_MINUTES:g}; 0 = no budget)",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=DEFAULT_WORKERS, help=f"deletion threads (default {DEFAULT_WORKERS})"
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable summary")
     args = parser.parse_args(argv)
     args.workers = max(1, args.workers)

@@ -87,6 +87,16 @@
 #     thread count) one entry alone ran for 40 minutes; the summary now names such a host.
 #     `/close-session` runs it in the background and re-runs it while it exits 3;
 #     `test/test_reap_agent_temp.py` proves the behaviour (Part 5.4).
+#   - 2026-10-10: FOURTH ROUND OF PROJECT FEEDBACK. The registration's tool matcher is the
+#     union of the gates' declared tools (re-run `hooks.py registration` after adding a gate);
+#     the dispatcher test accepts project gates; the self-test leaves project gates out of its
+#     scratch project and probes the interpreter with the registration's own flags; the
+#     PreToolUse timeout is 60 s; `memory_compile.py reconcile` compacts an oversize ledger row
+#     into a pointer row with the full row archived verbatim — the migration path four projects
+#     lacked; the scoped-rules budget is per host; the reaper never calls robocopy (`/MIR`
+#     deletes through junctions) and addresses every path in long-path form (a trailing space
+#     or dot no longer resolves to its twin); `CONTRACT_VERSION` is 2026.10.10 and
+#     REVISION_NOTICE item 9 reaches the sessions already running.
 
 ---
 
@@ -802,8 +812,11 @@ Unmatched entries are counted and never touched, package caches are deliberately
 temp root that CONTAINS the project directory is refused outright so a mistyped `TMPDIR`
 cannot turn it into a source-tree deleter, and the shared roots are found WITHOUT
 consulting `TMPDIR` (under a scoped session `tempfile.gettempdir()` IS the scoped
-directory). On Windows it uses the `\\?\` prefix to defeat MAX_PATH and falls back to
-`robocopy /MIR` for a single tree that still refuses to go.
+directory). On Windows every path it renames or deletes carries the `\\?\` prefix, which
+defeats MAX_PATH and switches off the name normalisation that strips a trailing space or
+dot — without it a name such as `e2e477- ` resolves to its twin `e2e477-` (measured on a
+project). It never calls robocopy: `/MIR` was measured deleting THROUGH a junction, with
+`/XJ` or without, and a tree that will not go is reported with its first error instead.
 
 **Why it finishes, and what to do when it does not.** The first version walked every
 candidate twice with a stat per file before deleting anything, deleted sequentially and
@@ -2233,7 +2246,7 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     `keep-git-clean.md`), otherwise ask the operator — and `framework-ack-<version>` stops the
     repeat. This is how a revision merged on the trunk reaches live sessions on OTHER machines,
     where nobody has pulled and the orchestrator never moves the checkout.
-  - `tests/` — TEN pytest modules (plus `conftest.py`), driving the real gates in-process and
+  - `tests/` — the pytest modules (plus `conftest.py`), driving the real gates in-process and
     the dispatcher as a subprocess against synthetic project trees, asserting the gates'
     decisions (exit code 0 or 2) and, where an exit code cannot distinguish two causes, the
     REFUSAL TEXT. Together with `hooks.py selftest` they are the acceptance criterion for this
@@ -2487,7 +2500,7 @@ What the dispatcher's gates do:
   This gate used to accept any non-placeholder value, which was a fail-open wherever it is the
   only Stop hook registered — a spec-only project — because a one-word token then ended a turn.
 - `issue-loop-gate` is the primary brake that keeps the orchestrator working (Part 13.3).
-- **Both Stop gates count their OWN consecutive blocks** (`the block cap`, default 8,
+- **Both Stop gates count their OWN consecutive blocks** (the block cap, default 8,
   override with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, validated and clamped to `[1, 64]` so a
   typo cannot disable the brake). Two refinements over a naive counter, each measured: the
   count resets on PROGRESS — a change in the recorded fields — so a run that is actually
@@ -2545,7 +2558,7 @@ their REACH accurately in the report, because the floor is conditional:
   (it is what an ordinary chat session looks like), so it loads the new code and still does not
   brake. `hooks/MIGRATION.md` §4 tables that by what the previous registrar left on disk and
   gives the one-command check plus the manual seed. Second, every gate is bounded: after
-  `the block cap` consecutive blocks it allows the stop while stating that the work is not done
+  the block cap consecutive blocks it allows the stop while stating that the work is not done
   — and the harness independently ends the turn after 8 consecutive blocks. Reaching that cap is
   a defect to diagnose, never a sanctioned way to stop.
 - A session with no run at all resolves as `UNREGISTERED` and every gate is a deliberate
@@ -3101,7 +3114,7 @@ issue next?"; it must select the next one and continue.
 - **A registry entry whose state file is missing FAILS CLOSED.** That state is `BROKEN`: the
   gate blocks and tells the agent to create the state at the path the registry names, rather
   than treating absent state as absent obligation.
-- **Loop safety is the gate's own bounded consecutive-block counter** (`the block cap`,
+- **Loop safety is the gate's own bounded consecutive-block counter** (the block cap,
   default 8, validated into `[1, 64]`), not the harness's `stop_hook_active` field. Honouring
   that field made a POLICY gate block at most ONCE per continuation chain — the agent was
   nudged once and then free to stop on unfinished work. The count is cleared by a genuine

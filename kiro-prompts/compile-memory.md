@@ -41,9 +41,11 @@ class — write it), or `archived` (`python scripts/memory_compile.py archive-le
 moves it verbatim to `docs/archive/findings-ledger-<YYYY-MM>.md`, or leave it to `reconcile`,
 which rolls it out when the window fills). A row open for twelve weeks with no recurrence is
 archived without discussion. Then run `python scripts/memory_compile.py reconcile --apply`
-once; every row it archives has its CI-skip tokens (`[skip ci]`, `[ci skip]`, `[no ci]`,
-`[skip actions]`, `***NO_CI***`) defanged so a quoted row cannot silence a pipeline. The
-active ledger ends under 60,000 bytes.
+once; it also turns every row over the 240-byte row budget into a pointer row, archiving
+the full row verbatim (`ledger compact` previews that step alone), and every row it archives
+has its CI-skip tokens (the bracketed `skip ci`, `ci skip`, `no ci`, `skip actions` and
+`NO_CI` markers) defanged so a quoted row cannot silence a pipeline. The active ledger ends
+under 60,000 bytes with every row within its budget.
 
 **Step 4 — Compile the lessons.** Entries in `docs/lessons-learned.md` are at most five lines
 (`Date`, `Lesson`, `Enforced-by`, `Scope`). For every entry older than six weeks whose

@@ -143,6 +143,26 @@ def test_a_path_beyond_max_path_is_deleted(temp_root, project, capsys):
     assert data["deleted_files"] == 1 and data["reclaimed_bytes"] == 7
 
 
+def test_a_name_ending_in_a_space_never_resolves_to_its_twin(temp_root, project, capsys):
+    """Measured on a project: Win32 strips a trailing space or dot, so quarantining `e2e477- ` renamed
+    `e2e477-`, a name it had to keep. Every rename and delete now carries the long-path prefix."""
+    twin = make_tree(temp_root, "cdk.outtwin", files=2)  # recent: must survive
+    spaced = temp_root / "cdk.outtwin "
+    os.makedirs(reaper.long_path(str(spaced / "d0")))
+    with open(reaper.long_path(str(spaced / "d0" / "f.txt")), "wb") as handle:
+        handle.write(b"s" * 5)
+    stamp = time.time() - TWO_HOURS
+    os.utime(reaper.long_path(str(spaced)), (stamp, stamp))
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0
+    assert twin.exists() and (twin / "d0" / "d1" / "f0.txt").exists(), "the recent twin is untouched"
+    assert not os.path.lexists(reaper.long_path(str(spaced)))
+    assert data["deleted_entries"] == 1 and data["reclaimed_bytes"] == 5
+    assert len(data["skipped_recent"]) == 1
+
+
 def test_scoped_temp_contents_go_wholesale_and_the_root_stays(tmp_path, project, capsys):
     scoped = project / "tmp" / "os-temp"
     scoped.mkdir(parents=True)

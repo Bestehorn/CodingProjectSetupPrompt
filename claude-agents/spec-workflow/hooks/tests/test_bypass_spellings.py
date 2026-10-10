@@ -54,6 +54,11 @@ ALLOWED = [
     "git commit -mn",
     "git commit -m x -- -n",
     "git commit -m x -- --no-verify",
+    "git commit -m --no-verify",  # the MESSAGE is "--no-verify": -m takes the next word (measured: refused)
+    "git commit --message --no-verify",
+    "git commit -am --no-verify",  # the cluster ends with a value letter, so the next word is its value
+    "git commit -F -n",  # the message FILE is named "-n"
+    "git push -o --no-verify origin main",  # a push option for the server, not a hook bypass
     "git push",
     "git push -n origin main",
     "git push --dry-run",

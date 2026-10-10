@@ -283,7 +283,8 @@ def _message(*, ctx: lib.Context, form: Form, variable: str) -> str:
         "across them. Pass profile/region explicitly (boto3.Session(profile_name=..., region_name=...), the AWS "
         "CLI's --profile/--region), read other configuration from the project's config files, and let the "
         "project's git wrapper read its token from its credentials file. A per-command TMPDIR/TEMP/TMP prefix "
-        "stays allowed."
+        "stays allowed. Only shell commands are gated: to DOCUMENT this rule or quote a setter, write the text "
+        "with the Write or Edit tool, or spell the variable without `=`."
     )
 
 

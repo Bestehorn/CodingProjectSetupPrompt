@@ -47,8 +47,26 @@ CONTINUATION_RE = re.compile(r"\\\r?\n")  # bash removes an unquoted backslash-n
 GIT_NAMES = {"git", "git.exe"}
 # git's own options that take their value as the NEXT word (the `--opt=value` spelling is one word).
 GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
-# `git commit` short options that take a value: in a cluster, the letters after one of these are its value.
+# `git commit` short options that take a value: in a cluster, the letters after one of these are its value; when
+# the cluster ENDS with one, the next word is its value (`-m --no-verify` is the message "--no-verify").
 COMMIT_VALUE_SHORT = set("mFCctS")
+PUSH_VALUE_SHORT = set("o")
+# Long options that take their value as the next word when written without `=` (`--message --no-verify`).
+COMMIT_LONG_WITH_VALUE = {
+    "--message",
+    "--file",
+    "--author",
+    "--date",
+    "--reuse-message",
+    "--reedit-message",
+    "--fixup",
+    "--squash",
+    "--cleanup",
+    "--trailer",
+    "--template",
+    "--pathspec-from-file",
+}
+PUSH_LONG_WITH_VALUE = {"--repo", "--push-option", "--receive-pack", "--exec"}
 NO_VERIFY = "--no-verify"
 NO_VERIFY_MIN_PREFIX = "--no-veri"  # the shortest abbreviation that is unique against --no-verbose
 HOOKS_PATH_RE = re.compile(r"^core\.hookspath(=|$)", re.IGNORECASE)
@@ -137,21 +155,29 @@ def _classify_simple(words: List[str]) -> Classification:  # noqa: C901 — git'
     if hooks_path_override:
         found.bypass = "-c core.hooksPath=…"
         return found
+    value_short = COMMIT_VALUE_SHORT if found.is_commit else PUSH_VALUE_SHORT
+    long_with_value = COMMIT_LONG_WITH_VALUE if found.is_commit else PUSH_LONG_WITH_VALUE
+    skip_next = False
     for arg in args:
+        if skip_next:
+            skip_next = False  # the previous option's value, whatever it looks like
+            continue
         if arg == "--":
             break
         if arg.startswith("--"):
             if _is_no_verify(arg):
                 found.bypass = NO_VERIFY
                 break
+            skip_next = "=" not in arg and arg in long_with_value
             continue
-        if found.is_commit and re.fullmatch(r"-[A-Za-z]+", arg):
-            for letter in arg[1:]:
-                if letter == "n":
+        if re.fullmatch(r"-[A-Za-z]+", arg):
+            for position, letter in enumerate(arg[1:], start=1):
+                if found.is_commit and letter == "n":
                     found.bypass = "-n"
                     break
-                if letter in COMMIT_VALUE_SHORT:
-                    break  # the rest of the cluster is this option's value
+                if letter in value_short:
+                    skip_next = position == len(arg) - 1  # a value letter at the END takes the next word
+                    break  # otherwise the rest of the cluster is this option's value
             if found.bypass:
                 break
     return found

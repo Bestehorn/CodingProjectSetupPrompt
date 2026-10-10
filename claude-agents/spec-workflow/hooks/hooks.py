@@ -67,7 +67,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 — the self-test spawns the interpreter with a fixed argv, never a shell
 import sys
 import tempfile
 import traceback
@@ -88,7 +88,7 @@ except Exception as _exc:  # noqa: BLE001 — any import failure takes the degra
     lib = None  # type: ignore[assignment]
     LIB_ERROR = f"{_exc.__class__.__name__}: {_exc}"
 
-VERSION = "2026.10.05-python-3"
+VERSION = "2026.10.10-python-4"
 EVENTS = ("session-start", "pre-tool-use", "post-tool-use", "stop")
 EVENT_KEYS = {
     "session-start": "SessionStart",
@@ -110,8 +110,16 @@ LAUNCHER = (
     "os.path.isfile(p) and runpy.run_path(p,run_name='__main__')"
 )
 INTERPRETER_FLAGS = ["-I", "-X", "utf8"]
-REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 30, "post-tool-use": 30, "stop": 60}
+# A timed-out hook renders NO decision and the action proceeds, so a tight timeout is a fail-open. PreToolUse
+# is 60 s because `claim-before-worktree` asks the tracker (its own 25 s limit) after a cold Windows start.
+REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 60, "post-tool-use": 30, "stop": 60}
+# The matcher of a tool event is the UNION of the tools its discovered gates declare (`tool_matcher`); this is
+# the default when no gate can be read. A gate declaring no TOOLS matches every tool, so the matcher is dropped.
 REGISTRATION_MATCHERS = {"pre-tool-use": "Bash", "post-tool-use": "Bash"}
+#: A project gate takes an ORDER above this (or below 10); the self-test leaves project gates out of its scratch
+#: project, because their libraries (`scripts/...`) are not copied there.
+PROJECT_ORDER_FLOOR = 100
+ORDER_RE = re.compile(r"^ORDER\s*=\s*(-?\d+)", re.MULTILINE)
 
 Gate = Tuple[str, int, Optional[Set[str]], Callable[[Any], Any]]
 
@@ -355,9 +363,26 @@ def degraded(event: str, payload_text: str) -> Tuple[int, str, str]:
     )
 
 
+def tool_matcher(event: str, hooks_dir: Path) -> Optional[str]:
+    """The settings.json matcher for a tool event: the union of the tools its gates declare, `|`-joined, so a
+    project gate on Write or Edit is reached without a hand-edited block (the prompt forbids retyping one).
+    None when some gate declares no TOOLS (it judges every tool) — the entry then carries no matcher."""
+    if event not in REGISTRATION_MATCHERS:
+        return None
+    if lib is None:
+        return REGISTRATION_MATCHERS[event]
+    tools: Set[str] = set()
+    for _name, _order, gate_tools, _run in discover_gates(event, hooks_dir):
+        if gate_tools is None:
+            return None
+        tools |= gate_tools
+    return "|".join(sorted(tools)) if tools else REGISTRATION_MATCHERS[event]
+
+
 def registration_block(project_dir_placeholder: str = "${CLAUDE_PROJECT_DIR}") -> str:
     """The exact `hooks` block for settings.json. The launcher reads CLAUDE_PROJECT_DIR from the environment, so
-    the block carries no path; the placeholder is accepted only for callers that want to show one."""
+    the block carries no path; the placeholder is accepted only for callers that want to show one. Re-run it
+    after adding a gate on another tool: the matcher of a tool event is derived from the gates present."""
     del project_dir_placeholder
     block: Dict[str, Any] = {"hooks": {}}
     for event in EVENTS:
@@ -374,8 +399,9 @@ def registration_block(project_dir_placeholder: str = "${CLAUDE_PROJECT_DIR}") -
                 }
             ]
         }
-        if event in REGISTRATION_MATCHERS:
-            entry = {"matcher": REGISTRATION_MATCHERS[event], **entry}
+        matcher = tool_matcher(event, HERE)
+        if matcher is not None:
+            entry = {"matcher": matcher, **entry}
         block["hooks"][key] = [entry]
     return json.dumps(block, indent=2) + "\n"
 
@@ -432,13 +458,33 @@ def main(argv: List[str]) -> int:  # noqa: C901 — one subcommand dispatch, in 
 # ---------------------------------------------------------------------------------------------------------
 
 
+def _is_project_gate(path: Path) -> bool:
+    """A `gate_*.py` whose source declares an ORDER outside the framework's 10..90 band, read WITHOUT importing
+    it (a project gate may import a library the scratch project does not have)."""
+    if not path.name.startswith("gate_"):
+        return False
+    try:
+        match = ORDER_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    if not match:
+        return False
+    order = int(match.group(1))
+    return order > PROJECT_ORDER_FLOOR or order < 10
+
+
 def _probe_interpreter(python: str) -> Tuple[bool, str]:
     # The resolved `python` must be a REAL interpreter. The Microsoft Store alias (`WindowsApps\python.exe`)
     # has the same failure shape the bash hooks had: it resolves, it spawns, and it exits without running
     # anything — a non-blocking error the harness proceeds past. Name it, and name the remedy.
     try:
+        # The SAME flags as the registration: `-I` ignores an inherited PYTHONHOME/PYTHONPATH (a uv venv exports
+        # one), so a probe without them failed where the real launch passes.
         probe = subprocess.run(  # nosec B603 — the interpreter the harness itself would spawn
-            [python, "-c", "import sys; print(sys.executable)"], capture_output=True, text=True, timeout=30
+            [python, *INTERPRETER_FLAGS, "-c", "import sys; print(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         rc, out, err = probe.returncode, probe.stdout.strip(), probe.stderr.strip()
     except (OSError, subprocess.SubprocessError) as exc:
@@ -495,6 +541,8 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
         hooks_dir = project / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)
         for src in HERE.glob("*.py"):
+            if _is_project_gate(src):
+                continue  # its library under scripts/ is not in the scratch project; the project's own tests cover it
             shutil.copy(src, hooks_dir / src.name)
         for extra in ("CONTRACT_VERSION", CONFIG_FILENAME):
             if (HERE / extra).is_file():

@@ -532,3 +532,35 @@ worker per vCPU) made the host unusable and got the agent killed mid-run; fail-f
 reported one failure per run, so a ten-failure branch cost ten pipeline runs. Fixes:
 pre-commit = lint+security only, the evidence gate moved to the PUSH, `run_tests.py`
 bounds local workers and refuses `-x`/`--maxfail`, CI runs everything with no fail-fast.
+
+## 8. Seams a project's own tests and guards may feel (2026-10-05 to 2026-10-10)
+
+Reported by four projects after the Python rewrite; none is a defect in the framework's
+own suite, each is a contract a project had built on and the framework did not know.
+
+- **`hooklib.strip_quoted` is no longer what the env-var gate uses.** Since 2026-10-05
+  `gate_no_env_vars` reads quotes with its own `_strip_quoted` (adjacent strings, `$'…'`,
+  one placeholder word per string). `hooklib.strip_quoted` remains the TDD gate's fallback
+  for a command shlex cannot split. A project test that reached the env-var gate's quoting
+  through `hooklib` now tests the wrong function: point it at the gate.
+- **The launcher spells the dispatcher path as joined parts** —
+  `'.claude','hooks','hooks.py'` — so a guard that greps `settings.json` for the literal
+  `.claude/hooks/` finds nothing. Grep for `hooks.py`.
+- **A missing dispatcher is a fail-OPEN by design.** The launcher exits 0 when
+  `.claude/hooks/hooks.py` is absent, so a checkout without the hooks still runs. A project
+  that fails closed on unreadable input adds that check itself (a SessionStart gate that
+  refuses when its sibling files are missing).
+- **The registration's tool matcher is derived from the gates present.** A gate that
+  declares `TOOLS = {"Write", "Edit"}` joins the PreToolUse matcher the next time
+  `hooks.py registration` is run; a gate that declares no `TOOLS` removes the matcher
+  (it judges every tool). Re-run the registration after adding a gate.
+- **`state_base` resolves env, then payload cwd, then git.** A test harness that isolates
+  scratch trees under ONE `git init` must set `CLAUDE_PROJECT_DIR` or the payload's `cwd`;
+  otherwise the git top-level, the harness root, is the state base.
+- **A compacted ledger row has two copies with one status.** `memory_compile.py reconcile`
+  turns an oversize row into a pointer row and archives the full row VERBATIM, status
+  included. A guard that pins "exactly one row carrying this status" must read the active
+  ledger only.
+- **The self-test leaves project gates out of its scratch project** (an `ORDER` above 100
+  or below 10, read from the source). Their libraries under `scripts/` are not copied
+  there; the project's own `tests/` modules cover them.

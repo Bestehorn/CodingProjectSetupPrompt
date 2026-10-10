@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
+import subprocess  # nosec B404 — pytest with this script's own argv, never a shell
 import sys
 from pathlib import Path
 
@@ -194,15 +194,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--coverage",
         action="store_true",
-        help=f"add --cov={COVERAGE_SOURCE} and the "
-        f"--cov-fail-under={COVERAGE_THRESHOLD} gate",
+        help=f"add --cov={COVERAGE_SOURCE} and the --cov-fail-under={COVERAGE_THRESHOLD} gate",
     )
     parser.add_argument(
         "--junit",
         default=None,
         metavar="PATH",
-        help="also write a JUnit XML report (CI reads this to list every "
-        "failing test, not just the first)",
+        help="also write a JUnit XML report (CI reads this to list every failing test, not just the first)",
     )
     parser.add_argument(
         "--print-command",
@@ -228,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"run_tests: {' '.join(cmd)}", flush=True)
     if not needs_slot(extra):
-        return subprocess.call(cmd)
+        return subprocess.call(cmd)  # nosec B603 — pytest with this script's own argv, no shell
     if suite_slot is None:
         print(
             "run_tests: scripts/suite_semaphore.py is missing - running WITHOUT the host-wide suite "
@@ -236,9 +234,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
-        return subprocess.call(cmd)
+        return subprocess.call(cmd)  # nosec B603 — as above
     with suite_slot(label=f"run_tests {' '.join(extra) or '(whole suite)'}"):
-        return subprocess.call(cmd)
+        return subprocess.call(cmd)  # nosec B603 — as above
 
 
 if __name__ == "__main__":

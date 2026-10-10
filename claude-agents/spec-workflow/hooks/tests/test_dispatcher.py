@@ -41,21 +41,54 @@ def _spawn(event: str, payload: str, project: Path) -> subprocess.CompletedProce
     )
 
 
+def _present_in_order(event: str, expected: list[str]) -> None:
+    """The framework's gates are discovered, in this relative order. A project's own gates (ORDER above 100, or
+    below 10) may stand anywhere among them: three projects' first project gate broke an exact-list assertion."""
+    names = [g[0] for g in hooks.discover_gates(event, HOOKS_DIR)]
+    missing = [name for name in expected if name not in names]
+    assert not missing, f"{event}: framework gates missing from discovery: {missing}; discovered {names}"
+    positions = [names.index(name) for name in expected]
+    assert positions == sorted(positions), f"{event}: framework gates out of order: {names}"
+
+
 def test_framework_gates_are_discovered_in_order() -> None:
-    names = [g[0] for g in hooks.discover_gates("pre-tool-use", HOOKS_DIR)]
-    assert names == [
-        "no-env-vars",
-        "no-foreground-sleep",
-        "spec-tdd-gate",
-        "claim-before-worktree",
-        "issue-filing-gate",
-    ]
-    assert [g[0] for g in hooks.discover_gates("stop", HOOKS_DIR)] == ["spec-stop-gate", "issue-loop-gate"]
-    assert [g[0] for g in hooks.discover_gates("session-start", HOOKS_DIR)] == [
-        "session-register",
-        "scoped-temp-init",
-        "continuous-work-reinject",
-    ]
+    _present_in_order(
+        "pre-tool-use",
+        ["no-env-vars", "no-foreground-sleep", "spec-tdd-gate", "claim-before-worktree", "issue-filing-gate"],
+    )
+    _present_in_order("stop", ["spec-stop-gate", "issue-loop-gate"])
+    _present_in_order("session-start", ["session-register", "scoped-temp-init", "continuous-work-reinject"])
+
+
+def test_registration_matcher_is_the_union_of_the_gates_tools(tmp_path: Path) -> None:
+    """A project gate on Write joins the PreToolUse matcher without a hand-edited block."""
+    hooks_dir = _install(tmp_path)
+    framework = hooks.tool_matcher("pre-tool-use", hooks_dir)
+    assert framework is not None and set(framework.split("|")) == {
+        "Bash",
+        "shell",
+        "execute_bash",
+        "execute_cmd",
+        "executeBash",
+    }, "the shell tools of both hosts, which the same gates serve"
+    # Module names unique to this test: discover_gates imports by module name, and sys.modules keeps the first
+    # module of a name for the whole pytest process, so two tests must not write different gates under one name.
+    (hooks_dir / "gate_union_write.py").write_text(
+        "import hooklib as lib\n"
+        "HOOK = 'union-write'\nEVENT = 'pre-tool-use'\nORDER = 150\nTOOLS = {'Write', 'Edit'}\n"
+        "def run(ctx):\n    return lib.allow()\n",
+        encoding="utf-8",
+    )
+    matcher = hooks.tool_matcher("pre-tool-use", hooks_dir)
+    assert matcher is not None and set(matcher.split("|")) >= {"Bash", "Write", "Edit"}
+    (hooks_dir / "gate_union_any.py").write_text(
+        "import hooklib as lib\nHOOK = 'union-any'\nEVENT = 'pre-tool-use'\nORDER = 160\n"
+        "def run(ctx):\n    return lib.allow()\n",
+        encoding="utf-8",
+    )
+    assert hooks.tool_matcher("pre-tool-use", hooks_dir) is None, "a gate without TOOLS judges every tool"
+    assert hooks._is_project_gate(hooks_dir / "gate_union_write.py")
+    assert not hooks._is_project_gate(hooks_dir / "gate_tdd.py")
 
 
 def test_a_project_gate_joins_the_event_without_a_second_registration(tmp_path: Path) -> None:
@@ -118,6 +151,7 @@ def test_registration_block_is_the_launcher_in_exec_form() -> None:
         flags = len(hooks.INTERPRETER_FLAGS)
         assert entry["args"][:flags] == hooks.INTERPRETER_FLAGS and entry["args"][flags] == "-c"
         assert entry["args"][flags + 1] == hooks.LAUNCHER
-    assert block["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
+    matcher = block["hooks"]["PreToolUse"][0]["matcher"]
+    assert "Bash" in matcher.split("|"), f"the shell tool must be matched; matcher was {matcher!r}"
     assert block["hooks"]["PreToolUse"][0]["hooks"][0]["args"][-1] == "pre-tool-use"
     assert "${" not in hooks.LAUNCHER and '"' not in hooks.LAUNCHER

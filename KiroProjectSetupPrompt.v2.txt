@@ -7,8 +7,9 @@
 #
 # v2 changes over v1:
 #   - 2026-10-01: the gate hooks are PYTHON (standard library only) — one
-#     dispatcher per event, `python .kiro/hooks-bin/kiro_hooks.py
-#     agentSpawn|preToolUse|stop`, sharing hooklib.py and the gate_*.py modules
+#     dispatcher per event, `kiro_hooks.py agentSpawn|preToolUse|stop`, started
+#     since 2026-10-04 through the launcher one-liner in each agent's `hooks` block
+#     (PART 8A.2; never a bare script path), sharing hooklib.py and the gate_*.py modules
 #     with the Claude Code hooks. The bash scripts depended on a `bash` the host
 #     could run (on Windows the first one on PATH was the WSL launcher, so every
 #     gate was inert) and on `jq`; neither dependency remains. The spec gates and
@@ -34,6 +35,13 @@
 #     was killed at the cap on real backlogs; the summary now names a host whose security
 #     agent scans each delete. `test/test_reap_agent_temp.py` proves the behaviour
 #     (PART 6.1).
+#   - 2026-10-10: fourth round of project feedback. The dispatcher test accepts project
+#     gates; the self-test leaves them out of its scratch project; `memory_compile.py
+#     reconcile` compacts an oversize ledger row into a pointer row with the full row
+#     archived verbatim (the migration path four projects lacked); the scoped-rules budget
+#     is per host; the reaper never calls robocopy and addresses every path in long-path
+#     form; the Kiro agent descriptors and the Kiro steering copies of kernel rules are
+#     taken VERBATIM in an update, never three-way merged; CONTRACT_VERSION 2026.10.10.
 #   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
 #   - Aligns every MCP server config with the canonical install snippet from
 #     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,

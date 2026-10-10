@@ -46,7 +46,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 — the wrapped command's own argv, never a shell
 import sys
 import tempfile
 import time
@@ -182,7 +182,8 @@ class SuiteSlot:
                 self.announce.flush()
                 announced_at = now
             time.sleep(POLL_SECONDS)
-        assert self.index is not None
+        if self.index is None:  # the loop above returns only with a slot; stated so -O cannot remove the check
+            raise RuntimeError("suite_semaphore: acquire() ended without a slot")
         return self.index
 
     def release(self) -> None:
@@ -317,7 +318,7 @@ def selftest() -> int:
         held = SuiteSlot(label="selftest holder", lock_dir=lock_dir, cap=1)
         held.acquire()
         results.append(("the first acquirer takes slot 0", held.index == 0, f"index {held.index}"))
-        busy = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)
+        busy = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)  # nosec B603 — own argv
         results.append(
             (
                 f"a second process is refused while the slot is held (exit {EXIT_BUSY}, nothing run)",
@@ -325,10 +326,12 @@ def selftest() -> int:
                 f"exit {busy.returncode}: {busy.stderr.strip()[:160]}",
             )
         )
-        status = subprocess.run([*cli, "status"], capture_output=True, text=True, timeout=60, check=False)
+        status = subprocess.run(  # nosec B603 — this script's own argv, no shell
+            [*cli, "status"], capture_output=True, text=True, timeout=60, check=False
+        )
         results.append(("status names the holder", "selftest holder" in status.stdout, status.stdout.strip()[:160]))
         held.release()
-        admitted = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)
+        admitted = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)  # nosec B603
         results.append(
             (
                 "after release the same process is admitted (exit 0)",
@@ -341,7 +344,7 @@ def selftest() -> int:
             "import sys, os; sys.path.insert(0, sys.argv[1]); import suite_semaphore as s; from pathlib import Path; "
             "slot = s.SuiteSlot(label='dies', lock_dir=Path(sys.argv[2]), cap=1); slot.acquire(); os._exit(3)"
         )
-        died = subprocess.run(
+        died = subprocess.run(  # nosec B603 — this interpreter, a literal program, no shell
             [sys.executable, "-c", dying, str(here.parent), str(lock_dir)],
             capture_output=True,
             text=True,

@@ -10,7 +10,7 @@ allows, so the gate never wedges a session on infrastructure trouble.
 from __future__ import annotations
 
 import re
-import subprocess
+import subprocess  # nosec B404 — the project's own wrapper with a fixed argv, no shell
 
 import hooklib as lib
 

@@ -184,9 +184,9 @@ the deciding number).
       is checked before every file, so the run returns on time even on a host whose
       security agent scans each delete. Exit 0 is done; exit 1 names an entry that would
       not delete; exit 3 means the budget ran out with the rest quarantined or not yet
-      reached — run the same command again until it exits 0 or 1 (each run is bounded and
-      visibly further along; a quarantine is deleted first by the next run, whichever
-      session's). Its reclaimed total, summed over the runs, is row 5's Detail; anything it
+      reached — run the same command again until it exits 0 or 1 (a project-owned reaper
+      documents its own run-again code in its header; each run is bounded and visibly
+      further along; a quarantine is deleted first by the next run, whichever session's). Its reclaimed total, summed over the runs, is row 5's Detail; anything it
       reports as in use, skipped or failed is named in that same cell, never expanded, and
       a `SLOW HOST` line is quoted there as the reason the backlog outlives the session.
    3. If `tmp/os-temp` is not this tree's `TMPDIR`/`TEMP`/`TMP`, row 5's Detail says

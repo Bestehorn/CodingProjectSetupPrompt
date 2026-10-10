@@ -48,7 +48,14 @@ reason, not delegated to a person.
 5. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
    the update procedure: project-specific values and content are preserved, conflicts are
    flagged, relocated assets are installed at the new location before the old copy is
-   removed, obsolete assets are removed only when nothing references them.
+   removed, obsolete assets are removed only when nothing references them. Two kinds of
+   asset are taken VERBATIM from the export, never three-way merged: the Kiro agent
+   descriptors under `cli-agents/` (a merge produced a duplicate `agentSpawn` key, and JSON
+   keeps the last one, the retired form), and the Kiro steering copies of kernel rules, which
+   carry their own front matter (`inclusion: always`) that the Claude rule file lacks. The
+   first commit of the update carries the pre-commit config, `scripts/memory_compile.py` and
+   the compiled memory files TOGETHER: the `memory-reconcile` hook that config installs runs
+   the tool against the ledger at commit time.
 6. Run the memory compile (next section) so the update leaves the project under its
    budgets, not merely equipped with the tools to get there.
 7. Write the marker: `.claude/FRAMEWORK_COMMIT` (and `.kiro/FRAMEWORK_COMMIT` on a Kiro or
@@ -98,7 +105,13 @@ of this in the same PR, in this order, and record the before/after sizes:
    quoted into a commit message must not suppress a pipeline. Convert
    `docs/lessons-learned.md` to the five-line `Date/Lesson/Enforced-by/Scope` format,
    archiving the narrative file whole as `docs/archive/lessons-learned-<YYYY-MM>.md`
-   before rewriting. Nothing is deleted from git.
+   before rewriting. Nothing is deleted from git. Rows over the 240-byte row budget are not
+   rewritten by hand: `python scripts/memory_compile.py ledger compact` lists them and
+   `--apply` turns each into a pointer row (date, subject, a shortened finding, the archive
+   path, the status) while appending the full row verbatim to the month's archive;
+   `reconcile --apply` does the same on every run, so the pre-commit hook keeps the row
+   budget from then on. A project guard that keys on a row's status must read the active
+   ledger only — the archived copy carries the same status.
 4. **The map is a map.** Rewrite `docs/forLLMConsumption.md` to ≤ 40,000 bytes: purpose,
    architecture in brief, where things are, the invariants a change must respect, how to
    run/test/deploy, pointers. Move every section of detail into a topic doc under `docs/`
@@ -131,19 +144,31 @@ of this in the same PR, in this order, and record the before/after sizes:
    from the previous framework commit's copy, found through the staging export of the OLD
    commit named in `.claude/FRAMEWORK_COMMIT` — is classified "locally customized" in the
    delta table and MERGED (framework change applied on top, project change kept, conflicts
-   flagged in the PR), never replaced blind; `tests/` modules the project added stay.
+   flagged in the PR), never replaced blind; `tests/` modules the project added stay. Re-run
+   `hooks.py registration` whenever a gate is added or removed: the matcher of a tool event
+   is the union of the gates' declared tools. Three seams a project's own tests and guards
+   may feel are listed in `MIGRATION.md` §8 — the launcher spells the dispatcher path as
+   joined parts (grep `settings.json` for `hooks.py`, never for `.claude/hooks/`), a missing
+   dispatcher is a fail-open by design, and the env-var gate reads quotes with its own
+   function, not `hooklib.strip_quoted`.
 7. **Runner, wrapper and CI.** Install `scripts/suite_semaphore.py` from its template and
    bring `scripts/run_tests.py` to the current template's shape — a run wider than named
    test files holds one of the host-wide suite slots; keep the project's own worker policy
    and flags — so eight bounded suites from eight sessions can no longer stack on one
    host; `python scripts/suite_semaphore.py selftest` proves the slots work there.
-   Replace `scripts/reap_agent_temp.py` with the current template and install
-   `test/test_reap_agent_temp.py` beside the budget test: the 2026-10-06 reaper judges the
-   top level of a temp root only, quarantines each candidate by rename, deletes with a
-   thread pool under a 28-minute budget checked before every unlink, and exits 3 when it
-   must be run again — the version it replaces walked every candidate twice with a stat per
-   file, had no clock inside an entry, and was killed at the harness cap on real backlogs. A reaper carries no project value, so it is replaced, never
-   merged; a project that changed its residue patterns re-applies that one change.
+   Install `test/test_reap_agent_temp.py` beside the budget test and bring
+   `scripts/reap_agent_temp.py` to the template's CONTRACT: the budget binds before every
+   unlink and the run returns inside it, progress lines carry live counts, exit 0 is
+   complete, a documented exit code says "run again", nothing is deleted through a junction
+   or a robocopy fallback, and every path is addressed in long-path form. A reaper that is
+   the template's descendant takes the template (the residue patterns are the one line a
+   project re-applies); a project-OWNED reaper with its own suite keeps it when it meets the
+   contract, and the project's `/close-session` row 5 text then names that reaper's
+   run-again exit code, where the framework's text assumes the template's 3. The version
+   the template replaces walked every candidate twice with a stat per file, had no clock
+   inside an entry, and was killed at the harness cap on real backlogs. A CI file that
+   spells out its own commands instead of calling `run_checks.py` must run the hook suites
+   itself (`python -m pytest .claude/hooks/tests -q -o addopts= -p no:cacheprovider`).
    Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run`, per
    the template) if absent. Where the project deploys, the pipeline
    needs a post-deploy job that runs the committed end-to-end script; add it if end-to-end
