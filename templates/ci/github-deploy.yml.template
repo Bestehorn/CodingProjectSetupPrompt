@@ -1,0 +1,103 @@
+# Deploy {{ENVIRONMENT}} — the newest landed commit, never cancelled while running, verified by ancestry.
+# Installed from templates/ci/github-deploy.yml.template as the project's deploy workflow (merge it into an
+# existing one: keep its deploy steps, take the trigger, the concurrency block and the two last jobs from here).
+#
+# THE THREE RULES (each from a measured failure, project-docs/merge-velocity-chess-2026-10-25.md):
+#   1. The merge steward starts this workflow with the commit it just landed (`workflow_dispatch`, input `sha`);
+#      a push made with GITHUB_TOKEN starts no workflow, a dispatch does. The `push` trigger serves a project
+#      that merges directly (`merge: direct`, and the bootstrap before the steward is switched on): a merge made
+#      through the API with a person's or the wrapper's token does start it. Under the steward the trunk only
+#      moves by the steward's GITHUB_TOKEN push, so the two triggers never both fire for one landing.
+#   2. ONE concurrency group per environment, `cancel-in-progress: false`, and NO `queue: max`: a running deploy
+#      is never cancelled, and a newer PENDING deploy replaces an older pending one. That supersession is the
+#      batching that keeps a 90-minute deploy from queueing for hours behind every landing.
+#   3. Supersession loses no verdict, because verification is by ANCESTRY: the `verdict` job verifies every
+#      landed issue whose landing commit the deployed commit contains. It runs for a deploy that ran to a
+#      result and never for a cancelled one (`!cancelled()`), so a superseded deploy renders nothing — and never
+#      for a commit the guard refused: a refused dispatch is not a failed deploy, and must not return the issues
+#      it happens to contain as `needs-rework`.
+#
+# The end-to-end job runs the project's committed post-deploy checks (always-test-e2e.md); never a human step.
+name: Deploy {{ENVIRONMENT}}
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "The trunk commit to deploy (the merge steward passes the commit it just landed)"
+        required: true
+        type: string
+  push:
+    branches: ["{{TRUNK}}"]
+
+concurrency:
+  group: deploy-{{ENVIRONMENT}}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: {{DEPLOY_RUNS_ON}}
+    steps:
+      - uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
+      - name: Guard — deploy only a commit that is on the trunk
+        # A dispatch input is data: it is passed through the step's env and validated before any use.
+        env:
+          DEPLOY_SHA: ${{ inputs.sha || github.sha }}
+          TRUNK: ${{ github.event.repository.default_branch }}
+        run: >-
+          python -c "import re,subprocess,sys,os;
+          sha=os.environ['DEPLOY_SHA']; trunk='origin/'+os.environ['TRUNK'];
+          ok=bool(re.fullmatch('[0-9a-f]{40}', sha)) and subprocess.run(['git','merge-base','--is-ancestor',sha,trunk]).returncode==0;
+          print('deploying', sha, 'from', trunk) if ok else print('REFUSED: not a 40-hex commit on', trunk, sha);
+          sys.exit(0 if ok else 1)"
+
+  deploy:
+    needs: guard
+    runs-on: {{DEPLOY_RUNS_ON}}
+    environment: {{ENVIRONMENT}}
+    steps:
+      - uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      # {{DEPLOY_STEPS}} — the project's own deploy steps (CDK/SAM/... through its deploy script)
+
+  e2e:
+    needs: deploy
+    runs-on: {{DEPLOY_RUNS_ON}}
+    steps:
+      - uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      # {{E2E_STEPS}} — e.g. `python scripts/run_checks.py --group e2e` against the deployed {{ENVIRONMENT}}
+
+  verdict:
+    needs: [guard, deploy, e2e]
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
+    runs-on: {{DEPLOY_RUNS_ON}}
+    permissions:
+      contents: read
+      issues: write # verification labels, comments, ticking post-deploy items, closing verified issues
+    steps:
+      - name: Check out the default branch (the trusted copy of the steward)
+        uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          python-version: "{{PYTHON_VERSION}}"
+      - name: Verify every issue this deploy contains
+        env:
+          DEPLOY_SHA: ${{ inputs.sha || github.sha }}
+          CONCLUSION: ${{ (needs.deploy.result == 'success' && needs.e2e.result == 'success') && 'success' || 'failure' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          printf '%s\n' '${{ github.token }}' |
+          python scripts/merge_steward.py --token-stdin verdict --sha "$DEPLOY_SHA" --conclusion "$CONCLUSION"
+          --run-url "$RUN_URL" --environment {{ENVIRONMENT}}

@@ -25,8 +25,9 @@ claude --agent spec-conductor
                        approve-as-reviewed with residuals)
                     → TASKS (waves with file ownership) → TASKS_REVIEW_LOOP (light)
         → IMPLEMENT (per wave: all TEST tasks in one dispatch → red capture → all IMPL
-                      tasks in one dispatch → green capture → one commit; ONE push; CI
-                      awaited in the BACKGROUND)
+                      tasks in one dispatch → green capture → one commit; the next wave's
+                      TEST authors start while a green run is in flight; ONE push; CI
+                      awaited in the FOREGROUND, bounded, after the unblocked work)
         → VERIFY (one verifier pass; one delta review of the diff)
         → EVIDENCE_REPORT (criterion → test → capture; ≤ 8,000 B)
 ```
@@ -109,10 +110,15 @@ locally with bounded workers.
 | `gate_issue_loop.py` (`issue-loop-gate`) | Stop, via `hooks.py` | The PRIMARY brake. Blocks while the run has CLAIMED tracked work (`CURRENT_ISSUE`/`CURRENT_SPEC`/an orchestrator `MODE`) and has NOT affirmatively said it is idle, finished, or escalated. Polarity is inverted on purpose: an UNRECOGNISED `Status` means work in flight, because arming on the single literal `IN_PROGRESS` let `WORKING`, `ACTIVE`, `in progress` and four other plausible words each disable it. `WORKABLE_ISSUES_REMAIN` gates NOTHING: it chooses the refusal's wording and feeds the progress fingerprint. `AWAITING_USER` is checked for SUBSTANCE, not presence — a placeholder, an angle-bracketed token, or a one-word answer is rejected. Fails CLOSED on a `BROKEN` identity, an unrecognised verdict, and a missing or partially-sourced library. |
 | `gate_spec_stop.py` (`spec-stop-gate`) | Stop, via `hooks.py` | The evidence gate. Blocks on a `[x]` task with no capture, a capture that shows no PASSING result (existence was being read as proof — two zero-byte files were accepted as evidence), a failing latest capture, a real skip/xfail counter, an unparseable checked task line, and an ABSENT `tasks.md` **or** `CURRENT_SPEC` at phase IMPLEMENT/VERIFY — both are the mandatory-artifact case the gate exists for. Honours `AWAITING_USER`, resolves a spec inside a per-issue WORKTREE, and matches runner counters rather than bare words so a test NAME containing "skipped" cannot force the agent to edit its own evidence. |
 | `gate_tdd.py` (`spec-tdd-gate`) | PreToolUse(Bash), via `hooks.py` | Bans `git commit --no-verify`/`-n` and `git push --no-verify` outright, and blocks a PUSH during IMPLEMENT/VERIFY when a checked task has no evidence capture, the newest green capture is red or skip-ridden, or CI-OUTAGE MODE is declared with no green full-suite capture. Commits carry no evidence requirement — commit early, commit often (`rules/ci-owns-the-test-suite.md`). Resolves identity through `hooklib.py`. Its internal ORDER is load-bearing: the bypass bans and the non-push exit run ABOVE any library code and the fail-closed trap is installed only after them, so a broken library can refuse a PUSH but never a commit or an ordinary Bash command. Its failure predicate matches a NON-ZERO count (`[1-9][0-9]* failed`); an earlier escape clause was satisfied by any passing count, so `3 failed, 5 passed` was allowed. |
-| `gate_no_sleep.py` (`no-foreground-sleep`) | PreToolUse(Bash), via `hooks.py` | Refuses a FOREGROUND wait of 10 s or more (`sleep`, `Start-Sleep`, `timeout /t`) and any sleep inside a loop, naming the wrapper's blocking wait and the background form of the same command; a settle sleep, quoted text, a heredoc body and a `run_in_background` call all pass. Measured: one Bash call in ten was a `sleep 240..580` poll, each a ~21-process login shell. |
+| `gate_no_sleep.py` (`no-foreground-sleep`) | PreToolUse(Bash), via `hooks.py` | Refuses a FOREGROUND `sleep` of 10 s or more (`sleep`, `Start-Sleep`, `timeout /t`) and any sleep inside a loop, naming the wrapper's bounded foreground wait; a settle sleep, quoted text, a heredoc body and a `run_in_background` call all pass. Measured: one Bash call in ten was a `sleep 240..580` poll, each a ~21-process login shell. |
+| `gate_no_idle_wait.py` (`no-idle-wait`) | Stop, via `hooks.py` | Refuses a turn whose LAST assistant text (read from the transcript the Stop payload names) ends in order to WAIT — "waiting on it in the background", "its exit line will notify me" — unless it carries a Completion Block verdict. Measured 2026-10-10 over 30 days: a background task dies with the session's process and a `stopped` task never wakes the model (82 of 82), so such a turn idles until the operator types `/continue-work`. Own counter, half the family's cap; fail-open without a transcript (Kiro). |
+| `gate_merge_steward.py` (`merge-steward`) | PreToolUse(Bash), via `hooks.py` | Active only where `config/delivery.json` says `"merge": "steward"`: refuses `merge-pr` / `mr merge`, `gh`/`glab` merges, the REST merge endpoints, a direct push to the trunk (refspecs, `--all`, `--mirror`, `HEAD` on the trunk) and an agent running the steward's own `tick`/`verdict` — only the steward lands the trunk, so the exact state its train tested is the state that lands. Fails OPEN on an unreadable config. |
+| `gate_stop_failure.py` (`stop-failure-recorder`) | StopFailure, via `hooks.py` | A turn an API error ends runs no Stop hook and the event has no decision control, so this gate RECORDS: `runs/<run-id>/stop_failure.json`, and for claimed, unreleased work with a resumable error class a `.resume-requests/<run-id>.json` for `supervisor.py`. Non-blocking. |
+| `wait_for.py` | — (CLI) | The bounded foreground wait for a background task's output: `--file`, `--line <regex>`, `--pid`, `--timeout-seconds` (≤ 590); exit 0 found, 10 the writer ended without it, 11 timeout (re-issue). Not a sleep, so `no-foreground-sleep` passes it. |
+| `supervisor.py` | — (CLI, `/supervise`) | Judges the resume requests (`finished`, `recovered`, `due`, `waiting`, `exhausted`; six attempts, 5-minute grace for the run's own watchdog, then a doubling 15-minute backoff) and prints the resume message; it never resumes anything itself. |
 | `red_for_right_reason.py` | — | Helper for the RED-phase audit (a test must fail for the reason the task predicts). |
 | `MIGRATION.md` | — (docs) | How to deploy all of this to a project whose agents are ALREADY RUNNING: what a live session can and cannot pick up, why the delivery channel is a blocking Stop hook's stderr rather than the tidier JSON `decision` form, and which live sessions the contract handshake does NOT reach. |
-| `tests/` | — (pytest) | TEN pytest modules, driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.py` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.py` is the counterpart of `test_stop_gates.py`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.py` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
+| `tests/` | — (pytest) | The pytest modules (count them from pytest's summary, not from prose), driven against synthetic payloads in a throwaway tree. Most assert EXIT CODES; `test_reinject.py` asserts on emitted TEXT, because that hook's contract is what it says. `test_gate_overblock.py` is the counterpart of `test_stop_gates.py`: it asks whether the gates refuse a turn they should allow, because an over-blocking gate gets DELETED — which removes the fail-open protection too. `test_unpinned_fixes.py` covers the three fixes a mutation pass found real in the code and guarded by nothing. |
 
 Neither Stop gate reads the harness's `stop_hook_active` field any more: honouring it made a
 POLICY gate block at most ONCE per continuation chain, so the agent was nudged once and then
@@ -201,9 +207,11 @@ terminal-value agreement this project had to adjudicate twice:
 
 ```bash
 cd claude-agents/spec-workflow/hooks
-python -m pytest tests -q -p no:cacheprovider   # the ten modules: crlf hygiene, library, tdd gate, no-sleep
-                                                #   gate, reinject, stop gates (incl. the freshness cache),
-                                                #   over-block, unpinned fixes, scoped temp, dispatcher
+python -m pytest tests -q -p no:cacheprovider   # every module: crlf hygiene, library, tdd gate, no-sleep,
+                                                #   no-idle-wait, reinject (+ resume), stop gates (incl. the
+                                                #   freshness cache), over-block, unpinned fixes, scoped temp,
+                                                #   dispatcher, delivery gates (hand-off, merge steward,
+                                                #   stop-failure, watchdog), filing, env vars, bypass spellings
 python hooks.py selftest                        # the REGISTERED launch form: `python hooks.py <event>` as the
                                                 #   harness spawns it, against a scratch project
 ```
@@ -214,7 +222,7 @@ while the runnable block said 64. The self-test exists because a suite can only 
 decide correctly WHEN THEY RUN; whether the harness can START them on this machine is a separate
 question, and the measured answer for the bash predecessors on a Windows host was no.
 
-All ten are read-only with respect to the repository — all state lives in a temp tree they
+All of them are read-only with respect to the repository — all state lives in a temp tree they
 create and destroy — so they are safe to run in any clone. Run them after any edit to a gate or
 to `hooklib.py`: a gate regression is otherwise SILENT, which is the property that let the
 original defect persist for 189 sessions. They install alongside the hooks, but only because the
@@ -272,8 +280,12 @@ cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DE
                                                                          # read by registered runs at start —
                                                                          # a rules/ file with no paths: would
                                                                          # load into EVERY session
+cp claude-agents/spec-workflow/docs/delivery.md           .claude/docs/  # ON-DEMAND: how a green PR lands,
+                                                                         # deploys and is verified (read at
+                                                                         # the PR phase; config/delivery.json)
 cp claude-agents/spec-workflow/hooks/*.py                 .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
-                                                                         # red_for_right_reason.py
+                                                                         # red_for_right_reason.py, wait_for.py,
+                                                                         # supervisor.py
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
 cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md   .claude/hooks/   # live-session notice; self-retires via Valid-until
@@ -309,8 +321,9 @@ through `CLAUDE_PROJECT_DIR`, and a missing dispatcher failing OPEN instead of p
 | Event | Dispatcher event | Gates it runs (discovered from `gate_*.py`, in `ORDER`) |
 |---|---|---|
 | SessionStart (no matcher) | `session-start` | `session-register` (seeds the state the gates read), `scoped-temp-init` (creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing) and, for sources compact/resume/startup, `continuous-work-reinject` |
-| PreToolUse (`Bash`; widen to `Bash\|Write\|Edit` when a project gate declares those `TOOLS`) | `pre-tool-use` | `no-env-vars`, `no-foreground-sleep`, `spec-tdd-gate`, `claim-before-worktree`, `issue-filing-gate`, then any project gate with `ORDER` above 100; the first block wins |
-| Stop | `stop` | `spec-stop-gate` (the evidence gate) and `issue-loop-gate` (the primary brake); either refusal blocks |
+| PreToolUse (`Bash`; widen to `Bash\|Write\|Edit` when a project gate declares those `TOOLS`) | `pre-tool-use` | `no-env-vars`, `no-foreground-sleep`, `spec-tdd-gate`, `claim-before-worktree`, `merge-steward`, `issue-filing-gate`, then any project gate with `ORDER` above 100; the first block wins |
+| Stop | `stop` | `spec-stop-gate` (the evidence gate), `no-idle-wait` and `issue-loop-gate` (the primary brake); any refusal blocks |
+| StopFailure | `stop-failure` | `stop-failure-recorder` (records an API-error turn end; the event cannot block) |
 
 A project switches a gate off with `.claude/hooks/hooks.config.json` (`{"disabled_gates": ["<HOOK name>"]}`) and adds
 one with a `gate_<name>.py` declaring `HOOK`, `EVENT`, `ORDER`, optional `TOOLS` and `run(ctx)` — never with a second

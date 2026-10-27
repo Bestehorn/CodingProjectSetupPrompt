@@ -29,6 +29,13 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the evidence gate: 
     counter = lib.counter_path(base, "spec", sid or "nosession")
     blocks = lib.counter_read(counter)
     cap = ctx.block_cap
+    # Real tool calls since the last stop attempt are progress even when the evidence is unchanged (a long
+    # VERIFY changes nothing for hours); the cap must bind only on a stop -> refusal -> stop loop.
+    calls = lib.transcript_tool_calls_since(counter, ctx.payload.transcript_path)
+    if blocks and calls is not None and calls >= lib.TRANSCRIPT_PROGRESS_TOOL_CALLS:
+        lib.counter_reset(counter)
+        blocks = 0
+        ctx.log(HOOK, "PROGRESS", f"{calls} tool calls since the last stop attempt; count reset")
 
     def at_cap() -> bool:
         return blocks >= cap or lib.counter_is_capped(counter)

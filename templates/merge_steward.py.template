@@ -1,0 +1,1882 @@
+#!/usr/bin/env python
+"""merge_steward.py — the merge queue, the train builder and the post-deploy verdict of this project.
+
+Installed from ``templates/merge_steward.py.template`` to ``scripts/merge_steward.py`` and configured by
+``config/delivery.json``. The CI host runs ``tick`` and ``verdict`` (``.github/workflows/merge-steward.yml``
+and the deploy workflow's last job, or the GitLab ``merge-steward`` and ``delivery-verdict`` jobs); an
+agent session runs only ``enqueue``, ``dequeue``, ``status`` and ``check-pr``, through the git wrapper.
+``.claude/docs/delivery.md`` is the agent-facing contract; this docstring is the mechanism.
+
+WHY IT EXISTS. Measured 2026-10-25 on a project with about 24 merges a day and a 55-minute CI: every merge
+cancelled the trunk run of the merge before it (29 of 34 runs in one day), the deploy that only a green
+trunk tip could start ran about three times a day and queued for 4.7 h, workers re-synced their branches
+99 times in 31 sessions, and sessions sat waiting for a deploy of their OWN commit that supersession never
+produced. A queue that tests the EXACT state it lands removes the race; verification by ANCESTRY (a green
+post-deploy check on commit N verifies every landing N contains) removes the wait for one's own commit.
+
+ONE TICK. Stateless: git (the train branches and their commit trailers) and the tracker (labels, comments)
+hold all of the state, so a lost runner or a cancelled tick loses nothing.
+  0. ``reverify``: an open issue labelled ``reverify`` asks for a fresh deploy of the trunk (the one way a
+     session asks for a re-verification without owning the deploy); the label is consumed.
+  1. Finish the batch in flight. Its trains are the branches ``<train_prefix><batch>-<k>``, k = 1..n, each
+     the batch base (the trunk when it was planned) plus the batch's first k PRs. While any train's CI is
+     still running, the tick stops there. A batch whose train the trunk already CONTAINS was pushed by a tick
+     that stopped before its records were written: this tick completes them (every record is idempotent).
+  2. Land. L = the largest k for which trains 1..k are all green, cut further at the first train whose PR
+     moved on while it ran (its head is not the commit the train merged, it was dequeued, put on hold or
+     closed): its new commits were never tested. The trunk is fast-forwarded to train L (a plain push: a
+     moved trunk makes it fail, and then NOTHING lands — the PRs stay queued and the next tick rebuilds).
+     Each landed PR and each issue it REFERENCES (``Refs #N``) gets the line
+     ``merge-steward: landed <sha> (PR #<n>, ...)``; when a record cannot be written the trains stay and the
+     next tick completes them. The culprit — train L+1's newest PR — leaves the queue with ``queue-failed``
+     (or is re-queued ONCE when ``retry_culprit_once`` and it never failed a train before: a flaky suite must
+     not bounce a good change); a train that could not run CI to a result (no run, cancelled, timed out) is
+     retried once and blamed the second time. Later PRs stay queued. The trains are deleted and the deploy
+     is started.
+  3. Plan the next batch: the queued PRs in enqueue order, each ELIGIBLE (open, not draft, base = trunk,
+     no hold label, no closing keyword in its description or its commits under watcher verification, PR CI
+     green on its current head, approved when required, every ``Depends-on: #N`` landed or earlier in the
+     batch and none closed unlanded), up to ``batch_size``, preferring PRs whose changed files do not overlap
+     the batch so far. Train k = train k-1 + ``git merge --no-ff <head>`` (a message without the PR title,
+     which could carry "Fix #N"); a conflict drops that PR (``queue-conflict``), a PR whose dependency was
+     dropped waits, and the batch continues. Push the trains and start their CI.
+
+``verdict`` is the deploy pipeline's LAST job (never run for a cancelled or superseded deploy). For every
+open issue labelled ``awaiting-verification`` or ``verification-failed`` whose last landing line names an
+ancestor of the deployed commit and none of whose PRs is still in flight (every ``merge-steward: queued PR
+#n`` line landed, no queued PR references it): success → comment, tick its ``(post-deploy)`` checklist
+items, label ``verified``, then CLOSE it when its counted checklist is complete (else ``needs-closeout``);
+failure → ``verification-failed`` + ``needs-rework``. Every claim it returns to the pool is released (the
+in-progress label and the assignees removed), because SELECT skips a claimed issue.
+
+USAGE
+  python scripts/merge_steward.py [--token-stdin | --token-file F] tick [--run-url URL] [--dry-run]
+  python scripts/merge_steward.py [...] verdict --sha SHA --conclusion success|failure|auto [--run-url URL]
+         [--environment NAME] [--gitlab-pipeline ID --deploy-jobs job1,job2]
+  python scripts/merge_steward.py [...] enqueue <pr> [--allow-pending]      # what `enqueue-pr` runs
+  python scripts/merge_steward.py [...] dequeue <pr> [--reason TEXT]
+  python scripts/merge_steward.py [...] check-pr <pr>                       # would the queue take it now?
+  python scripts/merge_steward.py [...] record-landing <pr>                 # merge "direct": the landing line
+  python scripts/merge_steward.py [...] status [--json]
+Without a token option the token comes from the wrapper's credential file (``credentials/github-pat.txt``;
+GitLab: the ``token`` of ``config/gitlab.json``), so an agent session needs no extra secret.
+
+EXIT CODES  0 ran (check-pr / enqueue: accepted) · 1 host or git error · 2 usage or configuration error ·
+            4 refused (check-pr / enqueue: the PR is not acceptable; the reason is printed)
+
+SECURITY  The tick runs the DEFAULT BRANCH's copy of this file (schedule / dispatch triggers only, never
+          ``pull_request``), merges PR content as data and executes none of it (git runs with
+          ``core.hooksPath`` pointed at an empty directory), and reads its token from stdin or a file —
+          never from a shell variable (``no-environment-vars``). It pushes only branches under
+          ``train_prefix`` and fast-forwards of the trunk; it never force-pushes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess  # nosec B404 — git with a fixed argv, never a shell
+import sys
+import tempfile
+import time
+import urllib.parse
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "config" / "delivery.json"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_REFUSED = 4
+
+MERGE_MODES = ("steward", "direct")
+VERIFICATION_MODES = ("watcher", "session", "none")
+HOSTS = ("github", "gitlab")
+
+STEWARD_DEFAULTS: Dict[str, Any] = {
+    "queue_label": "queue",
+    "failed_label": "queue-failed",
+    "conflict_label": "queue-conflict",
+    "retried_label": "queue-retried",
+    "hold_label": "do-not-merge",
+    "rework_label": "needs-rework",
+    "awaiting_label": "awaiting-verification",
+    "verified_label": "verified",
+    "verification_failed_label": "verification-failed",
+    "closeout_label": "needs-closeout",
+    "reverify_label": "reverify",
+    "in_progress_label": "in-progress",
+    "batch_size": 4,
+    "parallel_trains": True,
+    "train_prefix": "steward/train-",
+    "require_pr_ci": True,
+    "require_approval": False,
+    "retry_culprit_once": True,
+    "ci_workflow": "ci.yml",
+    "deploy_workflow": "",
+    "steward_workflow": "merge-steward.yml",
+    "dispatch_grace_minutes": 10,
+    "train_timeout_minutes": 240,
+    "git_user_name": "merge-steward",
+    "git_user_email": "merge-steward@noreply.invalid",
+    "github_api": "https://api.github.com",
+    "gitlab_url": "",
+    "gitlab_project": "",
+}
+
+# ------------------------------------------------------------------------------------------- conventions
+# The text conventions shared with the git wrapper, the agents and the watcher. Change them together.
+
+#: An issue reference: `#12`; for closing keywords also `group/project#12` and an issue URL.
+_LOCAL_REF = r"(?<![\w/])#\d+"
+_ANY_REF = r"(?:[\w.-]+(?:/[\w.-]+)+)?#\d+|https?://[^\s)\]]+/issues/\d+"
+
+
+def _ref_list(ref: str) -> str:
+    """One reference or a list of them: `#12, #13 and #14`, `#12 #13`, `issues #12 & #13`."""
+    return rf"(?:{ref})(?:\s*(?:,|&|\band\b)?\s*(?:issues?\s+)?(?:{ref}))*"
+
+
+#: The ONE way a PR names the issue(s) it delivers: `Refs #12` / `References: #12, #13`. "Part of", "related
+#: to" and a bare mention are NOT references — the steward acts on every referenced issue (the landing line,
+#: verification and closing, returning it with its claim released), so a mention must never count as one.
+REFS_RE = re.compile(rf"\b(?:refs?|references?)\b\s*:?\s+(?:issues?\s+)?(?P<list>{_ref_list(_LOCAL_REF)})", re.I)
+#: A closing keyword as GitHub and GitLab's DEFAULT patterns read a PR description or a commit message (GitLab
+#: also takes "implements" and the -ing forms): the host closes the issue when the commit reaches the default
+#: branch — before any deploy check. Deliberately wider than either host; an instance with a CUSTOM GitLab
+#: closing pattern is not covered by this and must keep the default under `verification: watcher`.
+CLOSING_RE = re.compile(
+    r"\b(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|implement(?:s|ed|ing)?)\b\s*:?\s+"
+    rf"(?:issues?\s+)?(?P<list>{_ref_list(_ANY_REF)})",
+    re.I,
+)
+LOCAL_NUMBER_RE = re.compile(r"(?<![\w/])#(\d+)")
+ANY_NUMBER_RE = re.compile(r"(?:#|/issues/)(\d+)")
+DEPENDS_RE = re.compile(r"^\s*Depends-on\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+NUMBER_RE = re.compile(r"#(\d+)")
+#: The one machine-readable landing record. The LAST such line on an issue is its current landing.
+LANDED_RE = re.compile(r"^merge-steward: landed ([0-9a-f]{7,40})\b", re.MULTILINE)
+QUEUED_LINE = "merge-steward: queued PR #{pr}"
+QUEUED_RE = re.compile(r"^merge-steward: queued PR #(\d+)", re.MULTILINE)
+CULPRIT_MARK = "<!-- merge-steward-culprit:{sha} -->"
+CLAIM_STARTED_RE = re.compile(r"^merge-steward: claim-started (\S+)", re.MULTILINE)
+CHECKBOX_RE = re.compile(r"^(\s*[-*]\s*)\[( |x|X)\](.*)$")
+POST_DEPLOY_MARK = "(post-deploy)"
+VERDICT_MARK = "<!-- merge-steward-verdict:{conclusion}:{sha} -->"
+RETRY_MARK = "<!-- merge-steward-retry -->"
+TRAILER_RE = re.compile(r"^(Steward-[A-Za-z]+):\s*(.*)$", re.MULTILINE)
+TRAIN_REF_RE = re.compile(r"^refs/heads/(?P<branch>.+-(?P<batch>\d{14}[0-9a-f]{0,12})-(?P<index>\d+))$")
+
+
+def utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso(moment: dt.datetime) -> str:
+    return moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(text: str) -> Optional[dt.datetime]:
+    try:
+        return dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def referenced_issues(body: str) -> Tuple[List[int], List[int]]:
+    """(the issues of THIS repository the text references — `Refs` lists and closing-keyword lists —, the
+    issue numbers it names with a CLOSING keyword, in any repository) — sorted, unique."""
+    refs: set = set()
+    closing: set = set()
+    for match in REFS_RE.finditer(body or ""):
+        refs.update(int(n) for n in LOCAL_NUMBER_RE.findall(match.group("list")))
+    for match in CLOSING_RE.finditer(body or ""):
+        closing.update(int(n) for n in ANY_NUMBER_RE.findall(match.group("list")))
+        refs.update(int(n) for n in LOCAL_NUMBER_RE.findall(match.group("list")))
+    return sorted(refs), sorted(closing)
+
+
+def closing_line(text: str) -> Optional[str]:
+    """The first line of `text` that carries a closing keyword with an issue reference, or None."""
+    for line in (text or "").splitlines():
+        if CLOSING_RE.search(line):
+            return line.strip()
+    return None
+
+
+def depends_on(body: str) -> List[int]:
+    found: List[int] = []
+    for line in DEPENDS_RE.findall(body or ""):
+        for number in NUMBER_RE.findall(line):
+            if int(number) not in found:
+                found.append(int(number))
+    return found
+
+
+def checklist_counts(body: str) -> Tuple[int, int, List[str]]:
+    """(ticked, total, the unticked items' text) over the `- [ ]` / `- [x]` lines outside code fences."""
+    ticked = total = 0
+    open_items: List[str] = []
+    fenced = False
+    for line in (body or "").splitlines():
+        if line.strip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        match = None if fenced else CHECKBOX_RE.match(line)
+        if not match:
+            continue
+        total += 1
+        if match.group(2) in ("x", "X"):
+            ticked += 1
+        else:
+            open_items.append(match.group(3).strip())
+    return ticked, total, open_items
+
+
+def tick_post_deploy_items(body: str) -> Tuple[str, int]:
+    """The body with every unticked `(post-deploy)` item ticked, and how many were ticked."""
+    out: List[str] = []
+    count = 0
+    fenced = False
+    for line in (body or "").split("\n"):
+        if line.strip().startswith(("```", "~~~")):
+            fenced = not fenced
+            out.append(line)
+            continue
+        match = None if fenced else CHECKBOX_RE.match(line.rstrip("\r"))
+        if match and match.group(2) == " " and POST_DEPLOY_MARK in match.group(3).lower():
+            ending = "\r" if line.endswith("\r") else ""
+            out.append(f"{match.group(1)}[x]{match.group(3)}{ending}")
+            count += 1
+        else:
+            out.append(line)
+    return "\n".join(out), count
+
+
+def last_landing(comments: Iterable[str]) -> Optional[str]:
+    landed: Optional[str] = None
+    for text in comments:
+        for match in LANDED_RE.finditer(text or ""):
+            landed = match.group(1)
+    return landed
+
+
+def claim_started(comments: Iterable[str]) -> Optional[dt.datetime]:
+    started: Optional[dt.datetime] = None
+    for text in comments:
+        for match in CLAIM_STARTED_RE.finditer(text or ""):
+            started = parse_iso(match.group(1)) or started
+    return started
+
+
+def elapsed_text(start: Optional[dt.datetime], end: dt.datetime) -> str:
+    if start is None:
+        return "not recorded"
+    minutes = max(0, int((end - start).total_seconds() // 60))
+    return f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+# ---------------------------------------------------------------------------------------------- settings
+
+
+class ConfigError(RuntimeError):
+    """config/delivery.json is missing a required value or carries an unknown one."""
+
+
+@dataclass
+class Settings:
+    merge: str
+    verification: str
+    trunk: str
+    host: str
+    remote: str
+    steward: Dict[str, Any]
+
+    def label(self, key: str) -> str:
+        return str(self.steward[key])
+
+    @property
+    def batch_size(self) -> int:
+        return 1 if not self.steward["parallel_trains"] else max(1, int(self.steward["batch_size"]))
+
+
+def load_settings(path: Path = CONFIG_PATH) -> Settings:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"{path}: not readable JSON ({exc})") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path}: the top level must be an object")
+    steward = dict(STEWARD_DEFAULTS)
+    extra = raw.get("steward", {})
+    if not isinstance(extra, dict):
+        raise ConfigError(f"{path}: 'steward' must be an object")
+    unknown = sorted(set(extra) - set(STEWARD_DEFAULTS) - {"_comment"})
+    if unknown:
+        raise ConfigError(f"{path}: unknown steward setting(s) {unknown} — a typo would silently use a default")
+    steward.update({k: v for k, v in extra.items() if k != "_comment"})
+    settings = Settings(
+        merge=str(raw.get("merge", "direct")),
+        verification=str(raw.get("verification", "session")),
+        trunk=str(raw.get("trunk", "main")),
+        host=str(raw.get("host", "github")),
+        remote=str(raw.get("remote", "origin")),
+        steward=steward,
+    )
+    if settings.merge not in MERGE_MODES:
+        raise ConfigError(f"{path}: merge must be one of {MERGE_MODES}, not {settings.merge!r}")
+    if settings.verification not in VERIFICATION_MODES:
+        raise ConfigError(f"{path}: verification must be one of {VERIFICATION_MODES}, not {settings.verification!r}")
+    if settings.host not in HOSTS:
+        raise ConfigError(f"{path}: host must be one of {HOSTS}, not {settings.host!r}")
+    if not str(steward["train_prefix"]).endswith("-") or ".." in str(steward["train_prefix"]):
+        raise ConfigError(f"{path}: train_prefix must end with '-' and contain no '..'")
+    return settings
+
+
+# ------------------------------------------------------------------------------------------------- git
+
+
+class GitError(RuntimeError):
+    pass
+
+
+class Git:
+    """git in one working directory, with hooks disabled (the PR content is data, never code to run here)."""
+
+    def __init__(self, cwd: Path, user_name: str, user_email: str) -> None:
+        self.cwd = cwd
+        self._hooks = Path(tempfile.mkdtemp(prefix="steward-nohooks-"))
+        self._identity = ["-c", f"user.name={user_name}", "-c", f"user.email={user_email}"]
+        self._private: List[Path] = []
+        self.extra: List[str] = []
+
+    def use_http_header(self, header: str) -> None:
+        """Send `header` with every HTTP request git makes (the GitLab push credential). It lives in a private temp
+        config file that git INCLUDES, so the secret is never in argv (readable by every process on the runner),
+        in the remote URL, in .git/config or in an error message; `close` deletes it."""
+        folder = Path(tempfile.mkdtemp(prefix="steward-cfg-"))
+        self._private.append(folder)
+        path = folder / "credential.gitconfig"
+        path.write_text(f"[http]\n\textraHeader = {header}\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+        self.extra = ["-c", f"include.path={path.as_posix()}"]
+
+    def close(self) -> None:
+        shutil.rmtree(self._hooks, ignore_errors=True)
+        for folder in self._private:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        command = [
+            "git",
+            "-c",
+            f"core.hooksPath={self._hooks}",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "advice.detachedHead=false",
+            *self._identity,
+            *self.extra,
+            *args,
+        ]
+        completed = subprocess.run(  # nosec B603 — fixed argv, no shell
+            command, cwd=str(self.cwd), capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if check and completed.returncode != 0:
+            raise GitError(f"git {' '.join(args)} failed ({completed.returncode}): {completed.stderr.strip()[:800]}")
+        return completed
+
+    def out(self, *args: str) -> str:
+        return self.run(*args).stdout.strip()
+
+    def rev(self, ref: str) -> str:
+        return self.out("rev-parse", "--verify", ref + "^{commit}")
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        return self.run("merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode == 0
+
+    def has_commit(self, sha: str) -> bool:
+        return self.run("cat-file", "-e", sha + "^{commit}", check=False).returncode == 0
+
+    def trailers(self, sha: str) -> Dict[str, str]:
+        message = self.out("log", "-1", "--format=%B", sha)
+        return {key: value.strip() for key, value in TRAILER_RE.findall(message)}
+
+    def merge(self, sha: str, message: str) -> Tuple[bool, List[str]]:
+        result = self.run("merge", "--no-ff", "--no-edit", "-m", message, sha, check=False)
+        if result.returncode == 0:
+            return True, []
+        conflicted = self.run("diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+        self.run("merge", "--abort", check=False)
+        return False, conflicted or [result.stderr.strip()[:200] or "merge failed"]
+
+
+# ----------------------------------------------------------------------------------------------- model
+
+
+@dataclass
+class PullRequest:
+    number: int
+    title: str
+    head_sha: str
+    base_ref: str
+    draft: bool
+    body: str
+    url: str
+    labels: List[str] = field(default_factory=list)
+    enqueued_at: str = ""
+
+    @property
+    def issues(self) -> List[int]:
+        return referenced_issues(self.body)[0]
+
+    @property
+    def closing_issues(self) -> List[int]:
+        return referenced_issues(self.body)[1]
+
+    @property
+    def closing_text(self) -> Optional[str]:
+        """The description line that would make the host close an issue when this PR's commits land."""
+        return closing_line(self.body)
+
+    @property
+    def depends(self) -> List[int]:
+        return depends_on(self.body)
+
+
+@dataclass
+class Issue:
+    number: int
+    state: str  # "open" | "closed"
+    body: str
+    labels: List[str]
+    comments: List[str]
+
+
+@dataclass
+class Train:
+    batch: str
+    index: int
+    branch: str
+    sha: str
+    prs: List[int]
+    base: str
+
+
+class HostAPI(Protocol):  # pragma: no cover — the interface the two adapters and the tests' fake implement
+    def queued_prs(self, label: str) -> List[PullRequest]: ...
+    def pr(self, number: int) -> PullRequest: ...
+    def pr_state(self, number: int) -> str: ...
+    def merge_commit(self, number: int) -> Optional[str]: ...
+    def pr_files(self, number: int) -> List[str]: ...
+    def head_ci(self, pr: PullRequest) -> str: ...
+    def pr_approved(self, pr: PullRequest) -> bool: ...
+    def pr_head_refspec(self, number: int) -> str: ...
+    def pr_add_labels(self, number: int, labels: Sequence[str]) -> None: ...
+    def pr_remove_label(self, number: int, label: str) -> None: ...
+    def pr_comment(self, number: int, text: str) -> None: ...
+    def pr_comment_texts(self, number: int) -> List[str]: ...
+    def pr_close(self, number: int) -> None: ...
+    def issue(self, number: int) -> Issue: ...
+    def issues_with_label(self, label: str) -> List[int]: ...
+    def issue_add_labels(self, number: int, labels: Sequence[str]) -> None: ...
+    def issue_remove_label(self, number: int, label: str) -> None: ...
+    def issue_comment(self, number: int, text: str) -> None: ...
+    def issue_set_body(self, number: int, body: str) -> None: ...
+    def issue_close(self, number: int) -> None: ...
+    def issue_release_claim(self, number: int, in_progress_label: str) -> None: ...
+    def trigger_ci(self, branch: str) -> None: ...
+    def ci_state(self, branch: str, sha: str) -> Tuple[str, str]: ...
+    def trigger_deploy(self, sha: str) -> None: ...
+    def redeploy(self, sha: str) -> None: ...
+    def trigger_tick(self) -> None: ...
+    def deploy_conclusion(self, pipeline: str, jobs: Sequence[str]) -> str: ...
+
+
+# ---------------------------------------------------------------------------------------------- HTTP
+
+
+class HostError(RuntimeError):
+    def __init__(self, message: str, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def http_json(method: str, url: str, headers: Dict[str, str], payload: Any = None, attempts: int = 3) -> Any:
+    """One JSON request with a short retry on 5xx and connection errors. 404 on a DELETE is success."""
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    last: Optional[Exception] = None
+    for attempt in range(attempts):
+        request = Request(url=url, data=body, method=method)
+        for key, value in headers.items():
+            request.add_header(key, value)
+        if body is not None:
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urlopen(request, timeout=30) as response:  # nosec B310 — the configured host's https API
+                text = response.read().decode("utf-8")
+                return json.loads(text) if text.strip() else {}
+        except HTTPError as exc:
+            if method == "DELETE" and exc.code == 404:
+                return {}
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            last = HostError(f"{method} {url} -> {exc.code}: {detail}", exc.code)
+            if exc.code < 500:
+                raise last from exc
+        except (URLError, TimeoutError, ConnectionError) as exc:
+            last = HostError(f"{method} {url} -> {exc}")
+        if attempt + 1 < attempts:
+            time.sleep(2 * (attempt + 1))
+    raise last if last else HostError(f"{method} {url} failed")
+
+
+def remote_url(git: Git, remote: str) -> str:
+    return git.out("remote", "get-url", remote)
+
+
+def redact(url: str) -> str:
+    """`url` without any user or password part — a CI clone URL carries the job token there."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme and (parts.username or parts.password):
+        netloc = (parts.hostname or "") + (f":{parts.port}" if parts.port else "")
+        return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
+    return re.sub(r"^[^@/:]+@", "", url) if "://" not in url else url
+
+
+def host_and_path(url: str) -> Optional[Tuple[str, str]]:
+    """(`https://<host>[:port]`, `group/project`) from an https, ssh or scp-like remote URL — credentials dropped."""
+    if "://" in url:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.hostname:
+            return None
+        web = parts.scheme in ("http", "https")
+        base = f"{parts.scheme if web else 'https'}://{parts.hostname}" + (
+            f":{parts.port}" if web and parts.port else ""
+        )
+        path = parts.path
+    else:
+        match = re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", url)
+        if not match:
+            return None
+        base, path = f"https://{match.group(1)}", match.group(2)
+    path = re.sub(r"\.git$", "", path.strip("/"))
+    return (base, path) if path else None
+
+
+class GitHubAPI:
+    def __init__(self, token: str, settings: Settings, git: Git) -> None:
+        url = remote_url(git, settings.remote)
+        parsed = host_and_path(url)
+        if not parsed or parsed[1].count("/") != 1:
+            raise ConfigError(f"cannot read owner/repo from the remote URL {redact(url)!r}")
+        self.repo = parsed[1]
+        self.api = str(settings.steward["github_api"]).rstrip("/")
+        self.settings = settings
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _call(self, method: str, path: str, payload: Any = None) -> Any:
+        return http_json(method, f"{self.api}/repos/{self.repo}{path}", self.headers, payload)
+
+    def _pages(self, path: str, key: Optional[str] = None, limit: int = 30) -> List[Any]:
+        items: List[Any] = []
+        joiner = "&" if "?" in path else "?"
+        for page in range(1, limit + 1):
+            data = self._call("GET", f"{path}{joiner}per_page=100&page={page}")
+            chunk = data.get(key, []) if key else data
+            items.extend(chunk)
+            if len(chunk) < 100:
+                break
+        return items
+
+    def _pull(self, data: Dict[str, Any], enqueued_at: str = "") -> PullRequest:
+        return PullRequest(
+            number=int(data["number"]),
+            title=str(data.get("title") or ""),
+            head_sha=str(data["head"]["sha"]),
+            base_ref=str(data["base"]["ref"]),
+            draft=bool(data.get("draft")),
+            body=str(data.get("body") or ""),
+            url=str(data.get("html_url") or ""),
+            labels=[str(label["name"]) for label in data.get("labels", [])],
+            enqueued_at=enqueued_at or str(data.get("created_at") or ""),
+        )
+
+    def queued_prs(self, label: str) -> List[PullRequest]:
+        quoted = urllib.parse.quote(label)
+        found = []
+        for item in self._pages(f"/issues?state=open&labels={quoted}"):
+            if "pull_request" not in item:
+                continue
+            number = int(item["number"])
+            stamp = ""
+            for event in self._pages(f"/issues/{number}/events", limit=10):
+                if event.get("event") == "labeled" and (event.get("label") or {}).get("name") == label:
+                    stamp = str(event.get("created_at") or stamp)
+            found.append(self._pull(self._call("GET", f"/pulls/{number}"), stamp))
+        return found
+
+    def pr(self, number: int) -> PullRequest:
+        return self._pull(self._call("GET", f"/pulls/{number}"))
+
+    def pr_state(self, number: int) -> str:
+        data = self._call("GET", f"/pulls/{number}")
+        return "merged" if data.get("merged") else ("closed" if data.get("state") == "closed" else "open")
+
+    def merge_commit(self, number: int) -> Optional[str]:
+        data = self._call("GET", f"/pulls/{number}")
+        return str(data["merge_commit_sha"]) if data.get("merged") and data.get("merge_commit_sha") else None
+
+    def pr_files(self, number: int) -> List[str]:
+        return [str(item["filename"]) for item in self._pages(f"/pulls/{number}/files")]
+
+    def head_ci(self, pr: PullRequest) -> str:
+        runs = self._pages(f"/commits/{pr.head_sha}/check-runs", key="check_runs", limit=5)
+        status = self._call("GET", f"/commits/{pr.head_sha}/status")
+        states = []
+        for run in runs:
+            if run.get("status") != "completed":
+                states.append("pending")
+            elif run.get("conclusion") in ("success", "neutral", "skipped"):
+                states.append("success")
+            else:
+                states.append("failure")
+        if int(status.get("total_count") or 0):
+            combined = str(status.get("state"))
+            states.append({"success": "success", "pending": "pending"}.get(combined, "failure"))
+        if not states:
+            return "none"
+        if "failure" in states:
+            return "failure"
+        return "pending" if "pending" in states else "success"
+
+    def pr_approved(self, pr: PullRequest) -> bool:
+        latest: Dict[str, str] = {}
+        for review in self._pages(f"/pulls/{pr.number}/reviews"):
+            user = str((review.get("user") or {}).get("login") or "")
+            if review.get("state") in ("APPROVED", "CHANGES_REQUESTED"):
+                latest[user] = str(review["state"])
+        return "APPROVED" in latest.values() and "CHANGES_REQUESTED" not in latest.values()
+
+    def pr_head_refspec(self, number: int) -> str:
+        return f"+refs/pull/{number}/head:refs/steward/pr/{number}"
+
+    def pr_add_labels(self, number: int, labels: Sequence[str]) -> None:
+        self._call("POST", f"/issues/{number}/labels", {"labels": list(labels)})
+
+    def pr_remove_label(self, number: int, label: str) -> None:
+        self._call("DELETE", f"/issues/{number}/labels/{urllib.parse.quote(label)}")
+
+    def pr_comment(self, number: int, text: str) -> None:
+        self._call("POST", f"/issues/{number}/comments", {"body": text})
+
+    def pr_comment_texts(self, number: int) -> List[str]:
+        return [str(c.get("body") or "") for c in self._pages(f"/issues/{number}/comments")]
+
+    def pr_close(self, number: int) -> None:
+        self._call("PATCH", f"/pulls/{number}", {"state": "closed"})
+
+    def issue(self, number: int) -> Issue:
+        data = self._call("GET", f"/issues/{number}")
+        comments = [str(c.get("body") or "") for c in self._pages(f"/issues/{number}/comments")]
+        return Issue(
+            number=number,
+            state="open" if data.get("state") == "open" else "closed",
+            body=str(data.get("body") or ""),
+            labels=[str(label["name"]) for label in data.get("labels", [])],
+            comments=comments,
+        )
+
+    def issues_with_label(self, label: str) -> List[int]:
+        items = self._pages(f"/issues?state=open&labels={urllib.parse.quote(label)}")
+        return sorted(int(item["number"]) for item in items if "pull_request" not in item)
+
+    issue_add_labels = pr_add_labels
+    issue_remove_label = pr_remove_label
+    issue_comment = pr_comment
+
+    def issue_set_body(self, number: int, body: str) -> None:
+        self._call("PATCH", f"/issues/{number}", {"body": body})
+
+    def issue_close(self, number: int) -> None:
+        self._call("PATCH", f"/issues/{number}", {"state": "closed", "state_reason": "completed"})
+
+    def issue_release_claim(self, number: int, in_progress_label: str) -> None:
+        data = self._call("GET", f"/issues/{number}")
+        self.issue_remove_label(number, in_progress_label)
+        logins = [str(a["login"]) for a in data.get("assignees", [])]
+        if logins:
+            self._call("DELETE", f"/issues/{number}/assignees", {"assignees": logins})
+
+    def trigger_ci(self, branch: str) -> None:
+        workflow = urllib.parse.quote(str(self.settings.steward["ci_workflow"]))
+        self._call("POST", f"/actions/workflows/{workflow}/dispatches", {"ref": branch})
+
+    def ci_state(self, branch: str, sha: str) -> Tuple[str, str]:
+        workflow = urllib.parse.quote(str(self.settings.steward["ci_workflow"]))
+        data = self._call("GET", f"/actions/workflows/{workflow}/runs?branch={urllib.parse.quote(branch)}&per_page=20")
+        runs = [r for r in data.get("workflow_runs", []) if r.get("head_sha") == sha]
+        if not runs:
+            return "missing", ""
+        run = max(runs, key=lambda r: (int(r.get("run_number") or 0), int(r.get("run_attempt") or 0)))
+        url = str(run.get("html_url") or "")
+        if run.get("status") != "completed":
+            return "pending", url
+        conclusion = str(run.get("conclusion") or "")
+        if conclusion == "success":
+            return "success", url
+        return ("cancelled", url) if conclusion in ("cancelled", "skipped", "stale") else ("failure", url)
+
+    def trigger_deploy(self, sha: str) -> None:
+        workflow = str(self.settings.steward["deploy_workflow"])
+        if workflow:
+            self._call(
+                "POST",
+                f"/actions/workflows/{urllib.parse.quote(workflow)}/dispatches",
+                {"ref": self.settings.trunk, "inputs": {"sha": sha}},
+            )
+
+    def redeploy(self, sha: str) -> None:
+        self.trigger_deploy(sha)
+
+    def trigger_tick(self) -> None:
+        workflow = urllib.parse.quote(str(self.settings.steward["steward_workflow"]))
+        self._call("POST", f"/actions/workflows/{workflow}/dispatches", {"ref": self.settings.trunk})
+
+    def deploy_conclusion(self, pipeline: str, jobs: Sequence[str]) -> str:
+        raise ConfigError("--conclusion auto is the GitLab form; a GitHub deploy job passes success or failure")
+
+
+class GitLabAPI:
+    def __init__(self, token: str, settings: Settings, git: Git) -> None:
+        url = remote_url(git, settings.remote)
+        base = str(settings.steward["gitlab_url"]).rstrip("/")
+        project = str(settings.steward["gitlab_project"])
+        if not base or not project:
+            parsed = host_and_path(url)
+            if not parsed:
+                raise ConfigError(f"set steward.gitlab_url and steward.gitlab_project (remote URL {redact(url)!r})")
+            base = base or parsed[0]
+            project = project or parsed[1]
+        self.api = f"{base}/api/v4/projects/{urllib.parse.quote(project, safe='')}"
+        self.settings = settings
+        self.headers = {"PRIVATE-TOKEN": token}
+
+    def _call(self, method: str, path: str, payload: Any = None) -> Any:
+        return http_json(method, f"{self.api}{path}", self.headers, payload)
+
+    def _pages(self, path: str, limit: int = 30) -> List[Any]:
+        items: List[Any] = []
+        joiner = "&" if "?" in path else "?"
+        for page in range(1, limit + 1):
+            chunk = self._call("GET", f"{path}{joiner}per_page=100&page={page}")
+            items.extend(chunk)
+            if len(chunk) < 100:
+                break
+        return items
+
+    def _merge_request(self, data: Dict[str, Any], enqueued_at: str = "") -> PullRequest:
+        return PullRequest(
+            number=int(data["iid"]),
+            title=str(data.get("title") or ""),
+            head_sha=str(data.get("sha") or ""),
+            base_ref=str(data.get("target_branch") or ""),
+            draft=bool(data.get("draft") or data.get("work_in_progress")),
+            body=str(data.get("description") or ""),
+            url=str(data.get("web_url") or ""),
+            labels=[str(label) for label in data.get("labels", [])],
+            enqueued_at=enqueued_at or str(data.get("created_at") or ""),
+        )
+
+    def queued_prs(self, label: str) -> List[PullRequest]:
+        found = []
+        quoted = urllib.parse.quote(label)
+        for item in self._pages(f"/merge_requests?state=opened&labels={quoted}"):
+            iid = int(item["iid"])
+            stamp = ""
+            for event in self._pages(f"/merge_requests/{iid}/resource_label_events", limit=10):
+                if event.get("action") == "add" and (event.get("label") or {}).get("name") == label:
+                    stamp = str(event.get("created_at") or stamp)
+            found.append(self._merge_request(item, stamp))
+        return found
+
+    def pr(self, number: int) -> PullRequest:
+        return self._merge_request(self._call("GET", f"/merge_requests/{number}"))
+
+    def pr_state(self, number: int) -> str:
+        state = str(self._call("GET", f"/merge_requests/{number}").get("state"))
+        return {"merged": "merged", "closed": "closed"}.get(state, "open")
+
+    def merge_commit(self, number: int) -> Optional[str]:
+        data = self._call("GET", f"/merge_requests/{number}")
+        if data.get("state") != "merged":
+            return None
+        sha = data.get("merge_commit_sha") or data.get("squash_commit_sha") or data.get("sha")
+        return str(sha) if sha else None
+
+    def pr_files(self, number: int) -> List[str]:
+        files: List[str] = []
+        for diff in self._pages(f"/merge_requests/{number}/diffs"):
+            for key in ("new_path", "old_path"):
+                path = str(diff.get(key) or "")
+                if path and path not in files:
+                    files.append(path)
+        return files
+
+    def head_ci(self, pr: PullRequest) -> str:
+        data = self._call("GET", f"/merge_requests/{pr.number}")
+        pipeline = data.get("head_pipeline") or {}
+        if not pipeline or str(pipeline.get("sha")) != pr.head_sha:
+            return "none" if not pipeline else "pending"
+        status = str(pipeline.get("status"))
+        if status == "success":
+            return "success"
+        if status in ("failed", "canceled", "skipped"):
+            return "failure"
+        return "pending"
+
+    def pr_approved(self, pr: PullRequest) -> bool:
+        data = self._call("GET", f"/merge_requests/{pr.number}/approvals")
+        return bool(data.get("approved")) or int(data.get("approvals_left") or 0) == 0 and bool(data.get("approved_by"))
+
+    def pr_head_refspec(self, number: int) -> str:
+        return f"+refs/merge-requests/{number}/head:refs/steward/pr/{number}"
+
+    def pr_add_labels(self, number: int, labels: Sequence[str]) -> None:
+        self._call("PUT", f"/merge_requests/{number}", {"add_labels": ",".join(labels)})
+
+    def pr_remove_label(self, number: int, label: str) -> None:
+        self._call("PUT", f"/merge_requests/{number}", {"remove_labels": label})
+
+    def pr_comment(self, number: int, text: str) -> None:
+        self._call("POST", f"/merge_requests/{number}/notes", {"body": text})
+
+    def pr_comment_texts(self, number: int) -> List[str]:
+        notes = self._pages(f"/merge_requests/{number}/notes?sort=asc&order_by=created_at")
+        return [str(n.get("body") or "") for n in notes if not n.get("system")]
+
+    def pr_close(self, number: int) -> None:
+        self._call("PUT", f"/merge_requests/{number}", {"state_event": "close"})
+
+    def issue(self, number: int) -> Issue:
+        data = self._call("GET", f"/issues/{number}")
+        notes = [
+            str(n.get("body") or "")
+            for n in self._pages(f"/issues/{number}/notes?sort=asc&order_by=created_at")
+            if not n.get("system")
+        ]
+        return Issue(
+            number=number,
+            state="open" if data.get("state") == "opened" else "closed",
+            body=str(data.get("description") or ""),
+            labels=[str(label) for label in data.get("labels", [])],
+            comments=notes,
+        )
+
+    def issues_with_label(self, label: str) -> List[int]:
+        items = self._pages(f"/issues?state=opened&labels={urllib.parse.quote(label)}")
+        return sorted(int(item["iid"]) for item in items)
+
+    def issue_add_labels(self, number: int, labels: Sequence[str]) -> None:
+        self._call("PUT", f"/issues/{number}", {"add_labels": ",".join(labels)})
+
+    def issue_remove_label(self, number: int, label: str) -> None:
+        self._call("PUT", f"/issues/{number}", {"remove_labels": label})
+
+    def issue_comment(self, number: int, text: str) -> None:
+        self._call("POST", f"/issues/{number}/notes", {"body": text})
+
+    def issue_set_body(self, number: int, body: str) -> None:
+        self._call("PUT", f"/issues/{number}", {"description": body})
+
+    def issue_close(self, number: int) -> None:
+        self._call("PUT", f"/issues/{number}", {"state_event": "close"})
+
+    def issue_release_claim(self, number: int, in_progress_label: str) -> None:
+        self._call("PUT", f"/issues/{number}", {"remove_labels": in_progress_label, "assignee_ids": [0]})
+
+    def trigger_ci(self, branch: str) -> None:
+        return None  # the push of the train branch with the steward's token starts its pipeline
+
+    def ci_state(self, branch: str, sha: str) -> Tuple[str, str]:
+        ref = urllib.parse.quote(branch)
+        pipelines = self._call("GET", f"/pipelines?ref={ref}&sha={sha}&order_by=id&sort=desc&per_page=5")
+        if not pipelines:
+            return "missing", ""
+        pipeline = pipelines[0]
+        url = str(pipeline.get("web_url") or "")
+        status = str(pipeline.get("status"))
+        if status == "success":
+            return "success", url
+        if status == "failed":
+            return "failure", url
+        if status in ("canceled", "skipped"):
+            return "cancelled", url
+        return "pending", url
+
+    def trigger_deploy(self, sha: str) -> None:
+        return None  # the fast-forward push of the trunk starts the trunk pipeline, which deploys
+
+    def redeploy(self, sha: str) -> None:
+        """A fresh trunk pipeline, for `reverify` (no push happens, so nothing else would start one). The deploy
+        jobs and `delivery-verdict` admit it through MERGE_STEWARD=redeploy (templates/ci)."""
+        self._call(
+            "POST",
+            "/pipeline",
+            {"ref": self.settings.trunk, "variables": [{"key": "MERGE_STEWARD", "value": "redeploy"}]},
+        )
+
+    def trigger_tick(self) -> None:
+        self._call(
+            "POST",
+            "/pipeline",
+            {"ref": self.settings.trunk, "variables": [{"key": "MERGE_STEWARD", "value": "tick"}]},
+        )
+
+    def deploy_conclusion(self, pipeline: str, jobs: Sequence[str]) -> str:
+        """success / failure / none for the listed jobs of a trunk pipeline. An outdated (superseded) deployment
+        job is NOT a failure: GitLab fails it with `forward_deployment_failure`, and the newer deploy will
+        render the verdict."""
+        listed = {name.strip() for name in jobs if name.strip()}
+        statuses: Dict[str, Tuple[str, str]] = {}
+        for job in self._pages(f"/pipelines/{pipeline}/jobs?include_retried=false"):
+            name = str(job.get("name"))
+            if name in listed:
+                statuses[name] = (str(job.get("status")), str(job.get("failure_reason") or ""))
+        if any(reason == "forward_deployment_failure" for _status, reason in statuses.values()):
+            return "none"
+        if any(status == "failed" for status, _reason in statuses.values()):
+            return "failure"
+        if listed and all(statuses.get(name, ("",))[0] == "success" for name in listed):
+            return "success"
+        return "none"
+
+
+# ---------------------------------------------------------------------------------------------- report
+
+
+@dataclass
+class Report:
+    dry_run: bool = False
+    lines: List[str] = field(default_factory=list)
+
+    def say(self, text: str) -> None:
+        self.lines.append(text)
+        print(("[dry-run] " if self.dry_run else "") + text, flush=True)
+
+
+# ---------------------------------------------------------------------------------------------- steward
+
+
+class Steward:
+    def __init__(self, settings: Settings, git: Git, host: HostAPI, report: Report, run_url: str = "") -> None:
+        self.s = settings
+        self.git = git
+        self.host = host
+        self.report = report
+        self.run_url = run_url
+        self.dry = report.dry_run
+        self._queued_refs: Optional[Dict[int, set]] = None  # issue -> queued PRs referencing it (one verdict run)
+
+    # -- small helpers --------------------------------------------------------------------------------
+    @property
+    def trunk_ref(self) -> str:
+        return f"refs/remotes/{self.s.remote}/{self.s.trunk}"
+
+    def fetch(self) -> str:
+        prefix = str(self.s.steward["train_prefix"])
+        self.git.run(
+            "fetch",
+            "--prune",
+            "--no-auto-gc",
+            self.s.remote,
+            f"+refs/heads/{self.s.trunk}:{self.trunk_ref}",
+            f"+refs/heads/{prefix}*:refs/remotes/{self.s.remote}/{prefix}*",
+        )
+        return self.git.rev(self.trunk_ref)
+
+    def _do(self, what: str, action: Any, *args: Any) -> None:
+        """Every tracker or remote write goes through here, so --dry-run is complete by construction."""
+        self.report.say(what)
+        if not self.dry:
+            action(*args)
+
+    def _issue_labels(self, number: int, add: Sequence[str] = (), remove: Sequence[str] = ()) -> None:
+        for label in remove:
+            self._do(f"issue #{number}: -label {label}", self.host.issue_remove_label, number, label)
+        if add:
+            self._do(f"issue #{number}: +label {', '.join(add)}", self.host.issue_add_labels, number, list(add))
+
+    def _return_issue(self, number: int, reason_label: str, text: str) -> None:
+        """Hand an issue back to the pool: rework label, claim released, the reason on the issue."""
+        self._issue_labels(number, add=[reason_label])
+        self._do(
+            f"issue #{number}: release claim",
+            self.host.issue_release_claim,
+            number,
+            self.s.label("in_progress_label"),
+        )
+        self._do(f"issue #{number}: comment", self.host.issue_comment, number, text)
+
+    # -- trains ---------------------------------------------------------------------------------------
+    def trains_in_flight(self) -> Dict[str, List[Train]]:
+        prefix = str(self.s.steward["train_prefix"])
+        listing = self.git.out(
+            "for-each-ref", "--format=%(objectname) %(refname)", f"refs/remotes/{self.s.remote}/{prefix}*"
+        )
+        batches: Dict[str, List[Train]] = {}
+        for line in listing.splitlines():
+            sha, _, ref = line.partition(" ")
+            head_ref = "refs/heads/" + ref[len(f"refs/remotes/{self.s.remote}/") :]
+            match = TRAIN_REF_RE.match(head_ref)
+            if not match or not match.group("branch").startswith(prefix):
+                continue
+            trailers = self.git.trailers(sha)
+            prs = [int(n) for n in NUMBER_RE.findall(trailers.get("Steward-PRs", ""))]
+            train = Train(
+                batch=match.group("batch"),
+                index=int(match.group("index")),
+                branch=match.group("branch"),
+                sha=sha,
+                prs=prs,
+                base=trailers.get("Steward-Base", ""),
+            )
+            batches.setdefault(train.batch, []).append(train)
+        for trains in batches.values():
+            trains.sort(key=lambda t: t.index)
+        return batches
+
+    def delete_trains(self, trains: Sequence[Train]) -> None:
+        if not trains:
+            return
+        refspecs = [f":refs/heads/{t.branch}" for t in trains]
+        self._do(
+            f"delete train branches {', '.join(t.branch for t in trains)}",
+            self.git.run,
+            "push",
+            self.s.remote,
+            *refspecs,
+        )
+
+    def train_age_minutes(self, train: Train) -> float:
+        stamp = self.git.out("log", "-1", "--format=%cI", train.sha)
+        moment = parse_iso(stamp)
+        return (utcnow() - moment).total_seconds() / 60.0 if moment else 0.0
+
+    # -- 0. reverify ----------------------------------------------------------------------------------
+    def reverify(self, trunk: str) -> None:
+        if self.s.verification != "watcher":
+            return
+        label = self.s.label("reverify_label")
+        asked = self.host.issues_with_label(label)
+        if not asked:
+            return
+        self._do(
+            f"deploy {trunk[:12]} for re-verification (asked by {', '.join(f'#{n}' for n in asked)})",
+            self.host.redeploy,
+            trunk,
+        )
+        for number in asked:
+            self._issue_labels(number, remove=[label])
+            self._do(
+                f"issue #{number}: comment",
+                self.host.issue_comment,
+                number,
+                f"merge-steward: re-verification deploy of `{trunk[:12]}` started{self._run_suffix()}.",
+            )
+
+    def _run_suffix(self) -> str:
+        return f" ({self.run_url})" if self.run_url else ""
+
+    # -- 1 + 2. finish and land -----------------------------------------------------------------------
+    def finish(self, trunk: str) -> bool:  # noqa: C901 — one verdict per train state, in order
+        """True when a batch is still in flight (the tick must not plan another)."""
+        batches = self.trains_in_flight()
+        if not batches:
+            return False
+        in_flight = False
+        for batch, trains in sorted(batches.items()):
+            base = trains[0].base
+            landed_upto = self._landed_upto(trains, trunk)
+            if base != trunk and not landed_upto:
+                self.report.say(
+                    f"batch {batch}: the trunk moved past its base {base[:12]} — abandoned; its PRs stay queued"
+                )
+                self.delete_trains(trains)
+                continue
+            if landed_upto:
+                # The trunk already contains train `landed_upto`: an earlier tick pushed it and stopped before its
+                # bookkeeping was done (a host error, a timeout, a lost runner). Finish that bookkeeping now —
+                # every step is idempotent — instead of abandoning PRs that already landed.
+                self.report.say(f"batch {batch}: train {landed_upto} is on the trunk already — completing the landing")
+            states = []
+            for train in trains:
+                state, url = self.host.ci_state(train.branch, train.sha)
+                if state == "missing":
+                    age = self.train_age_minutes(train)
+                    if age > 2 * float(self.s.steward["dispatch_grace_minutes"]):
+                        state = "error"
+                    elif age > float(self.s.steward["dispatch_grace_minutes"]):
+                        self._start_ci(train, "no CI run yet — dispatching again")
+                        state = "pending"
+                    else:
+                        state = "pending"
+                if state == "pending" and self.train_age_minutes(train) > float(
+                    self.s.steward["train_timeout_minutes"]
+                ):
+                    state = "error"
+                states.append((train, state, url))
+            if any(state == "pending" for _t, state, _u in states):
+                self.report.say(f"batch {batch}: " + ", ".join(f"train {t.index} {s}" for t, s, _u in states))
+                in_flight = True
+                continue
+            if not self.land(batch, states, trunk, landed_upto):
+                in_flight = True  # the landing's bookkeeping is incomplete: the next tick completes it first
+        return in_flight
+
+    def _landed_upto(self, trains: Sequence[Train], trunk: str) -> int:
+        """The index of the newest train of the batch the trunk already contains, 0 when none."""
+        found = 0
+        for train in trains:
+            if train.sha == trunk or self.git.is_ancestor(train.sha, trunk):
+                found = max(found, train.index)
+        return found
+
+    def _start_ci(self, train: Train, why: str) -> None:
+        try:
+            self._do(f"train {train.branch}: {why}", self.host.trigger_ci, train.branch)
+        except HostError as exc:
+            # A train whose run never starts goes "missing" and then "error": retried once, then blamed.
+            self.report.say(f"train {train.branch}: CI could not be started ({exc})")
+
+    def _still_landable(self, states: Sequence[Tuple[Train, str, str]]) -> int:
+        """How many of the green trains may still land: a train stops the prefix when the PR it added has moved
+        on since the train was built (its head is not the commit the train merged and tested), left the queue,
+        is on hold or is no longer open. Its later commits were never tested, and a dequeue is the author's."""
+        for position, (train, _state, _url) in enumerate(states):
+            if not train.prs:
+                continue
+            number = train.prs[-1]
+            pr = self.host.pr(number)
+            tested = self.git.rev(f"{train.sha}^2")
+            why = ""
+            if pr.head_sha != tested:
+                why = f"its head moved to {pr.head_sha[:12]} after the train tested {tested[:12]}"
+            elif self.s.label("queue_label") not in pr.labels:
+                why = "it left the queue while its train ran"
+            elif self.s.label("hold_label") in pr.labels:
+                why = f"it was put on hold ({self.s.label('hold_label')}) while its train ran"
+            elif self.host.pr_state(number) != "open":
+                why = "it is no longer open"
+            if why:
+                self.report.say(f"PR #{number}: not landed — {why}; the trains from {train.index} on are discarded")
+                return position
+        return len(states)
+
+    def land(  # noqa: C901 — push, bookkeeping, culprit, clean-up, each guarded
+        self, batch: str, states: List[Tuple[Train, str, str]], trunk: str, landed_upto: int = 0
+    ) -> bool:
+        """Land the longest green prefix, record it, blame the culprit. False when the bookkeeping of a landing
+        could not be completed: the trains then STAY, and the next tick completes it before anything else."""
+        trains = [t for t, _s, _u in states]
+        green = 0
+        for _train, state, _url in states:
+            if state != "success":
+                break
+            green += 1
+        blame = green < len(states)
+        if landed_upto:
+            green, blame = landed_upto, blame and green == landed_upto
+        else:
+            landable = self._still_landable(states[:green])
+            if landable < green:
+                green, blame = landable, False
+        if green:
+            target = states[green - 1][0]
+            if not landed_upto:
+                if not self.git.is_ancestor(trunk, target.sha):
+                    self.report.say(f"batch {batch}: train {green} does not descend from the trunk — abandoned")
+                    self.delete_trains(trains)
+                    return True
+                self.report.say(f"land {target.sha[:12]} on {self.s.trunk} (train {green} of batch {batch})")
+                if not self.dry:
+                    result = self.git.run("push", self.s.remote, f"{target.sha}:refs/heads/{self.s.trunk}", check=False)
+                    if result.returncode != 0:
+                        self.report.say(
+                            f"the fast-forward was refused ({result.stderr.strip()[:300]}) — nothing landed"
+                        )
+                        self.delete_trains(trains)
+                        return True
+            urls = {train.prs[-1]: url for train, _state, url in states[:green] if train.prs}
+            failures = []
+            for number in target.prs:
+                try:
+                    self.after_landing(number, target.sha, urls.get(number, ""))
+                except HostError as exc:
+                    failures.append(f"PR #{number}: {exc}")
+            if failures:
+                self.report.say(
+                    "the landing is on the trunk, but its records are incomplete — the trains stay and the next "
+                    "tick completes them: " + "; ".join(failures)
+                )
+                return False
+            self.after_batch_landed(target.sha)
+        if blame:
+            culprit_train, state, url = states[green]
+            if culprit_train.prs:
+                self.after_red_train(
+                    culprit_train.prs[-1], url, errored=state in ("error", "cancelled"), train_sha=culprit_train.sha
+                )
+        self.delete_trains(trains)
+        return True
+
+    def after_landing(self, number: int, sha: str, train_url: str) -> None:
+        """Every record of one landed PR. Idempotent: a tick that completes an interrupted landing repeats it."""
+        pr = self.host.pr(number)
+        line = f"merge-steward: landed {sha} (PR #{number}, train run {train_url or 'n/a'})"
+        recorded = any(f"merge-steward: landed {sha}" in text for text in self.host.pr_comment_texts(number))
+        if not recorded:
+            self._do(f"PR #{number}: comment landed", self.host.pr_comment, number, line)
+        for label in (self.s.label("queue_label"), self.s.label("retried_label")):
+            self._do(f"PR #{number}: -label {label}", self.host.pr_remove_label, number, label)
+        if not self.dry and self._still_open(number):
+            # The host marks a PR merged once its head is reachable from the trunk, a few seconds after the push;
+            # when it has not after half a minute, the landing comment is the record and the PR is closed so
+            # nothing reads it as open work. (`_still_landable` made sure the landed commit IS its head.)
+            self._do(f"PR #{number}: close (landed by fast-forward)", self.host.pr_close, number)
+        self.record_issue_landings(pr, line, sha, train_url)
+
+    def _still_open(self, number: int, checks: int = 6, interval: float = 5.0) -> bool:
+        for attempt in range(checks):
+            if self.host.pr_state(number) != "open":
+                return False
+            if attempt + 1 < checks:
+                time.sleep(interval)
+        return True
+
+    def record_issue_landings(self, pr: PullRequest, line: str, sha: str, run_url: str) -> None:
+        """The landing line on every issue the PR references, then the verification path the mode selects.
+        Idempotent, and an issue number that does not exist is skipped rather than retried forever."""
+        for number in pr.issues:
+            try:
+                issue = self.host.issue(number)
+            except HostError as exc:
+                if exc.status == 404:
+                    self.report.say(f"issue #{number}: does not exist — no landing recorded on it")
+                    continue
+                raise
+            if not any(f"merge-steward: landed {sha} (PR #{pr.number}" in text for text in issue.comments):
+                self._do(f"issue #{number}: landing line", self.host.issue_comment, number, line)
+                issue.comments.append(line)
+            if self.s.verification == "watcher":
+                self._issue_labels(number, add=[self.s.label("awaiting_label")])
+            elif self.s.verification == "none":
+                self._queued_refs = None  # the queue changes during a landing: read it fresh for each issue
+                pending = self._prs_in_flight(issue, exclude=[pr.number])
+                if pending:
+                    self.report.say(f"issue #{number}: {pending} still in flight — verified when the last lands")
+                    continue
+                self.verify_issue(number, sha, "success", run_url, "trunk (no deploy)", issue)
+
+    def record_landing(self, number: int) -> int:
+        """Direct-merge mode: record a PR the worker merged itself, so the watcher verifies its issues too."""
+        sha = self.host.merge_commit(number)
+        if not sha:
+            self.report.say(f"PR #{number} is not merged — nothing to record")
+            return EXIT_REFUSED
+        pr = self.host.pr(number)
+        line = f"merge-steward: landed {sha} (PR #{number}, direct merge)"
+        self._do(f"PR #{number}: comment landed", self.host.pr_comment, number, line)
+        self.record_issue_landings(pr, line, sha, pr.url)
+        return EXIT_OK
+
+    def after_batch_landed(self, sha: str) -> None:
+        if self.s.verification == "watcher":
+            self._do(f"start the deploy of {sha[:12]}", self.host.trigger_deploy, sha)
+
+    def after_red_train(self, number: int, url: str, errored: bool = False, train_sha: str = "") -> None:
+        """The culprit of a red train — or of a train whose CI never ran to a result (`errored`: no run, cancelled,
+        timed out). A red train is retried once when `retry_culprit_once`; an errored one always once (the
+        runner, not the change, is the usual cause), and blamed the second time — a change that keeps its train
+        from running (a CI workflow it broke) must not wedge the queue."""
+        mark = CULPRIT_MARK.format(sha=train_sha) if train_sha else ""
+        if mark and any(mark in text for text in self.host.pr_comment_texts(number)):
+            return  # an interrupted tick already judged this train
+        pr = self.host.pr(number)
+        allowed = errored or bool(self.s.steward["retry_culprit_once"])
+        retry = allowed and self.s.label("retried_label") not in pr.labels
+        what = (
+            f"the train with this PR could not run its CI to a result (no run, cancelled or timed out: "
+            f"{url or 'no run link'})"
+            if errored
+            else f"the train with this PR failed ({url or 'no run link'})"
+        )
+        if retry:
+            self._do(
+                f"PR #{number}: +label {self.s.label('retried_label')}",
+                self.host.pr_add_labels,
+                number,
+                [self.s.label("retried_label")],
+            )
+            self._do(
+                f"PR #{number}: comment (re-queued once)",
+                self.host.pr_comment,
+                number,
+                f"merge-steward: {what}. It stays queued for ONE retry, because its own CI was green and a flaky "
+                f"suite or runner must not bounce a good change; a second failure takes it out of the queue. "
+                f"{RETRY_MARK} {mark}",
+            )
+            return
+        for label in (self.s.label("queue_label"), self.s.label("retried_label")):
+            self._do(f"PR #{number}: -label {label}", self.host.pr_remove_label, number, label)
+        self._do(
+            f"PR #{number}: +label {self.s.label('failed_label')}",
+            self.host.pr_add_labels,
+            number,
+            [self.s.label("failed_label")],
+        )
+        link = url or "no run link"
+        if errored:
+            text = (
+                f"merge-steward: this PR left the queue — its train could not run CI to a result twice ({link}). "
+                f"The PRs ahead of it landed without it. Check that the change keeps the CI workflow "
+                f"startable on a branch (`workflow_dispatch` on GitHub) and within `train_timeout_minutes`, push "
+                f"once, and enqueue again when the PR's own CI is green."
+            )
+        else:
+            text = (
+                f"merge-steward: this PR left the queue — CI failed on the train that added it to the trunk and the "
+                f"PRs ahead of it ({link}). The PRs ahead of it landed without it. Read every failing job, fix "
+                f"them all, push once, and enqueue again when the PR's own CI is green."
+            )
+        self._do(f"PR #{number}: comment (left the queue)", self.host.pr_comment, number, f"{text} {mark}".strip())
+        for issue in pr.issues:
+            self._return_issue(
+                issue, self.s.label("rework_label"), f"merge-steward: PR #{number} left the queue — {text}"
+            )
+
+    # -- 3. plan --------------------------------------------------------------------------------------
+    def eligibility(  # noqa: C901 — one test per admission rule, in the order the docstring lists them
+        self, pr: PullRequest, landed: Sequence[int], ahead: Sequence[int], closed: Sequence[int] = ()
+    ) -> Tuple[str, str]:
+        """('eligible' | 'wait' | 'reject', why)."""
+        st = self.s.steward
+        if pr.base_ref != self.s.trunk:
+            return "reject", f"its base is {pr.base_ref!r}, not the trunk {self.s.trunk!r}"
+        if pr.draft:
+            return "reject", "it is a draft"
+        if self.s.label("hold_label") in pr.labels:
+            return "wait", f"it carries {self.s.label('hold_label')}"
+        if self.s.verification == "watcher" and pr.closing_text:
+            refs = ", ".join(f"#{n}" for n in pr.closing_issues)
+            return "reject", (
+                f"its description would make the host CLOSE {refs} at landing, before the deploy check "
+                f"(`{pr.closing_text[:120]}`). Write `Refs {refs}` instead"
+            )
+        for dependency in pr.depends:
+            if dependency in closed:
+                return "reject", f"it depends on #{dependency}, which was closed without landing"
+            if dependency not in landed and dependency not in ahead:
+                return "wait", f"it depends on #{dependency}, which has not landed"
+        if st["require_pr_ci"]:
+            ci = self.host.head_ci(pr)
+            if ci == "failure":
+                return "reject", f"its own CI is red on its head {pr.head_sha[:12]}"
+            if ci == "pending":
+                return "wait", f"its own CI is still running on {pr.head_sha[:12]}"
+            if ci == "none":
+                return "wait", f"no CI has reported on its head {pr.head_sha[:12]}"
+        if st["require_approval"] and not self.host.pr_approved(pr):
+            return "wait", "it is not approved"
+        return "eligible", ""
+
+    def plan(self, trunk: str) -> List[Train]:
+        queued = sorted(self.host.queued_prs(self.s.label("queue_label")), key=lambda p: (p.enqueued_at, p.number))
+        if not queued:
+            self.report.say("queue empty")
+            return []
+        chosen: List[PullRequest] = []
+        footprint: set = set()
+        deferred = 0
+        for pr in queued:
+            if len(chosen) >= self.s.batch_size:
+                break
+            landed, closed = self._dependencies(pr)
+            verdict, why = self.eligibility(pr, landed, [p.number for p in chosen], closed)
+            if verdict == "reject":
+                self.reject(pr, self.s.label("failed_label"), f"the queue cannot take it: {why}.")
+                continue
+            if verdict == "wait":
+                self.report.say(f"PR #{pr.number}: waits — {why}")
+                continue
+            files = set(self.host.pr_files(pr.number))
+            if chosen and files & footprint:
+                deferred += 1
+                self.report.say(f"PR #{pr.number}: deferred to the next batch — its files overlap the batch")
+                continue
+            chosen.append(pr)
+            footprint |= files
+        if not chosen:
+            self.report.say("no eligible PR this round" + (f" ({deferred} deferred)" if deferred else ""))
+            return []
+        return self.build(trunk, chosen)
+
+    def dependency_state(self, number: int) -> str:
+        """`landed` / `closed` / `open` / `unknown` for the PR a `Depends-on:` names. Landed is judged by the host
+        AND by ancestry (the PR's head on the trunk), so a dependency the steward landed and then closed counts;
+        a number the host does not know is `unknown` (the dependent waits, with the reason in `status`)."""
+        try:
+            state = self.host.pr_state(number)
+            if state == "merged":
+                return "landed"
+            head = self.host.pr(number).head_sha
+        except HostError:
+            return "unknown"
+        if head and self.git.has_commit(head) and self.git.is_ancestor(head, self.trunk_ref):
+            return "landed"
+        return "closed" if state == "closed" else "open"
+
+    def _dependencies(self, pr: PullRequest) -> Tuple[List[int], List[int]]:
+        states = {number: self.dependency_state(number) for number in pr.depends}
+        return [n for n, s in states.items() if s == "landed"], [n for n, s in states.items() if s == "closed"]
+
+    def reject(self, pr: PullRequest, label: str, why: str) -> None:
+        for old in (self.s.label("queue_label"), self.s.label("retried_label")):
+            self._do(f"PR #{pr.number}: -label {old}", self.host.pr_remove_label, pr.number, old)
+        self._do(f"PR #{pr.number}: +label {label}", self.host.pr_add_labels, pr.number, [label])
+        self._do(f"PR #{pr.number}: comment (left the queue)", self.host.pr_comment, pr.number, f"merge-steward: {why}")
+        for issue in pr.issues:
+            self._return_issue(
+                issue, self.s.label("rework_label"), f"merge-steward: PR #{pr.number} left the queue — {why}"
+            )
+
+    def build(self, trunk: str, chosen: List[PullRequest]) -> List[Train]:
+        batch = utcnow().strftime("%Y%m%d%H%M%S") + trunk[:7]
+        prefix = str(self.s.steward["train_prefix"])
+        refspecs = [self.host.pr_head_refspec(pr.number) for pr in chosen]
+        self.git.run("fetch", "--no-auto-gc", self.s.remote, *refspecs)
+        scratch = Path(tempfile.mkdtemp(prefix="steward-train-"))
+        trains: List[Train] = []
+        in_batch = {pr.number for pr in chosen}
+        try:
+            self.git.run("worktree", "add", "--detach", str(scratch), trunk)
+            work = Git(scratch, str(self.s.steward["git_user_name"]), str(self.s.steward["git_user_email"]))
+            try:
+                landed_prs: List[int] = []
+                for pr in chosen:
+                    head = work.rev(f"refs/steward/pr/{pr.number}")
+                    if head != pr.head_sha:
+                        self.report.say(f"PR #{pr.number}: its head moved to {head[:12]} after CI — waits for CI on it")
+                        continue
+                    dropped = [d for d in pr.depends if d in in_batch and d not in landed_prs]
+                    if dropped:
+                        self.report.say(
+                            f"PR #{pr.number}: waits — its dependency {', '.join(f'#{d}' for d in dropped)} "
+                            "dropped out of this batch"
+                        )
+                        continue
+                    if self.s.verification == "watcher":
+                        found = closing_line(self.git.out("log", "--format=%B", f"{trunk}..{head}"))
+                        if found:
+                            self.reject(
+                                pr,
+                                self.s.label("failed_label"),
+                                f"the queue cannot take it: a commit message on it would make the host close an "
+                                f"issue when it lands, before the deploy check (`{found[:120]}`). Reword that "
+                                f"commit (`Refs #N`), push once, and enqueue again when its CI is green.",
+                            )
+                            continue
+                    prs_after = landed_prs + [pr.number]
+                    # No PR title in the message: a title such as "Fix #45: ..." would close #45 at landing.
+                    message = (
+                        f"Merge PR #{pr.number} (merge steward)\n\n"
+                        f"Steward-PR: #{pr.number}\n"
+                        f"Steward-PRs: {' '.join(f'#{n}' for n in prs_after)}\n"
+                        f"Steward-Issues: {' '.join(f'#{n}' for n in pr.issues) or 'none'}\n"
+                        f"Steward-Batch: {batch}\n"
+                        f"Steward-Base: {trunk}\n"
+                    )
+                    ok, conflicted = work.merge(pr.head_sha, message)
+                    if not ok:
+                        self.reject(
+                            pr,
+                            self.s.label("conflict_label"),
+                            "it conflicts with the trunk or with the PRs queued ahead of it in "
+                            + ", ".join(f"`{path}`" for path in conflicted[:20])
+                            + ". Integrate the trunk (conflicts go to code-merge-reviewer), push once, and enqueue "
+                            "again when its CI is green.",
+                        )
+                        continue
+                    landed_prs.append(pr.number)
+                    sha = work.rev("HEAD")
+                    trains.append(
+                        Train(batch, len(trains) + 1, f"{prefix}{batch}-{len(trains) + 1}", sha, list(prs_after), trunk)
+                    )
+            finally:
+                work.close()
+        finally:
+            self.git.run("worktree", "remove", "--force", str(scratch), check=False)
+            shutil.rmtree(scratch, ignore_errors=True)
+        if not trains:
+            return []
+        if not self.s.steward["parallel_trains"]:
+            trains = trains[-1:]
+        pushes = [f"{t.sha}:refs/heads/{t.branch}" for t in trains]
+        self._do(f"push trains {', '.join(t.branch for t in trains)}", self.git.run, "push", self.s.remote, *pushes)
+        for train in trains:
+            self._start_ci(train, f"start CI (PRs {' '.join(f'#{n}' for n in train.prs)})")
+        return trains
+
+    # -- the tick -------------------------------------------------------------------------------------
+    def tick(self) -> int:
+        trunk = self.fetch()
+        self.report.say(f"trunk {self.s.trunk} at {trunk[:12]}")
+        self.reverify(trunk)
+        if self.s.merge != "steward":
+            # The scheduled tick also runs while a project merges directly — the bootstrap PR that installs this
+            # workflow lands before config/delivery.json says "steward", and a direct + watcher project still
+            # needs `reverify`. It lands nothing and plans nothing, and it is green.
+            self.report.say(f"merge is {self.s.merge!r}: the queue is off — nothing to land or plan")
+            return EXIT_OK
+        if self.finish(trunk):
+            return EXIT_OK
+        trunk = self.fetch()
+        self.plan(trunk)
+        return EXIT_OK
+
+    # -- verdict --------------------------------------------------------------------------------------
+    def verdict(self, sha: str, conclusion: str, run_url: str, environment: str) -> int:
+        self.fetch()
+        if not self.git.has_commit(sha):
+            self.git.run("fetch", "--no-auto-gc", self.s.remote, sha, check=False)
+        if not self.git.has_commit(sha):
+            self.report.say(f"the deployed commit {sha} is not in this clone — no verdict")
+            return EXIT_ERROR
+        candidates = set(self.host.issues_with_label(self.s.label("awaiting_label")))
+        candidates |= set(self.host.issues_with_label(self.s.label("verification_failed_label")))
+        if not candidates:
+            self.report.say("no issue awaits verification")
+            return EXIT_OK
+        self._queued_refs = None
+        for number in sorted(candidates):
+            issue = self.host.issue(number)
+            landing = last_landing(issue.comments)
+            if landing is None:
+                self.report.say(f"issue #{number}: no landing line — skipped")
+                continue
+            pending = self._prs_in_flight(issue)
+            if pending:
+                self.report.say(f"issue #{number}: {pending} still in flight — verified once every PR has landed")
+                continue
+            if not self.git.has_commit(landing) or not self.git.is_ancestor(landing, sha):
+                self.report.say(
+                    f"issue #{number}: landed {landing[:12]}, not contained in {sha[:12]} — not covered yet"
+                )
+                continue
+            self.verify_issue(number, sha, conclusion, run_url, environment, issue)
+        return EXIT_OK
+
+    def _prs_in_flight(self, issue: Issue, exclude: Iterable[int] = ()) -> str:
+        """The PRs of this issue that have NOT landed yet, as text ("" when none): every PR its hand-off note
+        queued (`merge-steward: queued PR #n`) that is still open, and every queued PR that references it. An
+        issue delivered by two PRs is verified only when the second has landed too."""
+        if self._queued_refs is None:
+            self._queued_refs = {}
+            for pr in self.host.queued_prs(self.s.label("queue_label")):
+                for number in pr.issues:
+                    self._queued_refs.setdefault(number, set()).add(pr.number)
+        skip = set(exclude)
+        waiting = set(self._queued_refs.get(issue.number, set())) - skip
+        for text in issue.comments:
+            for found in QUEUED_RE.findall(text or ""):
+                if int(found) in skip or int(found) in waiting:
+                    continue
+                try:
+                    if self.host.pr_state(int(found)) == "open":
+                        waiting.add(int(found))
+                except HostError:
+                    continue
+        return ", ".join(f"PR #{n}" for n in sorted(waiting))
+
+    def verify_issue(
+        self, number: int, sha: str, conclusion: str, run_url: str, environment: str, issue: Optional[Issue] = None
+    ) -> None:
+        """Render one verdict. The marked COMMENT comes first and the label that makes the issue a candidate
+        (`awaiting-verification`) goes LAST, so an interrupted run leaves a candidate the next run completes:
+        with the mark present it skips the comment and repeats only the idempotent label and close steps."""
+        issue = issue or self.host.issue(number)
+        mark = VERDICT_MARK.format(conclusion=conclusion, sha=sha)
+        recorded = any(mark in comment for comment in issue.comments)
+        labels = self.s.steward
+        if (
+            recorded
+            and labels["awaiting_label"] not in issue.labels
+            and (conclusion != "success" or issue.state != "open")
+        ):
+            self.report.say(f"issue #{number}: verdict for {sha[:12]} already recorded")
+            return
+        if conclusion != "success":
+            if labels["verification_failed_label"] in issue.labels and labels["awaiting_label"] not in issue.labels:
+                return  # already returned on an earlier red deploy; the next green one verifies it
+            if not recorded:
+                self._do(
+                    f"issue #{number}: comment (verification failed)",
+                    self.host.issue_comment,
+                    number,
+                    f"merge-steward: the post-deploy check FAILED on `{sha[:12]}` ({environment}; "
+                    f"{run_url or 'no run link'}), a deploy that contains this issue's landing. Every issue landed "
+                    f"since the last green deploy is a suspect; this one stays open until a green deploy contains "
+                    f"its landing. {mark}",
+                )
+            self._issue_labels(number, add=[labels["verification_failed_label"], labels["rework_label"]])
+            self._do(
+                f"issue #{number}: release claim", self.host.issue_release_claim, number, labels["in_progress_label"]
+            )
+            self._issue_labels(number, remove=[labels["awaiting_label"]])
+            return
+        body, ticked_now = tick_post_deploy_items(issue.body)
+        if ticked_now:
+            self._do(f"issue #{number}: tick {ticked_now} post-deploy item(s)", self.host.issue_set_body, number, body)
+        ticked, total, open_items = checklist_counts(body)
+        started = claim_started(issue.comments)
+        lines = [
+            f"merge-steward: verified — the post-deploy check passed on `{sha[:12]}` ({environment}; "
+            f"{run_url or 'no run link'}), which contains this issue's landing.",
+            f"Checklist: {ticked}/{total} ticked. "
+            f"Time spent (claim to verification): {elapsed_text(started, utcnow())}.",
+        ]
+        done_labels = [labels["awaiting_label"], labels["verification_failed_label"], labels["rework_label"]]
+        if open_items:
+            lines.append(
+                "Left OPEN for a session to finish (the watcher closes only a complete checklist): "
+                + "; ".join(item[:80] for item in open_items[:10])
+            )
+            if not recorded:
+                self._do(
+                    f"issue #{number}: comment (verified, items open)",
+                    self.host.issue_comment,
+                    number,
+                    "\n".join(lines + [mark]),
+                )
+            self._issue_labels(number, add=[labels["verified_label"], labels["closeout_label"]])
+            self._do(
+                f"issue #{number}: release claim", self.host.issue_release_claim, number, labels["in_progress_label"]
+            )
+            self._issue_labels(number, remove=done_labels)
+            return
+        if not recorded:
+            self._do(
+                f"issue #{number}: comment (verified, closing)",
+                self.host.issue_comment,
+                number,
+                "\n".join(lines + [mark]),
+            )
+        self._issue_labels(number, add=[labels["verified_label"]])
+        self._do(f"issue #{number}: release claim", self.host.issue_release_claim, number, labels["in_progress_label"])
+        self._do(f"issue #{number}: close", self.host.issue_close, number)
+        self._issue_labels(number, remove=done_labels)
+
+    # -- agent-facing ---------------------------------------------------------------------------------
+    def check(self, number: int, allow_pending: bool = False) -> Tuple[bool, str]:
+        pr = self.host.pr(number)
+        landed, closed = self._dependencies(pr)
+        verdict, why = self.eligibility(pr, landed, pr.depends, closed)  # dependencies may still be queued ahead
+        if verdict == "eligible" or (allow_pending and verdict == "wait"):
+            return True, why or "eligible"
+        return False, why
+
+    def enqueue(self, number: int, allow_pending: bool) -> int:
+        ok, why = self.check(number, allow_pending)
+        if not ok:
+            self.report.say(f"PR #{number} NOT queued: {why}")
+            return EXIT_REFUSED
+        self._do(
+            f"PR #{number}: +label {self.s.label('queue_label')}",
+            self.host.pr_add_labels,
+            number,
+            [self.s.label("queue_label")],
+        )
+        self._do(f"PR #{number}: comment", self.host.pr_comment, number, QUEUED_LINE.format(pr=number))
+        try:
+            self._do("trigger a steward tick", self.host.trigger_tick)
+        except HostError as exc:  # the schedule picks it up anyway; a failed trigger only delays it
+            self.report.say(f"the tick trigger failed ({exc}); the scheduled tick will pick the PR up")
+        self.report.say(f"PR #{number} queued ({why})")
+        return EXIT_OK
+
+    def dequeue(self, number: int, reason: str) -> int:
+        self._do(
+            f"PR #{number}: -label {self.s.label('queue_label')}",
+            self.host.pr_remove_label,
+            number,
+            self.s.label("queue_label"),
+        )
+        self._do(f"PR #{number}: comment", self.host.pr_comment, number, f"merge-steward: dequeued — {reason}")
+        return EXIT_OK
+
+    def status(self, as_json: bool) -> int:
+        trunk = self.fetch()
+        queued = sorted(self.host.queued_prs(self.s.label("queue_label")), key=lambda p: (p.enqueued_at, p.number))
+        rows = []
+        for pr in queued:
+            landed, closed = self._dependencies(pr)
+            verdict, why = self.eligibility(pr, landed, [], closed)
+            rows.append({"pr": pr.number, "state": verdict, "why": why, "enqueued_at": pr.enqueued_at})
+        batches = {
+            batch: [
+                {"train": t.index, "branch": t.branch, "prs": t.prs, "ci": self.host.ci_state(t.branch, t.sha)[0]}
+                for t in trains
+            ]
+            for batch, trains in self.trains_in_flight().items()
+        }
+        awaiting = self.host.issues_with_label(self.s.label("awaiting_label"))
+        data = {"trunk": trunk, "queue": rows, "batches": batches, "awaiting_verification": awaiting}
+        if as_json:
+            print(json.dumps(data, indent=2))
+        else:
+            print(
+                f"trunk {self.s.trunk} {trunk[:12]}; {len(rows)} queued; {len(batches)} batch(es) in flight; "
+                f"{len(awaiting)} issue(s) awaiting verification"
+            )
+            for row in rows:
+                print(f"  PR #{row['pr']}: {row['state']}{' — ' + row['why'] if row['why'] else ''}")
+            for batch, trains in batches.items():
+                print(f"  batch {batch}: " + ", ".join(f"train {t['train']} {t['ci']}" for t in trains))
+        return EXIT_OK
+
+
+# ---------------------------------------------------------------------------------------------- CLI
+
+
+def read_token(args: argparse.Namespace, settings: Settings) -> str:
+    if args.token_stdin:
+        token = sys.stdin.readline().strip()
+    elif args.token_file:
+        token = Path(args.token_file).read_text(encoding="utf-8").strip()
+    elif settings.host == "github":
+        path = ROOT / "credentials" / "github-pat.txt"
+        token = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    else:
+        path = ROOT / "config" / "gitlab.json"
+        token = str(json.loads(path.read_text(encoding="utf-8")).get("token", "")) if path.is_file() else ""
+    if not token or "PASTE" in token:
+        raise ConfigError("no token: pass --token-stdin / --token-file, or fill the wrapper's credential file")
+    return token
+
+
+def make_host(settings: Settings, token: str, git: Git) -> HostAPI:
+    if settings.host == "github":
+        return GitHubAPI(token, settings, git)
+    # The GitLab job token cannot push: the steward's project access token goes to git as an HTTP header.
+    basic = base64.b64encode(f"oauth2:{token}".encode("utf-8")).decode("ascii")
+    git.use_http_header(f"Authorization: Basic {basic}")
+    return GitLabAPI(token, settings, git)
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="merge_steward.py", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--config", default=str(CONFIG_PATH))
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--token-stdin", action="store_true", help="read the API token from the first stdin line")
+    source.add_argument("--token-file", help="read the API token from this file")
+    sub = parser.add_subparsers(dest="command", required=True)
+    tick = sub.add_parser("tick")
+    tick.add_argument("--run-url", default="")
+    tick.add_argument("--dry-run", action="store_true")
+    verdict = sub.add_parser("verdict")
+    verdict.add_argument("--sha", required=True)
+    verdict.add_argument("--conclusion", required=True, choices=("success", "failure", "auto"))
+    verdict.add_argument("--run-url", default="")
+    verdict.add_argument("--environment", default="dev")
+    verdict.add_argument("--gitlab-pipeline", default="")
+    verdict.add_argument("--deploy-jobs", default="")
+    verdict.add_argument("--dry-run", action="store_true")
+    for name in ("enqueue", "check-pr"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("pr", type=int)
+        cmd.add_argument("--allow-pending", action="store_true")
+        cmd.add_argument("--dry-run", action="store_true")
+    dequeue = sub.add_parser("dequeue")
+    dequeue.add_argument("pr", type=int)
+    dequeue.add_argument("--reason", default="taken out of the queue by its author")
+    dequeue.add_argument("--dry-run", action="store_true")
+    record = sub.add_parser("record-landing")
+    record.add_argument("pr", type=int)
+    record.add_argument("--dry-run", action="store_true")
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true")
+    return parser.parse_args(list(argv))
+
+
+def main(argv: Sequence[str]) -> int:  # noqa: C901 — one dispatch per subcommand
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+    args = parse_args(argv)
+    try:
+        settings = load_settings(Path(args.config))
+    except ConfigError as exc:
+        print(f"merge_steward: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if settings.merge != "steward" and args.command == "enqueue":
+        print(
+            f"merge_steward: config/delivery.json says merge={settings.merge!r}; the steward is not this project's "
+            "merge path (set merge to 'steward' to enable it)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    git = Git(ROOT, str(settings.steward["git_user_name"]), str(settings.steward["git_user_email"]))
+    try:
+        token = read_token(args, settings)
+        host = make_host(settings, token, git)
+        report = Report(dry_run=bool(getattr(args, "dry_run", False)))
+        steward = Steward(settings, git, host, report, getattr(args, "run_url", ""))
+        if args.command == "tick":
+            return steward.tick()
+        if args.command == "verdict":
+            conclusion = args.conclusion
+            if conclusion == "auto":
+                conclusion = host.deploy_conclusion(args.gitlab_pipeline, args.deploy_jobs.split(","))
+                if conclusion == "none":
+                    report.say("no verdict: the deploy did not run to a result (superseded, cancelled or skipped)")
+                    return EXIT_OK
+            return steward.verdict(args.sha, conclusion, args.run_url, args.environment)
+        if args.command == "enqueue":
+            return steward.enqueue(args.pr, args.allow_pending)
+        if args.command == "check-pr":
+            ok, why = steward.check(args.pr, args.allow_pending)
+            print(("acceptable: " if ok else "NOT acceptable: ") + why)
+            return EXIT_OK if ok else EXIT_REFUSED
+        if args.command == "dequeue":
+            return steward.dequeue(args.pr, args.reason)
+        if args.command == "record-landing":
+            return steward.record_landing(args.pr)
+        return steward.status(args.json)
+    except ConfigError as exc:
+        print(f"merge_steward: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except (GitError, HostError, OSError) as exc:
+        print(f"merge_steward: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        git.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

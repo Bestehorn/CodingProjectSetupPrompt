@@ -2,7 +2,7 @@
 description: Restart a stalled run — give a short status update, then resume the work and carry it to completion without stopping again. Voids any instruction to pause, check in, or produce intermediate summaries.
 argument-hint: "[optional: what to work on, if the session's state is unclear]"
 disable-model-invocation: true
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, CronCreate, CronList, CronDelete, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 disallowed-tools: AskUserQuestion
 ---
 
@@ -40,8 +40,8 @@ before the first line of real work; a terminal value must be the WHOLE value of 
 **This session may be a NEW session resuming a PREVIOUS session's work.** In that case the
 registry entry keyed by THIS `session_id` is a freshly seeded run (`Status: NOT_STARTED`), and
 the work you are resuming is recorded under the EARLIER run's directory. Read the earlier
-run's `resume_state.md` for the phase, issue, branch, worktree and PR, then **carry those
-values forward into THIS session's registry-derived state file** by appending a block to it —
+run's `resume_state.md` for the mode, phase, issue, branch, worktree and PR, then **carry those
+values — `MODE` included — forward into THIS session's registry-derived state file** by appending a block to it —
 because that is the file the gates judge this session on. If the earlier run stopped BETWEEN
 issues and so recorded no issue, also record `MODE: ISSUE_LOOP` in that block: the loop gate
 holds a turn only while the run has claimed tracked work, and the seeded
@@ -53,6 +53,12 @@ match on the recorded `SESSION_ID`, the `.locks/issue-<N>.lock` owner records an
 registry, and treat a dead run's lock per the stale-reclaim conjunction in
 `.claude/docs/run-identity.md` §1 (heartbeat past its bound AND the worktree pointer no
 longer resolves AND the run's status is terminal — archive, never delete).
+
+**Arm the run watchdog if this process has none** (`continuous-work.md`): `CronList`; with no
+`[run-watchdog]` entry, `CronCreate` it with the cron, flags and prompt the session-start context
+printed. A `[run-watchdog]` tick that finds the work finished, handed off or waiting on a recorded
+`AWAITING_USER` answers `idle` and ends the turn; one that finds claimed, unfinished work runs this
+command's steps from here on.
 
 **Then re-establish your place from disk, not from memory.** Your conversational context may
 have been compacted since you started, so do not trust recall. The recorded state is a claim,
@@ -74,8 +80,12 @@ not the truth — **reality wins; reconcile the file to it**, never the reverse:
    otherwise infer it — do not ask.
 5. Resume the recorded outer phase, re-acquiring or refreshing this run's issue lock and
    registry heartbeat: mid-FIX → re-read the worktree spec state and continue the embedded
-   pipeline; PR open with CI running → resume monitoring; merged but not cleaned → resume at
-   MERGE_CLEANUP; issue closed → RESOLVE then the next iteration; between issues →
+   pipeline; PR open with CI running → re-issue the foreground bounded wait (`wait-run <id>
+   --timeout-seconds 540`); PR green but not yet enqueued, or merged with no landing line →
+   HAND_OFF (`.claude/docs/delivery.md` §3); handed off → that issue is done for this session:
+   close-out (single issue) or LOAD_ISSUES (a loop); returned as `needs-rework` /
+   `queue-failed` → the issue is yours again, fix and re-enqueue; merged but not cleaned →
+   resume at MERGE_CLEANUP; issue closed → RESOLVE then the next iteration; between issues →
    LOAD_ISSUES.
 
 **Record why the run stopped.** Before resuming, append a `DL-NNN` entry to this run's
@@ -83,7 +93,9 @@ decision log stating what the last recorded phase was, what the evidence shows a
 happened, and the mechanical reason the previous turn ended — a state file at a path no hook
 reads, a state file that claimed NO tracked work (`CURRENT_ISSUE: none`, `MODE: unset`, no
 `CURRENT_SPEC`), which leaves the loop gate with nothing to hold and makes it allow every
-turn-end, a terminal `Phase` recorded prematurely, an escalation described in chat but never
+turn-end, an API error that ended the turn (`runs/<run-id>/stop_failure.json`, written by the
+`stop-failure-recorder` gate: the error class and the time — no Stop hook ran for that turn, so
+`.hook-decisions/` is silent about it), a terminal `Phase` recorded prematurely, an escalation described in chat but never
 written as an `AWAITING_USER` line, an `ALLOW_AT_CAP` line in
 `.claude/agent-state/issue-work-orchestrator/.hook-decisions/`, or an unproven stop with no
 mechanical cause at all. `.hook-decisions/` is the log to read for this: it carries one line
@@ -96,9 +108,11 @@ state above is what re-arms the brake for the rest of this run — do not hand-d
 under `.stop-gate-counters/`.
 
 **Then continue the recorded phase to a terminal state.** Never restart completed work and
-never redo a step the evidence shows is done. If an issue is in flight, drive it to merged
-and closed (claim still held, spec artifacts committed, tests green with captured evidence,
-CI green, worktree and branch torn down, issue closed). Honor the agent definition's mandates
+never redo a step the evidence shows is done. If an issue is in flight, drive it to its
+definition of done — merged and closed, or, under `config/delivery.json`'s steward or watcher
+mode, handed off (claim still held, spec artifacts committed, tests green with captured
+evidence, the PR's CI green, worktree and local branch torn down, then the issue closed or its
+hand-off note posted). Honor the agent definition's mandates
 throughout: complete command output (`no-output-shortening.md`), evidence for every claim and
 never assertion (`no-guessing.md`; the implementer never certifies its own work), no
 workarounds, wrapper-only remote operations, delegate EVERY conflict to `code-merge-reviewer`,
@@ -112,12 +126,14 @@ after every step, re-read that state afterwards, and keep going.
 
 **The only legitimate stops** are the four Proven Exceptions in
 `.claude/rules/continuous-work.md`, each requiring proof that it applies and that you
-exhausted the alternatives. If one genuinely applies, state it in two sentences WITH your
-recommendation, then keep working on everything that does not depend on the answer.
+exhausted the alternatives. If one genuinely applies, state it in that rule's five-line shape
+(one line of context, the options, your recommendation first), then keep working on everything
+that does not depend on the answer.
 
 Otherwise: the work is not finished, so do not stop. Take the next step.
 
 **If you are forced to stop anyway and hand control back**, close with ONE line naming the
 strongest available fix — a `/goal` completion condition, e.g.
-`/goal issue 77 is merged and closed with green CI` (`.claude/rules/continuous-work.md`) —
+`/goal issue 77 is merged and closed with green CI` (steward mode: `/goal PR 77 is enqueued with
+green CI and issue 77 carries the hand-off note`; `.claude/rules/continuous-work.md`) —
 and only when you are genuinely ending the turn, never as a substitute for continuing.

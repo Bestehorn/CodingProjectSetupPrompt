@@ -62,7 +62,11 @@ reason, not delegated to a person.
    dual project) holds one line, `<pinned framework sha> <YYYY-MM-DD>`.
 8. Verify per the setup prompt's checklist (every check run by you, in this worktree), push,
    open a PR against the default branch, fix every CI failure until CI is green, then merge
-   the PR yourself.
+   the PR yourself. Where `config/delivery.json` already says `"merge": "steward"`, ENQUEUE it
+   instead (`enqueue-pr`; the `merge-steward` gate refuses a direct merge) and run step 9 once
+   its `merge-steward: landed` line is on the PR; if it has not landed within this run, step 9
+   is the PR's single post-merge step. The update that INSTALLS the steward merges directly
+   (see "Delivery" below).
 9. Bring THIS machine's main checkout forward. After the merge, fetch; when the main checkout
    has no uncommitted changes and its HEAD is an ancestor of the merged trunk, run
    `git -C <main checkout> merge --ff-only <remote>/<default>` — the one sanctioned move of
@@ -111,7 +115,11 @@ of this in the same PR, in this order, and record the before/after sizes:
    path, the status) while appending the full row verbatim to the month's archive;
    `reconcile --apply` does the same on every run, so the pre-commit hook keeps the row
    budget from then on. A project guard that keys on a row's status must read the active
-   ledger only — the archived copy carries the same status.
+   ledger only — the archived copy carries the same status. Add `docs/findings-ledger.md
+   merge=union`, `docs/lessons-learned.md merge=union` and `docs/archive/*.md merge=union` to
+   `.gitattributes` in the same commit: parallel PRs that each append a row no longer conflict,
+   and `reconcile` drops the exact duplicate row a union merge can carry. Rows are committed in
+   the change they came from, before its push — never a ledger-only PR after it.
 4. **The map is a map.** Rewrite `docs/forLLMConsumption.md` to ≤ 40,000 bytes: purpose,
    architecture in brief, where things are, the invariants a change must respect, how to
    run/test/deploy, pointers. Move every section of detail into a topic doc under `docs/`
@@ -123,7 +131,7 @@ of this in the same PR, in this order, and record the before/after sizes:
    with its rule, because `proportionality.md` forbids measurements in specs and the
    citation form is now symbol-and-path. Record each retirement in the PR.
 6. **The hooks are Python.** Install `hooklib.py`, `hooks.py`, every `gate_*.py`,
-   `red_for_right_reason.py` and `tests/` into `.claude/hooks/` (Kiro: the same modules plus
+   `red_for_right_reason.py`, `wait_for.py`, `supervisor.py` and `tests/` into `.claude/hooks/` (Kiro: the same modules plus
    `kiro_hooks.py` into `.kiro/hooks-bin/`, and the agent descriptors from `cli-agents/`,
    whose `hooks` blocks already carry the launcher), replace the `hooks` block of
    `.claude/settings.json` with the output of `python .claude/hooks/hooks.py registration`
@@ -169,8 +177,10 @@ of this in the same PR, in this order, and record the before/after sizes:
    inside an entry, and was killed at the harness cap on real backlogs. A CI file that
    spells out its own commands instead of calling `run_checks.py` must run the hook suites
    itself (`python -m pytest .claude/hooks/tests -q -o addopts= -p no:cacheprovider`).
-   Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run`, per
-   the template) if absent. Where the project deploys, the pipeline
+   Implement the blocking wait in the project's wrapper (`pipeline wait` / `wait-run` with
+   `--timeout-seconds` and the 0/10/11 exit codes, per the template) if absent: since
+   2026-10-10 the agent runs it in the FOREGROUND, bounded at 540 s and re-issued on exit 11,
+   because a background wait dies with the session's process (REVISION_NOTICE item 10). Where the project deploys, the pipeline
    needs a post-deploy job that runs the committed end-to-end script; add it if end-to-end
    scripts exist that only an agent used to run by hand. Shape the job to what the project
    can afford to run on every merge: a check that is slow (a training run), externally
@@ -189,7 +199,9 @@ of this in the same PR, in this order, and record the before/after sizes:
    harness does, so a hook that cannot start on this host is caught here and not in a
    transcript; a project that extends the hooks runs its own tests too — parity is the
    framework suite AND the project's own `tests/` modules passing in that same invocation;
-   `python scripts/suite_semaphore.py selftest` passes; grep `.claude/` and
+   `python scripts/suite_semaphore.py selftest` passes;
+   `python scripts/run_tests.py test/test_merge_steward.py -o addopts=` passes (slow where git
+   is slow — give it the time, never a shortened run); grep `.claude/` and
    `.kiro/` for `Type1`/`Type2` (outside the
    issue-housekeeping agent, whose text maps them to tiers) and for `sleep` — a survivor is an
    old copy preserved over the new one. A Kiro tree the project keeps as-is (marker file
@@ -199,6 +211,51 @@ of this in the same PR, in this order, and record the before/after sizes:
 Spec directories already committed under `.claude/specs/` stay where they are: they are
 history, they are not loaded, and moving them would break the citations in merged work.
 Exclude them from any repository-wide scan that reads their contents.
+
+## Delivery: the merge steward, the deploy and the verdict watcher (2026-10-26)
+
+Install per the setup prompt's Part 7.1. On a project that already runs, the ORDER matters, and
+it is the order `.claude/hooks/MIGRATION.md` §9 gives:
+
+1. **Files and registration**, in this update's hook commit: the `hooks/*.py` copy now also
+   brings `gate_merge_steward.py`, `gate_stop_failure.py`, `wait_for.py` and `supervisor.py`;
+   add `.claude/docs/delivery.md` and `.claude/commands/supervise.md`; re-paste the block
+   `hooks.py registration` prints — it now registers `StopFailure`, and without the paste the
+   recorder never runs. The wrapper gains `enqueue-pr`, `dequeue-pr` and `queue-status`,
+   delegating to `scripts/merge_steward.py` (setup prompt Part 5.3). Nothing changes behaviour
+   until `config/delivery.json` says so.
+2. **PR 1 — this update.** Install `scripts/merge_steward.py`, `test/test_merge_steward.py`, the
+   steward workflow (`{{CI_WORKFLOW_NAME}}` = the `name:` of the CI workflow; GitLab: the
+   `merge-steward` and `steward-wake` jobs and the 30-minute schedule), `workflow_dispatch` on
+   the CI workflow, a trunk CI that a later push can no longer cancel
+   (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`), the eleven labels, and a
+   `config/delivery.json` that says `"merge": "direct"`, `"verification": "session"` — today's
+   behaviour — with `host`, `trunk` and the workflow names filled in, because the tick reads them
+   (an absent file defaults the host to GitHub). This PR merges DIRECTLY (step 8): the steward is
+   not live until its workflow is on the default branch, and under `direct` the
+   `merge-steward` gate allows everything and a tick lands nothing and runs green.
+3. **PR 2 — the switch**, once a tick has run green on the default branch (`python
+   scripts/merge_steward.py status`): `"merge": "steward"`, `"verification": "watcher"`
+   (`"none"` where nothing deploys), and on GitHub the deploy workflow's triggers (the steward's
+   dispatch plus the trunk push), per-environment concurrency (`cancel-in-progress: false`, no
+   `queue: max`), the `guard` job and the `verdict` job from the template — keeping the project's own deploy steps. It is the last PR merged
+   directly. Open and merge it in this run when that tick has run green after step 8;
+   otherwise its exact diff is the PR's recorded post-merge step.
+   Recommended: go straight to `steward` + `watcher`. It is what stops the trunk-run
+   cancellations, the post-merge re-syncs and the sessions waiting for deploys; the interim
+   `direct` + `watcher` ends only the last of the three, while every merge still races the
+   others. `direct` stays right only for a repository with a single worker.
+4. **No install step for the run watchdog**: the session-start context prints the exact
+   `CronCreate` to every registered run, and the issue-loop brake reminds a run that has none.
+5. **`/supervise` reaches a session in bypass mode only where the operator's USER-level
+   settings say `crossSessionInbound: accept`** — a project setting can only tighten that, so
+   this update cannot set it. Say in the PR whether it is set; without it a `due` resume
+   request reports `unreachable`, which is still the record a person acts on.
+
+Nothing here weakens a check: each PR still needs its own green CI before the queue takes it,
+the train re-runs the full CI on the exact state that lands, every TDD capture, review and gate
+is unchanged, and an issue closes only after a green post-deploy check on a commit that contains
+its landing, with its counted checklist complete.
 
 ## Reaching the sessions already running
 
@@ -211,13 +268,17 @@ telling: `.claude/hooks/REVISION_NOTICE.md` is printed inside the contract hands
 registered run's next turn-end and at every compaction, and the freshness check refuses a
 registered run once per later revision with the fast-forward instruction. Leave both
 channels intact: install `REVISION_NOTICE.md` and `CONTRACT_VERSION` as-is, and do not
-delete the notice before its `Valid-until` date.
+delete the notice before its `Valid-until` date. The 2026-10-26 revision
+(`CONTRACT_VERSION` `2026.10.26-delivery-5`, REVISION_NOTICE item 11) reaches a live session
+the same way; a process that started before it has no run watchdog until the brake's refusal
+names the `CronCreate` that arms one.
 
 ## Deliverable
 
 A merged PR with green CI, or the "already current" report of step 2. The PR body carries
 the setup report in the setup prompt's format, the delta table, the pinned framework commit
-(and the newer HEAD, if the framework moved), every flagged conflict, the memory-compile
+(and the newer HEAD, if the framework moved), the delivery mode and the PR 2 status,
+whether the operator's `crossSessionInbound` is set, every flagged conflict, the memory-compile
 table (each capped file: before, after, cap; rows and lessons archived/enforced/promoted;
 rule incidents moved; retired machinery), the hook parity evidence, and the single
 post-merge step if the main checkout could not be fast-forwarded. Then remove your worktree

@@ -1,14 +1,15 @@
 ---
-description: End-of-session close-out — confirm the assigned work is actually complete INCLUDING every task item on its issue (reopening an issue closed over unfinished items), wait out any running CI, clean up this session's own files, temp residue, worktree/branch/lock and claim markers, record a terminal Phase, then report one fixed nine-row verdict table.
+description: End-of-session close-out — confirm the assigned work is actually complete (merged and closed, or handed off to the merge steward per config/delivery.json) INCLUDING every task item on its issue (reopening an issue closed over unfinished items), wait out the PR's own running CI in the foreground, clean up this session's own files, temp residue, worktree/branch/lock and claim markers, record a terminal Phase, then report one fixed nine-row verdict table.
 argument-hint: "[nothing]"
 disable-model-invocation: true
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, AskUserQuestion, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, AskUserQuestion, CronList, CronDelete, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
-<!-- archive_session is allowlisted because the final step invokes it after an explicit go-ahead.
-     It is an MCP tool and may be absent (plain CLI): then RECOMMEND archiving rather than reporting a failure.
-     AskUserQuestion is allowlisted for ONE purpose — a blocker that genuinely needs a user decision, and
-     the archive offer — never to ask permission to do the mandatory remediation. See "Asking" below. -->
+<!-- archive_session is allowlisted because the final step invokes it on CLOSE: YES, without asking
+     (archiving is reversible — the sidebar unarchives — and the measured wait on "Archive this session?" was
+     71 h in two weeks). It is an MCP tool and may be absent (plain CLI): then RECOMMEND archiving rather than
+     reporting a failure. AskUserQuestion is allowlisted for ONE purpose — a blocker that genuinely needs a
+     user decision — never to ask permission to do the mandatory remediation. See "Asking" below. -->
 
 Answer **"can we close this session?"** — by finishing anything unfinished, not by describing
 it. Steps 1–3 and the remediation in steps 5–7 and 9 may CHANGE things (that is the point);
@@ -53,6 +54,14 @@ deciding number).
    (issue updated, spec artifacts committed, docs touched where the change requires it —
    the issue's own task items are Step 2's subject and are checked there, mechanically).
    Read the issue and `runs/<run-id>/resume_state.md` rather than trusting recall.
+   - **Handed off is done — for this session.** Where `config/delivery.json` says `merge: steward` (or
+     `verification: watcher`), an issue whose PR is ENQUEUED with its own CI green (or merged with its
+     landing recorded) and whose hand-off note carries the `merge-steward:` lines (`.claude/docs/delivery.md`
+     §3) has met the session's definition of done: the train, the landing, the deploy and the post-deploy
+     check belong to the steward and the verdict watcher, so "green for the merged SHA" reads "green for
+     the PR's head" here. Confirm it mechanically (`queue-status` lists the PR, or the issue carries the
+     `landed` line); a PR that is NOT in the queue (`queue-failed`, `queue-conflict`, `needs-rework`) is
+     unfinished work — finish it per the bullet below.
    - **If anything is missing, FINISH IT NOW** — `continue-work` semantics: resume the
      recorded phase and drive it to a terminal state. Do not report a gap and stop; do not
      ask whether to finish it. The answer is always yes, and `continuous-work.md` governs.
@@ -83,7 +92,9 @@ deciding number).
      ISSUE ITSELF: (a) a deferral recorded on the issue BEFORE this close-out, naming its
      reason and its routing per `issue-filing-discipline.md` (fixed here / a findings-ledger
      row / ONE gated issue); or (b) a Proven Exception from `continuous-work.md`, stated
-     with its proof. **A deferral written DURING close-out to make this gate pass is not a
+     with its proof; or (c) on a HANDED-OFF issue, the item carries the suffix `(post-deploy)`
+     because only a deploy can prove it — the verdict watcher ticks exactly those, and an issue
+     whose other items are open is never handed off. **A deferral written DURING close-out to make this gate pass is not a
      deferral — it is unfinished work renaming itself. Finish the item instead.**
    - One carve-out: an issue this session closed ADMINISTRATIVELY (duplicate, obsolete,
      already resolved elsewhere, won't-do) is outside this gate — its unticked items were
@@ -124,11 +135,14 @@ deciding number).
 **Step 3 — Is CI still running? (wait for it; it is part of the work)**
    Pending CI means the work is not finished, so this precedes every cleanliness check.
    - Determine your own run: the PR/branch from your run state, via the wrapper script
-     (`use-git-wrapper-scripts.md`) — never `gh`/`glab`/`curl`.
-   - If a run is non-terminal, WAIT and monitor to a terminal state. Do NOT use `watch-run`
-     (no clock, no timeout — it cannot evidence elapsed time and will hold the terminal).
-     Take repeated `get-run <id>` captures on a stated interval, and report only the latest
-     status plus elapsed.
+     (`use-git-wrapper-scripts.md`) — never `gh`/`glab`/`curl`. Your run is the PR's own; a
+     handed-off PR's train, the trunk and the deploy are the steward's (Step 1) and are not
+     waited for here.
+   - If a run is non-terminal, WAIT for it in the FOREGROUND, bounded: `wait-run <id>
+     --timeout-seconds 540` (GitLab: `pipeline wait <id> --timeout-seconds 540`) with the Bash
+     tool's 600000 timeout, re-issued while it exits 11 — never `watch-run` (no clock, no
+     timeout), never a `sleep`, never a background task you then wait for
+     (`parallel-by-default.md`). Row 3 carries the verdict and the elapsed total.
    - Red CI is the debugging loop, not a close-out: enumerate EVERY failing job and every
      failure inside it, group by root cause, fix them ALL, and push once
      (`remote-ci-must-pass.md`, `ci-owns-the-test-suite.md`). If CI cannot run at all, that
@@ -161,11 +175,12 @@ deciding number).
       removed, and randomized `cdk.out<hash>` assemblies accumulate in the OS temp dir (one
       report reached 170 GB in two days). An aborted bundling also leaves `bundling-temp-*` /
       empty `asset.<hash>` that makes the NEXT deploy fail, so this is correctness, not just
-      disk. Run the reaper with `run_in_background: true` — its default 28-minute budget
-      fits the background form's 30-minute cap; a foreground call must pass
-      `--budget-minutes 9` and the maximum timeout:
+      disk. Run the reaper in the FOREGROUND with `--budget-minutes 9` and the Bash tool's
+      maximum timeout (600000), re-running while it exits 3 — never as a background task you
+      then wait for: a background task dies with the session's process and its result never
+      arrives (the 28-minute default budget is for an unattended job):
       ```bash
-      python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply
+      python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply --budget-minutes 9
       ```
       It removes your session-scoped temp contents wholesale (provably yours) and, in the
       shared OS temp dir, only known residue patterns untouched for 30+ minutes whose rename
@@ -187,7 +202,12 @@ deciding number).
       the settings file does not parse — name which in that same cell.
 
 **Step 6 — Your worktree, branch, lock AND claim markers are gone**
-   Confirm the worktree and branch this session created were removed after merge. Tear down a
+   Confirm the worktree and branch this session created were removed after merge (or after the
+   hand-off — asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty).
+   A handed-off PR's REMOTE branch stays until the steward lands it, and so does the issue's
+   tracker claim — the steward or the watcher releases it when the issue comes back; release only
+   this run's local lock. `CronDelete` this session's run watchdog (the `[run-watchdog]` entry of
+   `CronList`), so a finished session is not woken again. Tear down a
    per-worktree venv FIRST if one exists (locked DLLs otherwise block removal on Windows);
    `git worktree remove` plain, `--force` only after confirming no uncommitted work would be
    lost; then delete the branch and verify with `git worktree list`.
@@ -203,6 +223,9 @@ deciding number).
    Report only your own; say nothing about anyone else's.
 
 **Step 7 — Issues updated and closed with evidence**
+   A HANDED-OFF issue is not closed by the session: its hand-off note is the record, the verdict
+   watcher closes it after a green post-deploy check (`.claude/docs/delivery.md` §4), and row 7's
+   Detail says `#412 handed off — watcher closes`.
    For each issue this run finished: a final comment linking the merged PR and the evidence,
    the checklist fully ticked — the count re-read after whatever Step 2 made you finish, not
    the count you started with — time spent recorded, and the issue closed via the wrapper.
@@ -289,7 +312,7 @@ else ever appears on that line.
 worked or filed, ascending by number, `- none` if there were none:
 
 ```
-- #<n> <worked → closed | worked → left open | filed> — <≤70 chars: PR, evidence, or why>
+- #<n> <worked → closed | worked → handed off | worked → left open | filed> — <≤70 chars: PR, evidence, or why>
 ```
 
 One line each, no sub-bullets, no grouping headers. An unticked task item that legitimately
@@ -312,12 +335,12 @@ an issue closed over unfinished items, deleting your own leftovers, tearing down
 worktree — those are obligations, not questions, and Steps 1–2 have already settled them.
 "Shall I continue?" stays forbidden. If nothing is blocked, make no call.
 
-**When `CLOSE: YES`**, offer archiving through the same mechanism — one `AskUserQuestion`
-("Archive this session now?" → `Archive` `(Recommended)` / `Keep open`) — and call
-`archive_session` with `session_id: "self"` only on an explicit Archive. If that MCP tool is
+**When `CLOSE: YES`**, archive the session WITHOUT asking: after the reply, call `archive_session`
+with `session_id: "self"` (archiving is reversible; an "Archive this session now?" question was
+measured waiting 71 h in two weeks). On `CLOSE: NO` nothing is archived. If that MCP tool is
 absent (a plain CLI session has no session-management server), append exactly this one line
-instead of asking: `Archive: recommended — no session tool in this session.` That line is the
-only permitted addition to the template.
+instead: `Archive: recommended — no session tool in this session.` That line is the only
+permitted addition to the template.
 
 No AI attribution in any comment, commit or issue text (`no-ai-attribution.md`). Never touch
 `.kiro/`.

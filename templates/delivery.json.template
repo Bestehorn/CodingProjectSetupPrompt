@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy to config/delivery.json (TRACKED). How this project lands and verifies changes; read by scripts/merge_steward.py, the git wrapper, the merge-steward gate and the agents (.claude/docs/delivery.md). merge: 'steward' (workers ENQUEUE with the wrapper's enqueue-pr; only the merge steward writes the trunk) or 'direct' (approve-pr + merge-pr, today's path). verification: 'watcher' (the deploy pipeline's last job verifies by ancestry and closes the issue; the worker hands off), 'session' (the worker waits for the post-merge pipeline itself, today's path) or 'none' (no deploy: the landing is the final verdict). Delete a key under 'steward' to take its default; an unknown key is an error.",
+  "merge": "steward",
+  "verification": "watcher",
+  "trunk": "main",
+  "host": "{{HOST}}",
+  "remote": "origin",
+  "steward": {
+    "batch_size": 4,
+    "parallel_trains": true,
+    "require_pr_ci": true,
+    "require_approval": false,
+    "retry_culprit_once": true,
+    "ci_workflow": "ci.yml",
+    "deploy_workflow": "{{DEPLOY_WORKFLOW_FILE}}",
+    "steward_workflow": "merge-steward.yml",
+    "train_prefix": "steward/train-",
+    "in_progress_label": "in-progress"
+  }
+}

@@ -3,8 +3,9 @@
 The Kiro CLI twin of the Claude Code
 [`issue-work-orchestrator`](../../claude-agents/issue-work-orchestrator/README.md): an
 autonomous, main-session agent that works a project's entire open-issue backlog end to
-end — select, claim, fix through the embedded spec/TDD engine, prove, PR, drive CI green,
-merge, clean up, close, repeat. The agent definition is
+end — select, claim, fix through the embedded spec/TDD engine, prove, PR, drive its CI green,
+hand it to the merge steward (or merge it — `config/delivery.json`, `.kiro/docs/delivery.md`),
+clean up, close or hand off, repeat. The agent definition is
 [`issue-work-orchestrator.md`](issue-work-orchestrator.md); the Kiro agent config is
 [`KiroCLIAgent-IssueWorkOrchestrator.json`](KiroCLIAgent-IssueWorkOrchestrator.json).
 The lifecycle, the standing disciplines, the escalation contract, and the fixed Completion
@@ -32,9 +33,17 @@ gone with the scripts:
 - The `issue-loop-gate` holds the turn while the run has CLAIMED tracked work — a
   non-placeholder `CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an
   orchestrator mode — and releases only on an explicitly idle `Status`, a terminal `Phase`
-  **or** `Status` (whole-value), or a substantive `AWAITING_USER`. Its polarity is inverted:
-  an unrecognised `Status` is work in flight. `WORKABLE_ISSUES_REMAIN` selects the refusal's
-  wording and gates nothing.
+  **or** `Status` (whole-value), `Phase: HANDED_OFF` on a run whose `MODE` starts with `SINGLE_ISSUE`
+  (a single-issue run whose PR the merge steward now owns), or a substantive `AWAITING_USER`.
+  Its polarity is inverted: an unrecognised `Status` is work in flight.
+  `WORKABLE_ISSUES_REMAIN` selects the refusal's wording and gates nothing.
+- The `merge-steward` `preToolUse` gate runs here too (matcher `execute_bash`): where
+  `config/delivery.json` says `"merge": "steward"` it refuses `merge-pr` / `mr merge`, direct
+  host merges and any push to the trunk, so only the steward lands what its train tested.
+- What does NOT carry over, by harness: Kiro has no StopFailure event (the
+  `stop-failure-recorder` gate is installed but never invoked), no session cron (no run
+  watchdog), and its stop payload names no transcript (`no-idle-wait` allows). A turn an API
+  error ends is resumed by the operator with `@continue-work`.
 - Identity resolves through three session-keyed rungs (the registry's `state_dir`,
   `runs/<first-8-of-session_id>/`, a `runs/*/resume_state.md` recording this `SESSION_ID`).
   A registered session with no state file is `BROKEN` and the Stop gates fail CLOSED on it;

@@ -42,8 +42,10 @@ CONTRACT_TEXT = """THE CONTRACT, in force from now on for this run:
     example `AWAITING_USER: waiting on the production credential for the smoke test`. A placeholder or a
     one-word token is rejected. Then continue with every part of the task that does not depend on the answer.
   * Independent work runs in PARALLEL — review lanes, research bursts and the tasks of a wave go out in one
-    message — and a pipeline is awaited with the wrapper's blocking wait as a BACKGROUND task, never with
-    sleep. The operator's time is the scarce resource.
+    message. A pipeline you need is awaited AFTER the unblocked work, in the FOREGROUND with the wrapper's
+    bounded wait (`--timeout-seconds 540`, re-issued while it exits 11) — never with sleep, never by ending the
+    turn. Where the project lands through the merge steward, the PR is ENQUEUED once its own CI is green and the
+    session hands off: the queue, the deploy and the post-deploy check are not yours to wait for.
 """
 
 
@@ -128,7 +130,16 @@ Do not end the turn to report having read this.
 """
 
 
-def _brake_message(sid: str, state: Path, status: str, phase: str, claim: str, remain: str, issue: str) -> str:
+def _brake_message(
+    sid: str,
+    state: Path,
+    status: str,
+    phase: str,
+    claim: str,
+    remain: str,
+    issue: str,
+    watchdog: "bool | None" = None,
+) -> str:
     lines = [
         f"{HOOK} (the ISSUE-LOOP brake): REFUSING the stop — run {sid[:8]} records itself as UNFINISHED.",
         f"    Status: {status}",
@@ -141,7 +152,12 @@ def _brake_message(sid: str, state: Path, status: str, phase: str, claim: str, r
         "dispatched — do the unblocked work while they run.",
         "",
     ]
-    if remain.strip().lower() in ("yes", "true"):
+    if lib.phase_is_handoff(phase):
+        lines += [
+            f"Phase '{phase}' hands ONE issue to the merge steward — in a loop run that is a checkpoint, not the end:",
+            "record the next phase (LOAD_ISSUES) and SELECT the next workable issue yourself.",
+        ]
+    elif remain.strip().lower() in ("yes", "true"):
         lines += [
             f"WORKABLE_ISSUES_REMAIN is '{remain}': select the next-highest-priority unlocked workable issue",
             "YOURSELF (LOAD_ISSUES -> SELECT) and keep going. Which issue to work is your decision, not the",
@@ -152,19 +168,30 @@ def _brake_message(sid: str, state: Path, status: str, phase: str, claim: str, r
     else:
         lines += [
             f"WORKABLE_ISSUES_REMAIN is '{remain}', so this is a single-issue run: FINISH issue {issue} end to",
-            "end — implement, prove, PR, CI green, merge, close — before any turn ends. That field selects",
-            "this wording only; it does not and cannot release this gate.",
+            "end — implement, prove, PR, CI green, then merge and close (or, where the merge steward lands the",
+            "trunk, enqueue and hand off) — before any turn ends. That field selects this wording only; it does",
+            "not and cannot release this gate.",
         ]
     lines += [
         "",
         "THE WAYS OUT, all by APPENDING a new block at the END of",
         f"    {state}",
         "(hooks read the LAST occurrence of each field):",
-        "  * finished     -> 'Phase: DONE'  (or COMPLETE/COMPLETED/FINISHED/CLOSED/ABANDONED/ESCALATED)",
+        "  * finished     -> 'Phase: DONE'  (or COMPLETE/COMPLETED/FINISHED/CLOSED/ABANDONED/ESCALATED/CANCELLED)",
+        "  * handed off   -> 'Phase: HANDED_OFF' — a single-issue run whose PR is ENQUEUED with green CI; the",
+        "                    merge steward and the verdict watcher own the rest (never in a loop run)",
         "  * not begun    -> 'Status: NOT_STARTED'",
         "  * proven pause -> an 'AWAITING_USER' line naming the actual reason in full. A placeholder or a",
         "                    one-word token is rejected; write the reason you would give a person.",
     ]
+    if watchdog is False:
+        lines += [
+            "",
+            "ALSO: this session has no run watchdog armed, so a turn that dies on an API error idles until a person",
+            "notices. Arm it once per process (continuous-work.md) with CronCreate:",
+            f"    cron: {lib.WATCHDOG_CRON!r}   recurring: true   durable: false",
+            f"    prompt: {lib.WATCHDOG_PROMPT}",
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -244,13 +271,21 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
     spec = ctx.field(state, "CURRENT_SPEC")
     branch = ctx.field(state, "BRANCH")
 
-    # PROGRESS RESETS THE COUNT, so a working run never reaches the cap and the cap message is true.
+    # PROGRESS RESETS THE COUNT, so a working run never reaches the cap and the cap message is true. Two signals:
+    # the recorded state fields changed, or the transcript shows real tool calls since the last stop attempt —
+    # a long phase (VERIFY) changes no field for hours, and the cap once stood the gate down on such a run.
     fingerprint = "|".join([status, phase, issue, awaiting, branch, remain])
     if lib.counter_note_progress(counter, fingerprint):
         lib.counter_reset(counter)
         lib.counter_note_progress(counter, fingerprint)
         blocks = 0
         ctx.log(HOOK, "PROGRESS", f"run={sid[:8]} recorded state changed; count reset")
+    calls = lib.transcript_tool_calls_since(counter, ctx.payload.transcript_path)
+    if blocks and calls is not None and calls >= lib.TRANSCRIPT_PROGRESS_TOOL_CALLS:
+        lib.counter_reset(counter)
+        lib.counter_note_progress(counter, fingerprint)
+        blocks = 0
+        ctx.log(HOOK, "PROGRESS", f"run={sid[:8]} {calls} tool calls since the last stop attempt; count reset")
 
     # THE RELEASES. Each is an AFFIRMATIVE statement by the run that the turn may end. Anything else holds.
     if lib.status_is_idle(status):
@@ -260,6 +295,10 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
     if lib.phase_is_terminal(phase) or lib.phase_is_terminal(status):
         lib.counter_reset(counter)
         ctx.log(HOOK, "ALLOW", f"run={sid[:8]} terminal Phase='{phase}' Status='{status}'")
+        return lib.allow()
+    if lib.phase_is_handoff(phase) and lib.mode_is_single_issue(mode):
+        lib.counter_reset(counter)
+        ctx.log(HOOK, "ALLOW", f"run={sid[:8]} handed off Phase='{phase}' mode='{mode}'")
         return lib.allow()
     if lib.is_substantive_escalation(awaiting):
         lib.counter_reset(counter)
@@ -339,7 +378,9 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
     return block_or_stand_down(
         f"run={sid[:8]} working phase='{phase}' status='{status}' claim='{claim}' remain='{remain}'",
         "unfinished work",
-        _brake_message(sid, state, status, phase, claim, remain, issue),
+        _brake_message(
+            sid, state, status, phase, claim, remain, issue, lib.watchdog_armed(ctx.payload.data.get("session_crons"))
+        ),
     )
 
 

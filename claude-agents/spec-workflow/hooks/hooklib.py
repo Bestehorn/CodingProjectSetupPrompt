@@ -127,6 +127,33 @@ DEFAULT_BLOCK_CAP = 8
 
 IMPLEMENTATION_PHASE_RE = re.compile(r"^(IMPLEMENT(_.*)?|IMPLEMENTING|VERIFY(_.*)?|VERIFYING)$")
 CLAIMING_MODE_RE = re.compile(r"^(ISSUE_LOOP|SINGLE_ISSUE|SPEC|BACKLOG|AUTO)", re.IGNORECASE)
+# The modes that work MANY issues in one run. Handing one issue off is a checkpoint there, never a stop.
+LOOP_MODE_RE = re.compile(r"^(ISSUE_LOOP|BACKLOG|AUTO)", re.IGNORECASE)
+SINGLE_ISSUE_MODE_RE = re.compile(r"^SINGLE_ISSUE", re.IGNORECASE)
+# HANDED_OFF: a single-issue run whose PR the merge steward now owns (enqueued, PR CI green) and whose issue the
+# verdict watcher will close after the post-deploy check (.claude/docs/delivery.md). Terminal for a run whose MODE
+# is SINGLE_ISSUE and for NOTHING else — a separate set, not TERMINAL_PHASES, so neither a loop run nor a run that
+# lost its MODE (a resume that did not carry it forward) can release itself by handing one issue off.
+HANDOFF_PHASES = frozenset({"HANDED_OFF", "HANDEDOFF", "HANDED-OFF"})
+
+# The in-session watchdog (continuous-work.md): a session-only recurring CronCreate job, which the harness fires
+# only while the session is IDLE. A turn killed by an API error leaves exactly that state behind, and the next
+# firing resumes the recorded work; a finished, handed-off or legitimately waiting run answers "idle". The Stop
+# payload lists the session's crons (`session_crons`), which is how the issue-loop brake can tell an unarmed run.
+WATCHDOG_MARK = "[run-watchdog]"
+WATCHDOG_CRON = "13,43 * * * *"
+WATCHDOG_PROMPT = (
+    WATCHDOG_MARK
+    + " Watchdog tick for this session's run. If your run's resume_state.md records claimed, unfinished work and"
+    " nothing of yours is running, your last turn most likely ended on an API error: resume the work now exactly"
+    " as .claude/commands/continue-work.md says. If the work is finished, handed off, or waiting on a recorded"
+    " AWAITING_USER question, reply with the single word idle and end the turn."
+)
+#: Where the stop-failure gate leaves a resume request for the host supervisor (.claude/hooks/supervisor.py).
+RESUME_REQUESTS_DIRNAME = ".resume-requests"
+#: The delivery modes (.claude/docs/delivery.md); the absent file is today's behaviour.
+DELIVERY_CONFIG = Path("config") / "delivery.json"
+DELIVERY_DEFAULTS = {"merge": "direct", "verification": "session", "trunk": "main"}
 
 # Runner-summary predicates, anchored on a NON-ZERO COUNTER, never a bare word: a test NAMED
 # `test_reports_skipped_reason` is not a skip, and `0 failed` is not a failure.
@@ -241,6 +268,12 @@ class Payload:
         return self.string("cwd")
 
     @property
+    def transcript_path(self) -> Optional[Path]:
+        """The session transcript the harness names in Stop (and other) payloads; None when absent (Kiro)."""
+        value = self.string("transcript_path").strip()
+        return Path(value) if value else None
+
+    @property
     def source(self) -> str:
         return self.string("source")
 
@@ -300,6 +333,59 @@ def status_is_idle(status: Optional[str]) -> bool:
 
 def phase_is_terminal(value: Optional[str]) -> bool:
     return (value or "").strip().upper() in TERMINAL_PHASES
+
+
+def phase_is_handoff(value: Optional[str]) -> bool:
+    return (value or "").strip().upper() in HANDOFF_PHASES
+
+
+def mode_is_loop(mode: Optional[str]) -> bool:
+    text = (mode or "").strip().replace("-", "_")
+    return bool(text) and not is_placeholder(text) and bool(LOOP_MODE_RE.match(text))
+
+
+def mode_is_single_issue(mode: Optional[str]) -> bool:
+    text = (mode or "").strip().replace("-", "_")
+    return bool(text) and not is_placeholder(text) and bool(SINGLE_ISSUE_MODE_RE.match(text))
+
+
+def run_is_released(status: str, phase: str, awaiting: str, mode: str) -> bool:
+    """The affirmative releases every Stop gate agrees on: idle, terminal, a single-issue hand-off, a real
+    escalation. Anything else, on a run that claimed work, is unfinished work."""
+    if status_is_idle(status) or phase_is_terminal(phase) or phase_is_terminal(status):
+        return True
+    if phase_is_handoff(phase) and mode_is_single_issue(mode):
+        return True
+    return is_substantive_escalation(awaiting)
+
+
+def delivery_settings(project_dir: Path) -> Dict[str, str]:
+    """`config/delivery.json`'s merge / verification / trunk, defaults for whatever is absent or unreadable. A
+    gate that reads this FAILS OPEN on a broken file: the defaults are today's behaviour."""
+    settings = dict(DELIVERY_DEFAULTS)
+    path = project_dir / DELIVERY_CONFIG
+    if not path.is_file():
+        return settings
+    try:
+        data = json.loads(read_text(path) or "{}")
+    except ValueError:
+        return settings
+    if isinstance(data, dict):
+        for key in DELIVERY_DEFAULTS:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                settings[key] = value.strip()
+    return settings
+
+
+def watchdog_armed(payload_crons: object) -> Optional[bool]:
+    """True/False when the Stop payload lists the session's crons, None when the harness did not say."""
+    if not isinstance(payload_crons, list):
+        return None
+    for cron in payload_crons:
+        if isinstance(cron, dict) and WATCHDOG_MARK in str(cron.get("prompt", "")):
+            return True
+    return False
 
 
 def is_implementation_phase(phase: Optional[str]) -> bool:
@@ -740,6 +826,95 @@ def counter_note_progress(counter: Path, fingerprint: str) -> bool:
     except OSError:
         return False
     return bool(previous)
+
+
+#: Assistant tool calls appended to the transcript since the last Stop event that count as PROGRESS: a working
+#: run makes dozens between stop attempts; a stop -> refusal -> stop loop makes none or one. Measured
+#: 2026-10-10 (chess, issue 553): the issue-loop gate's cap of 8 was reached by a run doing real VERIFY work whose
+#: recorded state fields never changed, the gate stood down, and the turn ended to wait in the background.
+TRANSCRIPT_PROGRESS_TOOL_CALLS = 3
+TRANSCRIPT_TAIL_BYTES = 262_144
+TRANSCRIPT_DELTA_CAP_BYTES = 4_000_000
+# The harness writes compact JSON (`"type":"assistant"`); a hand-written or pretty-printed line may carry spaces.
+_ASSISTANT_TOOL_USE_RE = re.compile(rb'"type"\s*:\s*"tool_use"')
+_ASSISTANT_KIND_RE = re.compile(rb'"type"\s*:\s*"assistant"')
+
+
+def transcript_tool_calls_since(counter: Path, transcript: Optional[Path]) -> Optional[int]:
+    """Assistant tool calls appended to the transcript since this counter last looked; None when unknowable
+    (no transcript, unreadable, first observation, or a new file). Records the current size beside the counter
+    as `<counter>.offset` on every call, so the next call measures "since the last Stop event"."""
+    if transcript is None:
+        return None
+    try:
+        size = transcript.stat().st_size
+    except OSError:
+        return None
+    marker = Path(str(counter) + ".offset")
+    previous_text = read_text(marker) if marker.is_file() else ""
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(size), encoding="utf-8")
+    except OSError:
+        return None
+    previous = int(previous_text) if previous_text.strip().isdigit() else -1
+    if previous < 0 or size < previous:
+        return None
+    if size - previous > TRANSCRIPT_DELTA_CAP_BYTES:
+        return TRANSCRIPT_PROGRESS_TOOL_CALLS  # that much transcript is work, whatever it holds
+    try:
+        with transcript.open("rb") as handle:
+            handle.seek(previous)
+            delta = handle.read(size - previous)
+    except OSError:
+        return None
+    return sum(
+        1 for line in delta.splitlines() if _ASSISTANT_KIND_RE.search(line) and _ASSISTANT_TOOL_USE_RE.search(line)
+    )
+
+
+def _assistant_text_of(raw: bytes) -> str:
+    """The text blocks of one transcript line when it is the MODEL's assistant message, else "". A sidechain
+    (subagent) record and a harness-made `<synthetic>` message ("No response requested.") are not the model's."""
+    try:
+        record = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return ""
+    if not isinstance(record, dict) or record.get("type") != "assistant" or record.get("isSidechain"):
+        return ""
+    message = record.get("message")
+    if not isinstance(message, dict) or message.get("model") == "<synthetic>":
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def transcript_last_assistant_text(transcript: Optional[Path]) -> str:
+    """The text of the LAST assistant message in the transcript's tail (TRANSCRIPT_TAIL_BYTES), "" when there is
+    none."""
+    if transcript is None:
+        return ""
+    try:
+        with transcript.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            tail = handle.read()
+    except OSError:
+        return ""
+    for raw in reversed(tail.splitlines()):
+        if not _ASSISTANT_KIND_RE.search(raw):
+            continue
+        text = _assistant_text_of(raw)
+        if text.strip():
+            return text
+    return ""
 
 
 def decision_log(base: Path, name: str, decision: str, detail: str) -> None:

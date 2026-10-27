@@ -1,0 +1,66 @@
+# Merge steward — the ONLY writer of the trunk (config/delivery.json: "merge": "steward").
+# Installed from templates/ci/github-merge-steward.yml.template to .github/workflows/merge-steward.yml.
+#
+# One run is one TICK of scripts/merge_steward.py: finish the batch in flight (land the longest green train by
+# fast-forward, drop the culprit), then build and start the next batch from the PRs labelled `queue`. The tick is
+# stateless (git branches and tracker labels hold the state), so a cancelled or lost run loses nothing.
+#
+# Why the triggers are exactly these: `workflow_dispatch`, `workflow_run` and `schedule` all run the DEFAULT
+# BRANCH's copy of this file and of scripts/merge_steward.py, so no pull request can change the steward that
+# merges it. Never add a `pull_request`, `pull_request_target` or `push` trigger here. The ticks are EVENT-driven:
+# `enqueue-pr` (the wrapper) dispatches one when a PR joins the queue, and a train's CI run completing starts one
+# (`workflow_run`, filtered to the train branches), which is exactly when a landing becomes possible. The
+# schedule is only the safety net — for a lost dispatch, and for a `workflow_run` event GitHub does not deliver
+# (it stops chaining `workflow_run` beyond three levels). A tick that is already running is never cancelled; a newer
+# pending tick replaces an older pending one, which is harmless because every tick reads the whole queue.
+#
+# Runners: the tick is a few git and API calls. Any runner works; on a CodeBuild-hosted runner use the
+# project's label form, e.g. `codebuild-<runner-project>-${{ github.run_id }}-${{ github.run_attempt }}`, so a
+# quota-limited hosted account is not needed for the queue to move. On GitHub-hosted runners every run is billed
+# as at least one minute: the 30-minute safety net is about 1,440 runs a month, plus one per enqueue and one per
+# train; a `*/10` schedule alone would be about 4,300 — more than a Free organisation's private-repo quota.
+name: Merge steward
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["{{CI_WORKFLOW_NAME}}"] # the `name:` of the CI workflow the steward dispatches on each train
+    types: [completed]
+    branches: ["steward/train-**"] # the steward's train_prefix; PR and trunk runs do not tick
+  schedule:
+    - cron: "7,37 * * * *" # the safety net, off the hour
+
+concurrency:
+  group: merge-steward
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: {{STEWARD_RUNS_ON}}
+    timeout-minutes: 20
+    permissions:
+      contents: write # push the steward/train-* branches and fast-forward the trunk (never a force push)
+      actions: write # start CI on the train branches and the deploy workflow (a GITHUB_TOKEN push starts none)
+      pull-requests: write # queue labels and landing comments on PRs
+      issues: write # landing lines, verification labels, returning work to the pool
+      checks: read # the PR head's CI verdict
+      statuses: read
+    steps:
+      - name: Check out the default branch (the trusted copy of the steward)
+        uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          python-version: "{{PYTHON_VERSION}}"
+      - name: Tick
+        # The token reaches the script on stdin only (no-environment-vars); GitHub masks it in the log.
+        run: >-
+          printf '%s\n' '${{ github.token }}' |
+          python scripts/merge_steward.py --token-stdin tick
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

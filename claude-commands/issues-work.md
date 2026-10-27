@@ -1,8 +1,8 @@
 ---
-description: Autonomously work the open-issue backlog end to end — select the highest-priority not-in-progress issue, fix it via the spec/TDD cycle with proof, open a PR, drive CI green, merge, clean up, close, and repeat. Resumable.
+description: Autonomously work the open-issue backlog end to end — select the highest-priority not-in-progress issue, fix it via the spec/TDD cycle with proof, open a PR, drive its CI green, hand it to the merge steward (or merge it, per config/delivery.json), clean up, close or hand off, and repeat. Resumable.
 argument-hint: "[optional: a specific issue number to start with, or blank to work the whole backlog]"
 disable-model-invocation: true
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer)
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, CronCreate, CronDelete, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
 Run the autonomous issue-work lifecycle for this project, following the agent
@@ -49,11 +49,16 @@ and the no-claim release is never a way out of an issue you have already claimed
 ## The lifecycle to run
 
 Run the lifecycle from `issue-work-orchestrator.md`: Discovery (venv, ISSUE_MECHANISM
-via the wrapper script, in-progress convention, merge authority, clean tree) → the outer
-loop LOAD_ISSUES → SELECT → PREPARE (worktree + branch) → CLASSIFY (tier S/M/L) → FIX
-(embedded spec/TDD core, proof with evidence) → PROOF_GATE → DOCUMENT → PR (rebase,
-line-by-line conflict resolution, push, open, self-approve+merge if allowed, monitor CI)
-→ MERGE_CLEANUP → RESOLVE → refresh, until no not-in-progress open issue remains.
+via the wrapper script, in-progress convention, the delivery mode from `config/delivery.json`
+and — for direct merge — the merge authority, the run watchdog, clean tree) → the outer
+loop LOAD_ISSUES → SELECT (returned `needs-rework` work first) → PREPARE (worktree + branch)
+→ CLASSIFY (tier S/M/L; every open question asked now, in one batch) → FIX (embedded spec/TDD
+core, proof with evidence) → PROOF_GATE → DOCUMENT (before the push) → PR (rebase,
+line-by-line conflict resolution, push, open, the PR's CI awaited in the foreground, bounded)
+→ HAND_OFF (merge steward or verdict watcher; `.claude/docs/delivery.md`) or, for direct
+merge with session verification, self-approve+merge → MERGE_CLEANUP → RESOLVE → refresh,
+until no not-in-progress open issue remains. A handed-off issue keeps its claim, so the next
+SELECT skips it; the loop never waits for its queue, landing or deploy.
 
 Honor all the mandates in the agent definition: wrapper-only remote ops, evidence-not-
 assertion (the implementer never certifies its own work; the adversarial-verifier

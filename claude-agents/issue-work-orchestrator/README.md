@@ -4,8 +4,9 @@ An autonomous, main-session Claude Code agent that works a project's **entire op
 backlog end to end**. It is the top layer above the spec-driven + test-driven engine in
 [`../spec-workflow/`](../spec-workflow/README.md): for each open issue it selects the
 highest-priority one, develops and **proves** a fix through the spec/TDD cycle, opens a
-PR, drives CI green, merges, cleans up, closes the issue, and moves on — checkpointing
-every step so it is fully resumable.
+PR, drives its CI green, hands it to the merge steward (or merges it — `config/delivery.json`,
+[`../spec-workflow/docs/delivery.md`](../spec-workflow/docs/delivery.md)), cleans up, closes or
+hands off the issue, and moves on — checkpointing every step so it is fully resumable.
 
 ## The lifecycle
 
@@ -15,13 +16,16 @@ claude --agent issue-work-orchestrator      (or  /issues-work)
 LOAD_ISSUES  – sync local main with the remote, then re-retrieve ALL open issues FRESH
                via the wrapper (every iteration — never reuse a stale list); drop any
                issue closed/claimed upstream since last time
-SELECT       – discard in-progress issues; pick the highest impact/urgency/severity
+SELECT       – returned work first (`needs-rework` / `needs-closeout`); discard in-progress
+               and in-flight issues; pick the highest impact/urgency/severity, preferring a
+               footprint that does not overlap a queued PR
                (issue X); CLAIM IT NOW — mark issue X in progress on the tracker
                immediately, before any work (re-checking for a race). No workable
                issue left → DONE.
 PREPARE      – Remote Sync main; git worktree add .claude/worktrees/issue-<X> -b <branch>
                origin/main (the issue is already claimed in SELECT)
-CLASSIFY     – the tier (S / M / L) from the ASK — `proportionality.md`
+CLASSIFY     – the tier (S / M / L) from the ASK — `proportionality.md`; every open product
+               question asked NOW, in one batch, while independent work goes on
 FIX          – the embedded spec/TDD engine, run IN the worktree:
                  M/L: REQUIREMENTS → DESIGN (byte-capped) → parallel panel, delta review → TASKS (waves) →
                         tasks loop → IMPLEMENT (TDD) → VERIFY (adversarial)
@@ -31,11 +35,17 @@ FIX          – the embedded spec/TDD engine, run IN the worktree:
 PROOF_GATE   – the orchestrator accepts the proof only if a test reproducing the issue's
                symptom now passes AND the adversarial-verifier could not refute it;
                insufficient → reopen the fix
-DOCUMENT     – post a comprehensive fix writeup + evidence on the issue
+DOCUMENT     – BEFORE the push: the fix writeup + evidence on the issue, checklist ticked,
+               `(post-deploy)` items marked, ledger rows committed with the change
 PR           – rebase on origin/main with line-by-line conflict resolution, stage all
-               non-gitignored changes, push, open the PR, self-approve + merge if branch
-               protection allows (else poll for approval), monitor CI, fix failures
-MERGE_CLEANUP– after merge + remote-branch delete: checkout main, remove the worktree and
+               non-gitignored changes, push once, open the PR (`Refs #X`), wait for its CI in
+               the FOREGROUND (bounded), fix every failure in one pass
+HAND_OFF     – merge steward: `enqueue-pr`; the steward tests the exact merged state, lands
+               it, deploys the latest green trunk; the verdict watcher closes the issue after
+               a green post-deploy check on a commit that CONTAINS the landing. Clean up the
+               worktree and local branch, keep the remote branch and the claim, next issue
+MERGE_CLEANUP– (direct merge + session verification only) self-approve + merge if branch
+               protection allows (else poll for approval), then remove the worktree and
                local branch (no leftovers), monitor post-merge CI on main, rework to green
 RESOLVE      – close the issue with links to the merged PR + evidence
 → refresh → LOAD_ISSUES
@@ -152,10 +162,11 @@ cp claude-commands/work-issue.md                                     .claude/com
 cp claude-commands/auto-work.md                                      .claude/commands/
 cp claude-commands/continue-work.md                                  .claude/commands/
 cp claude-commands/close-session.md                                  .claude/commands/
+cp claude-commands/supervise.md                                      .claude/commands/
 ```
 
-All five commands drive this same agent, and the last three are not optional extras — they are
-the entry points the continuous-work contract is written around:
+The first five commands drive this same agent, and `/continue-work` and `/close-session` are not
+optional extras — they are the entry points the continuous-work contract is written around:
 
 | Command | Why it is installed |
 |---|---|
@@ -163,15 +174,18 @@ the entry points the continuous-work contract is written around:
 | `/work-issue <X>` | the SAME lifecycle for exactly one named issue, then stop |
 | `/auto-work` | the never-stop, unattended whole-backlog run — nobody is watching, so nothing it could ask is worth the wait |
 | `/continue-work` | the manual restart after a run stopped early. Needing it means the contract was not honored, so part of its job is to record WHY |
-| `/close-session` | the end-of-session close-out: finish what is unfinished — including every task item on the issue, REOPENING an issue that was closed while items were still unticked — remediate THIS run's own artifacts, record a terminal `Phase`, then report it as ONE fixed nine-row table (✅/❌/➖ per step, ≤60-char details, an `Issues` block below, blockers asked through `AskUserQuestion`) so a close-out is readable at a glance instead of drifting in shape every run |
+| `/close-session` | the end-of-session close-out: finish what is unfinished — including every task item on the issue, REOPENING an issue that was closed while items were still unticked — remediate THIS run's own artifacts, record a terminal `Phase`, then report it as ONE fixed nine-row table (✅/❌/➖ per step, ≤60-char details, an `Issues` block below, blockers asked through `AskUserQuestion`) so a close-out is readable at a glance instead of drifting in shape every run; on `CLOSE: YES` it archives the session without asking |
+| `/supervise` | the host backstop for a run whose turn an API error ended and whose own run watchdog did not bring it back: judges the `stop-failure-recorder` gate's resume requests and resumes each through `ListAgents` + `SendMessage`, with a bounded backoff |
 
-All five carry `disable-model-invocation: true`, so an autonomous merge-and-close run can never
+All six carry `disable-model-invocation: true`, so an autonomous merge-and-close run can never
 begin because a prompt merely mentioned an issue. `/close-session` is also what puts a run into a
 state the Stop gates release: it records the terminal `Phase` the gate reads.
 
 Also ensure the git wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
 implements the PR/merge/CI subcommands the orchestrator needs (the setup prompt Part 6.2
-lists them: `get-pr`, `get-pr-checks`, `approve-pr`, `merge-pr`, `delete-remote-branch`,
+lists them: `get-pr`, `get-pr-checks`, the blocking `wait-run` (GitLab `pipeline wait`),
+`approve-pr`, `merge-pr`, `delete-remote-branch`, the merge-steward trio `enqueue-pr` /
+`dequeue-pr` / `queue-status` (delegating to `scripts/merge_steward.py`),
 and `list-issues` with state/assignee/label filters, plus the existing issue/run
 subcommands, plus `reopen-issue` / `issue reopen` and the checklist toggle that
 `/close-session`'s task-item gate needs), and add `.claude/worktrees/` to `.gitignore`.
@@ -191,8 +205,9 @@ claude --agent issue-work-orchestrator      # work the whole backlog
 in-progress on the tracker (fail-closed `issue start <X>`) before it fetches or creates
 anything, works X in its own `.claude/worktrees/issue-<X>/` so it runs in parallel with
 sibling sessions, commits the reviewed spec artifacts as their own commit BEFORE
-implementation, and stops after X is merged and closed instead of continuing into the
-backlog. It also records `MODE: SINGLE_ISSUE`, which is what makes the run GATED — see below.
+implementation, and stops after X is merged and closed — or, under the merge steward, after X's
+PR is enqueued with green CI and the hand-off note is on the issue — instead of continuing into
+the backlog. It also records `MODE: SINGLE_ISSUE`, which is what makes the run GATED — see below.
 If X turns out to be closed or claimed elsewhere, it reports and stops rather than substituting
 a different issue, recording a terminal `Phase` with the reason, since the gate judges the state
 file rather than the report.
@@ -211,7 +226,7 @@ their neighbours all claim NOTHING. This half exists because every session is no
 `OWNED`, so without it an ordinary chat session that happened to record a `Status` was refused and
 told to finish "issue none".
 
-**An affirmative release** is one of exactly four things:
+**An affirmative release** is one of exactly five things:
 
 - an idle `Status` — and only from the explicit vocabulary
   (`NOT_STARTED`/`NOT_YET_STARTED`/`UNSTARTED`/`NOT_IN_PROGRESS`/`NOT_WORKING`/`IDLE`/`PENDING`/
@@ -221,6 +236,9 @@ told to finish "issue none".
   so `Phase: DONE` releases and `Status: COMPLETED (was IN_PROGRESS)` does not;
 - a SUBSTANTIVE `AWAITING_USER` reason. Presence is not enough: `<reason>`, `none`, `no`, `false`,
   `0`, `waiting`, `blocked` and anything too short to be a reason are all rejected;
+- `Phase: HANDED_OFF` on a run whose `MODE` starts with `SINGLE_ISSUE`: a single-issue run whose
+  PR the merge steward now owns. In a loop, or a run whose `MODE` was lost, it releases nothing — the
+  loop records `Phase: LOAD_ISSUES` and selects the next issue;
 - no claimed work, per the paragraph above.
 
 **`Status: IN_PROGRESS` is not what holds the turn, and the polarity is INVERTED.** An
@@ -236,7 +254,7 @@ the progress fingerprint that resets the block counter. It used to BE the block 
 is why `/work-issue`'s deliberate `no` meant this command's runs were never gated at all. Setting
 it is still correct for the record; it releases nothing.
 
-Loop safety is the gate's own consecutive-block counter (`HOOK_BLOCK_CAP`, default 8): at the cap
+Loop safety is the gate's own consecutive-block counter (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8): at the cap
 it stands down, says the work is NOT done, and writes a durable marker so the cap is a one-way
 stand-down rather than a duty cycle. Recorded progress clears it. Reaching the cap is not a
 completion signal — `/continue-work` is.

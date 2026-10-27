@@ -35,8 +35,9 @@ THE CAP
 
 WAITING
     A waiter prints ONE line to stderr naming the holders, then polls every 2 s and re-announces every
-    minute, with no timeout by default: the caller runs it as a BACKGROUND task and is re-invoked on
-    completion (parallel-by-default.md). With a timeout, a slot that never frees raises SuiteSlotTimeout; the
+    minute, with no timeout by default: a caller with independent work runs it as a background task and
+    collects the result with one bounded foreground wait (`.claude/hooks/wait_for.py`) — a stopped background
+    task never re-invokes the session (parallel-by-default.md). With a timeout, a slot that never frees raises SuiteSlotTimeout; the
     CLI maps it to exit 75 (EX_TEMPFAIL) so a caller can tell "busy" from "the suite failed".
 """
 

@@ -20,7 +20,9 @@ guess — so on Kiro, prefer a generous `--max` over a tight one.
 
 ---
 
-You stopped before the work was finished. Resume it now and carry it to completion.
+You stopped before the work was finished. Resume it now and carry it to completion. (Kiro has no
+run watchdog and no StopFailure hook, so a turn an API error ended is resumed exactly this way: the
+operator types `@continue-work`.)
 
 **First, a status update — keep it to five lines or fewer.** What is done, what is in
 flight, what is next. No recap of your reasoning, no apology, no re-derivation of decisions
@@ -38,20 +40,29 @@ contrary habit.
 been compacted since you started, so do not trust recall:
 
 1. Read this run's state: `.kiro/agent-state/issue-work-orchestrator/registry.json` →
-   your `runs/<run-id>/resume_state.md` (phase, `CURRENT_ISSUE`, `CURRENT_WORKTREE`,
-   `CURRENT_BRANCH`, `CURRENT_PR`), plus `workflow_state.md` and the active spec's
-   `decisions/decision-log.md` if a spec is in flight.
+   your `runs/<run-id>/resume_state.md` (`MODE`, `Phase`, `CURRENT_ISSUE`, `BRANCH`, `WORKTREE`,
+   `PR` — a state block you append carries `MODE` forward: `HANDED_OFF` releases only a `SINGLE_ISSUE`
+   run), plus `workflow_state.md` and the active spec's `decisions/decision-log.md` if a spec
+   is in flight.
 2. Verify that recorded state against reality — `git -C <worktree> status`,
    `git worktree list`, the issue via the wrapper, the PR's CI state. **Reality wins**;
    reconcile the state file to it rather than the reverse.
 3. If no state file exists, work out the current task from the git branch, the working tree,
    the open PR, and the in-progress issue, and create the state file so the next resume is
    cheap. If the following message names the work, use it; otherwise infer it — do not ask.
+4. Resume the recorded phase: PR open with CI running → re-issue the foreground bounded wait
+   (`wait-run <id> --timeout-seconds 540` / `pipeline wait <id> --timeout-seconds 540`); PR
+   green but not yet enqueued, or merged with no landing line → HAND_OFF
+   (`.kiro/docs/delivery.md` §3); handed off → that issue is done for this session (close-out
+   for a single issue, LOAD_ISSUES in a loop); returned as `needs-rework` / `queue-failed` →
+   the issue is yours again, fix and re-enqueue; merged but not cleaned → MERGE_CLEANUP.
 
 **Then continue the recorded phase to a terminal state.** Never restart completed work and
-never redo a step the evidence shows is done. If an issue is in flight, drive it to merged
-and closed (claim still held, spec artifacts committed, tests green with captured evidence,
-CI green, worktree and branch torn down, issue closed). Honor the standing steering rules
+never redo a step the evidence shows is done. If an issue is in flight, drive it to its
+definition of done — merged and closed, or, under `config/delivery.json`'s steward or watcher
+mode, handed off (claim still held, spec artifacts committed, tests green with captured
+evidence, the PR's CI green, worktree and local branch torn down, then the issue closed or its
+hand-off note posted). Honor the standing steering rules
 throughout: complete command output (`no-output-shortening`), evidence for every claim
 (`no-guessing`), wrapper-only remote operations (`use-git-wrapper-scripts`), clean git
 (`keep-git-clean`), the issue as the live record (`issue-tracking`), no AI attribution
@@ -68,7 +79,7 @@ state afterwards, and keep going.
 steering rule: a genuinely irreversible action, sensitive information, a real design fork the
 project cannot settle, or a hard blocker such as missing authentication material. Each
 requires proof that it applies and that you exhausted the alternatives. If one genuinely
-applies, state it in two sentences WITH your recommendation, then keep working on everything
-that does not depend on the answer.
+applies, state it in that rule's five-line shape (one line of context, the options, your
+recommendation first), then keep working on everything that does not depend on the answer.
 
 Otherwise: the work is not finished, so do not stop. Take the next step.

@@ -24,8 +24,8 @@ Delegates (pre-authorized above): `spec-author`, `spec-researcher`, `spec-review
 # Binding rules (always loaded; the ones you apply most)
 
 - `proportionality.md` — tiers, hard byte caps, scope freeze, no measurements in specs.
-- `parallel-by-default.md` — panels and waves go out in ONE message; waits run in the
-  background.
+- `parallel-by-default.md` — panels and waves go out in ONE message; independent suites run
+  together; a wait you need runs in the foreground, bounded, after the unblocked work.
 - `native-tools-over-shell.md` — Read/Grep/Glob/Write/Edit for files, one shell call per
   step, no foreground sleep; a suite runs through `scripts/run_tests.py` and its host-wide
   slot, a synth under `python scripts/suite_semaphore.py run -- <cmd>`.
@@ -104,8 +104,9 @@ SETUP → PROMPT_AUTHORING → [tier S: CHANGE → CHANGE_REVIEW]
 - **Apply C/D once, without a round.** When A+B is zero, the author fixes C/D in one
   pass; you check the pass added no criterion, requirement or mechanism.
 - **Run and capture yourself.** Wave tests, red and green, with `# tasks:` headers.
-- **Wait in the background.** CI via the wrapper's blocking wait as a background task;
-  meanwhile the report skeleton, the docs, the issue note.
+- **Never end a turn to wait.** The report skeleton, the docs and the issue note first; then
+  CI via the wrapper's blocking wait in the FOREGROUND with `--timeout-seconds 540`,
+  re-issued while it exits 11 — a background wait dies with the session's process.
 - **Log decisions only.** A tier call, a rejected finding, a re-tier, an escalation, a
   proof rejection. Not transitions, not rounds, not waves.
 

@@ -1,0 +1,869 @@
+"""Tests for scripts/merge_steward.py — the merge queue, the train builder and the post-deploy verdict.
+
+Installed from ``templates/test_merge_steward.py.template`` to ``test/test_merge_steward.py``. Each test builds
+a real bare ``origin`` with git and drives the steward against it, with an in-memory tracker (``FakeHost``)
+standing in for GitHub/GitLab. What is proven is the contract the agents and the CI templates rely on:
+nothing lands that a green train did not test, a red train drops exactly its culprit, a moved trunk lands
+nothing, a conflict drops only the conflicting PR, and an issue closes only on a green deploy that CONTAINS
+its landing and only with a complete checklist.
+
+Run: ``python scripts/run_tests.py test/test_merge_steward.py`` (needs git on PATH; no network).
+"""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+_SPEC = importlib.util.spec_from_file_location("merge_steward", ROOT / "scripts" / "merge_steward.py")
+assert _SPEC and _SPEC.loader
+ms = importlib.util.module_from_spec(_SPEC)
+sys.modules["merge_steward"] = ms
+_SPEC.loader.exec_module(ms)
+
+# Hooks off for every git call the tests make: a machine-wide hooks directory (a corporate scanner, a
+# git-defender install) would otherwise run — or wait for input — on each commit and push of the fixtures.
+NO_HOOKS = tempfile.mkdtemp(prefix="steward-test-nohooks-")
+IDENTITY = [
+    "-c",
+    f"core.hooksPath={NO_HOOKS}",
+    "-c",
+    "user.name=test",
+    "-c",
+    "user.email=test@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "init.defaultBranch=main",
+]
+
+
+def git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", *IDENTITY, *args], cwd=str(cwd), capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL
+    )
+    if done.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {done.stderr}")
+    return done.stdout.strip()
+
+
+# ------------------------------------------------------------------------------------------- the fake host
+
+
+class FakeHost:
+    """An in-memory tracker over a real bare origin: a PR is MERGED when its head is reachable from main."""
+
+    def __init__(self, origin: Path) -> None:
+        self.origin = origin
+        self.prs: Dict[int, Dict[str, object]] = {}
+        self.issues: Dict[int, ms.Issue] = {}
+        self.assignees: Dict[int, List[str]] = {}
+        self.pr_comments: Dict[int, List[str]] = {}
+        self.train_ci: Dict[str, str] = {}
+        self.calls: List[Tuple[str, object]] = []
+        self.fail_once: Dict[str, int] = {}  # method name -> how many of its next calls raise a 5xx
+
+    def _maybe_fail(self, name: str) -> None:
+        if self.fail_once.get(name, 0) > 0:
+            self.fail_once[name] -= 1
+            raise ms.HostError(f"{name}: 502 (injected)", 502)
+
+    # test set-up
+    def add_pr(
+        self,
+        number: int,
+        head: str,
+        files: Sequence[str],
+        body: str = "",
+        ci: str = "success",
+        labels: Sequence[str] = ("queue",),
+        enqueued_at: str = "",
+        draft: bool = False,
+        base: str = "main",
+    ) -> None:
+        pr = ms.PullRequest(
+            number=number,
+            title=f"Change {number}",
+            head_sha=head,
+            base_ref=base,
+            draft=draft,
+            body=body,
+            url=f"https://host/pr/{number}",
+            labels=list(labels),
+            enqueued_at=enqueued_at or f"2026-10-26T10:{number:02d}:00Z",
+        )
+        self.prs[number] = {"pr": pr, "files": list(files), "ci": ci, "approved": True, "closed": False, "merge": None}
+        self.pr_comments[number] = []
+
+    def add_issue(self, number: int, body: str = "", labels: Sequence[str] = (), comments: Sequence[str] = ()) -> None:
+        self.issues[number] = ms.Issue(number, "open", body, list(labels), list(comments))
+        self.assignees[number] = ["worker"]
+
+    def labels_of(self, number: int) -> List[str]:
+        return list(self.prs[number]["pr"].labels)  # type: ignore[union-attr]
+
+    # HostAPI
+    def queued_prs(self, label: str) -> List[ms.PullRequest]:
+        return [
+            copy.deepcopy(entry["pr"])  # type: ignore[arg-type]
+            for number, entry in sorted(self.prs.items())
+            if self.pr_state(number) == "open" and label in entry["pr"].labels  # type: ignore[union-attr]
+        ]
+
+    def pr(self, number: int) -> ms.PullRequest:
+        return copy.deepcopy(self.prs[number]["pr"])  # type: ignore[return-value]
+
+    def pr_state(self, number: int) -> str:
+        if number not in self.prs:
+            raise ms.HostError(f"PR {number}: 404", 404)
+        entry = self.prs[number]
+        head = entry["pr"].head_sha  # type: ignore[union-attr]
+        merged = subprocess.run(
+            ["git", *IDENTITY, "merge-base", "--is-ancestor", head, "main"],
+            cwd=str(self.origin),
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+        if merged.returncode == 0:
+            return "merged"
+        return "closed" if entry["closed"] else "open"
+
+    def merge_commit(self, number: int) -> Optional[str]:
+        return self.prs[number]["merge"]  # type: ignore[return-value]
+
+    def pr_files(self, number: int) -> List[str]:
+        return list(self.prs[number]["files"])  # type: ignore[arg-type]
+
+    def head_ci(self, pr: ms.PullRequest) -> str:
+        return str(self.prs[pr.number]["ci"])
+
+    def pr_approved(self, pr: ms.PullRequest) -> bool:
+        return bool(self.prs[pr.number]["approved"])
+
+    def pr_head_refspec(self, number: int) -> str:
+        return f"+refs/heads/pr-{number}:refs/steward/pr/{number}"
+
+    def pr_add_labels(self, number: int, labels: Sequence[str]) -> None:
+        pr = self.prs[number]["pr"]
+        for label in labels:
+            if label not in pr.labels:  # type: ignore[union-attr]
+                pr.labels.append(label)  # type: ignore[union-attr]
+
+    def pr_remove_label(self, number: int, label: str) -> None:
+        pr = self.prs[number]["pr"]
+        if label in pr.labels:  # type: ignore[union-attr]
+            pr.labels.remove(label)  # type: ignore[union-attr]
+
+    def pr_comment(self, number: int, text: str) -> None:
+        self.pr_comments[number].append(text)
+
+    def pr_comment_texts(self, number: int) -> List[str]:
+        return list(self.pr_comments[number])
+
+    def pr_close(self, number: int) -> None:
+        self.prs[number]["closed"] = True
+
+    def issue(self, number: int) -> ms.Issue:
+        if number not in self.issues:
+            raise ms.HostError(f"issue {number}: 404", 404)
+        return copy.deepcopy(self.issues[number])
+
+    def issues_with_label(self, label: str) -> List[int]:
+        return sorted(n for n, i in self.issues.items() if i.state == "open" and label in i.labels)
+
+    def issue_add_labels(self, number: int, labels: Sequence[str]) -> None:
+        for label in labels:
+            if label not in self.issues[number].labels:
+                self.issues[number].labels.append(label)
+
+    def issue_remove_label(self, number: int, label: str) -> None:
+        if label in self.issues[number].labels:
+            self.issues[number].labels.remove(label)
+
+    def issue_comment(self, number: int, text: str) -> None:
+        self._maybe_fail("issue_comment")
+        self.issues[number].comments.append(text)
+
+    def issue_set_body(self, number: int, body: str) -> None:
+        self.issues[number].body = body
+
+    def issue_close(self, number: int) -> None:
+        self._maybe_fail("issue_close")
+        self.issues[number].state = "closed"
+
+    def issue_release_claim(self, number: int, in_progress_label: str) -> None:
+        self.issue_remove_label(number, in_progress_label)
+        self.assignees[number] = []
+
+    def trigger_ci(self, branch: str) -> None:
+        self.calls.append(("ci", branch))
+
+    def ci_state(self, branch: str, sha: str) -> Tuple[str, str]:
+        return self.train_ci.get(branch, "pending"), f"https://ci/{branch}"
+
+    def trigger_deploy(self, sha: str) -> None:
+        self.calls.append(("deploy", sha))
+
+    def redeploy(self, sha: str) -> None:
+        self.calls.append(("deploy", sha))
+
+    def trigger_tick(self) -> None:
+        self.calls.append(("tick", None))
+
+    def deploy_conclusion(self, pipeline: str, jobs: Sequence[str]) -> str:
+        return "none"
+
+
+# ------------------------------------------------------------------------------------------------ fixtures
+
+
+def build_seed(base: Path) -> Path:
+    """origin (bare, one commit on main) + a developer clone + the CI clone, built ONCE per test session: on a
+    loaded host one git process costs seconds, and every World copies these trees instead of re-running git."""
+    origin = base / "origin.git"
+    git(base, "init", "--bare", "-b", "main", origin.as_posix())
+    dev = base / "dev"
+    git(base, "clone", origin.as_posix(), dev.as_posix())
+    for name in ("a.txt", "b.txt", "c.txt", "shared.txt"):
+        (dev / name).write_text(f"{name} line 1\nline 2\nline 3\n", encoding="utf-8")
+    git(dev, "-c", "core.autocrlf=false", "add", ".")
+    git(dev, "commit", "-m", "initial")
+    git(dev, "push", "origin", "main")
+    git(base, "clone", origin.as_posix(), (base / "ci").as_posix())
+    return base
+
+
+class World:
+    """origin (bare) + a developer clone that makes PR branches + the CI clone the steward runs in."""
+
+    def __init__(
+        self,
+        tmp: Path,
+        seed: Path,
+        steward_settings: Optional[Dict[str, object]] = None,
+        verification: str = "watcher",
+    ) -> None:
+        self.tmp = tmp
+        tmp.mkdir(parents=True, exist_ok=True)
+        for name in ("origin.git", "dev", "ci"):
+            shutil.copytree(seed / name, tmp / name)
+        for name in ("dev", "ci"):
+            config = tmp / name / ".git" / "config"
+            text = config.read_text(encoding="utf-8")
+            config.write_text(text.replace((seed / "origin.git").as_posix(), (tmp / "origin.git").as_posix()), "utf-8")
+        self.origin = tmp / "origin.git"
+        self.dev = tmp / "dev"
+        self.ci = tmp / "ci"
+        config = {"merge": "steward", "verification": verification, "trunk": "main", "host": "github"}
+        config["steward"] = {"retry_culprit_once": False, **(steward_settings or {})}
+        path = tmp / "delivery.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        self.settings = ms.load_settings(path)
+        self.host = FakeHost(self.origin)
+        self.git = ms.Git(self.ci, "merge-steward", "steward@example.invalid")
+
+    def close(self) -> None:
+        self.git.close()
+
+    def pr(
+        self, number: int, path: str, text: str, body: str = "", base_ref: str = "main", message: str = "", **kw: object
+    ) -> str:
+        """A PR branch `pr-<n>` off `base_ref` that rewrites `path`; returns its head SHA."""
+        git(self.dev, "fetch", "origin")
+        git(self.dev, "checkout", "-B", f"pr-{number}", f"origin/{base_ref}")
+        (self.dev / path).write_text(text, encoding="utf-8")
+        git(self.dev, "add", path)
+        git(self.dev, "commit", "-m", message or f"change {number}")
+        git(self.dev, "push", "-f", "origin", f"pr-{number}")
+        head = git(self.dev, "rev-parse", "HEAD")
+        self.host.add_pr(number, head, [path], body=body or f"Refs #{100 + number}", **kw)  # type: ignore[arg-type]
+        if 100 + number not in self.host.issues:
+            self.host.add_issue(100 + number, labels=["in-progress"])
+        return head
+
+    def amend_pr(self, number: int, path: str, text: str) -> str:
+        """A follow-up commit on PR `number` (an author push after its train was built); returns the new head."""
+        git(self.dev, "checkout", f"pr-{number}")
+        (self.dev / path).write_text(text, encoding="utf-8")
+        git(self.dev, "add", path)
+        git(self.dev, "commit", "-m", f"follow-up on {number}")
+        git(self.dev, "push", "origin", f"pr-{number}")
+        head = git(self.dev, "rev-parse", "HEAD")
+        self.host.prs[number]["pr"].head_sha = head  # type: ignore[union-attr]
+        return head
+
+    def push_main(self, path: str, text: str) -> str:
+        git(self.dev, "fetch", "origin")
+        git(self.dev, "checkout", "-B", "main", "origin/main")
+        (self.dev / path).write_text(text, encoding="utf-8")
+        git(self.dev, "add", path)
+        git(self.dev, "commit", "-m", "a direct push")
+        git(self.dev, "push", "origin", "main")
+        return git(self.dev, "rev-parse", "HEAD")
+
+    def main(self) -> str:
+        return git(self.origin, "rev-parse", "main")
+
+    def trains(self) -> Dict[int, str]:
+        out = git(self.origin, "for-each-ref", "--format=%(refname:short)", "refs/heads/steward/")
+        return {int(name.rsplit("-", 1)[1]): name for name in out.split() if name}
+
+    def set_trains(self, *states: str) -> None:
+        for index, branch in self.trains().items():
+            self.host.train_ci[branch] = states[index - 1]
+
+    def tick(self, dry_run: bool = False) -> ms.Report:
+        report = ms.Report(dry_run=dry_run)
+        ms.Steward(self.settings, self.git, self.host, report, "https://ci/steward-run").tick()
+        return report
+
+    def verdict(self, sha: str, conclusion: str) -> ms.Report:
+        report = ms.Report()
+        ms.Steward(self.settings, self.git, self.host, report).verdict(sha, conclusion, "https://ci/deploy", "dev")
+        return report
+
+
+@pytest.fixture(scope="session")
+def seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_seed(tmp_path_factory.mktemp("seed"))
+
+
+@pytest.fixture
+def world(tmp_path: Path, seed: Path):
+    instance = World(tmp_path / "w", seed)
+    yield instance
+    instance.close()
+
+
+@pytest.fixture
+def make_world(tmp_path: Path, seed: Path):
+    made: List[World] = []
+
+    def factory(**kwargs: object) -> World:
+        instance = World(tmp_path / f"w{len(made)}", seed, **kwargs)  # type: ignore[arg-type]
+        made.append(instance)
+        return instance
+
+    yield factory
+    for instance in made:
+        instance.close()
+
+
+# ---------------------------------------------------------------------------------------------- the queue
+
+
+def test_a_green_train_lands_by_fast_forward_and_hands_the_issue_to_the_watcher(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    trains = world.trains()
+    assert list(trains) == [1], "one queued PR builds one train"
+    assert ("ci", trains[1]) in world.host.calls, "the train's CI is started"
+    before = world.main()
+    world.set_trains("success")
+    world.tick()
+    landed = world.main()
+    assert landed != before
+    assert git(world.origin, "merge-base", "--is-ancestor", world.host.prs[1]["pr"].head_sha, "main") == ""
+    assert world.trains() == {}, "the train branches are deleted after the landing"
+    assert "queue" not in world.host.labels_of(1)
+    assert any(f"merge-steward: landed {landed}" in c for c in world.host.pr_comments[1])
+    issue = world.host.issues[101]
+    assert any(f"merge-steward: landed {landed}" in c for c in issue.comments)
+    assert "awaiting-verification" in issue.labels
+    assert issue.state == "open", "landing never closes the issue: the deploy check does"
+    assert ("deploy", landed) in world.host.calls
+
+
+def test_the_landed_commit_is_exactly_the_tested_train(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    tested = git(world.origin, "rev-parse", world.trains()[1])
+    world.set_trains("success")
+    world.tick()
+    assert world.main() == tested
+
+
+def test_a_red_train_drops_only_its_culprit(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "b.txt", "b changed\n")
+    world.tick()
+    assert sorted(world.trains()) == [1, 2], "two disjoint PRs build two cumulative trains"
+    first = git(world.origin, "rev-parse", world.trains()[1])
+    world.set_trains("success", "failure")
+    world.tick()
+    assert world.main() == first, "the green prefix lands without the culprit"
+    assert "queue-failed" in world.host.labels_of(2) and "queue" not in world.host.labels_of(2)
+    culprit_issue = world.host.issues[102]
+    assert "needs-rework" in culprit_issue.labels
+    assert "in-progress" not in culprit_issue.labels and world.host.assignees[102] == [], "the claim is released"
+    assert "awaiting-verification" in world.host.issues[101].labels
+
+
+def test_a_red_first_train_lands_nothing(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "b.txt", "b changed\n")
+    before = world.main()
+    world.tick()
+    world.set_trains("failure", "failure")
+    world.tick()
+    assert world.main() == before
+    assert "queue-failed" in world.host.labels_of(1)
+    assert "queue" in world.host.labels_of(2), "a PR behind the culprit stays queued"
+
+
+def test_retry_once_requeues_a_first_failure_then_drops_the_second(make_world) -> None:
+    world = make_world(steward_settings={"retry_culprit_once": True})
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("failure")
+    world.tick()
+    assert "queue" in world.host.labels_of(1) and "queue-retried" in world.host.labels_of(1)
+    world.set_trains("failure")  # the retry built a fresh train in the same tick
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(1) and "queue" not in world.host.labels_of(1)
+    assert "queue-retried" not in world.host.labels_of(1), "a PR that leaves the queue gets a fresh retry later"
+
+
+def test_a_conflicting_pr_is_dropped_and_the_batch_continues(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "c.txt", "c from the PR\n")
+    world.push_main("c.txt", "c from the trunk\n")
+    world.tick()
+    assert list(world.trains()) == [1], "only the clean PR is in the batch"
+    assert "queue-conflict" in world.host.labels_of(2)
+    assert any("c.txt" in c for c in world.host.pr_comments[2])
+    assert "needs-rework" in world.host.issues[102].labels
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "label", "why"),
+    [
+        ({"ci": "failure"}, "queue-failed", "red"),
+        ({"draft": True}, "queue-failed", "draft"),
+        ({"body": "Closes #101"}, "queue-failed", "Refs #101"),
+    ],
+)
+def test_an_ineligible_pr_leaves_the_queue_with_the_reason(world: World, kwargs, label, why) -> None:
+    world.pr(1, "a.txt", "a changed\n", **kwargs)
+    world.tick()
+    assert world.trains() == {}
+    assert label in world.host.labels_of(1) and "queue" not in world.host.labels_of(1)
+    assert any(why in c for c in world.host.pr_comments[1])
+
+
+def test_a_pr_on_another_base_is_refused(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n", base="release")
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(1)
+
+
+@pytest.mark.parametrize("kwargs", [{"ci": "pending"}, {"ci": "none"}, {"labels": ("queue", "do-not-merge")}])
+def test_a_pr_that_is_not_ready_waits_in_the_queue(world: World, kwargs) -> None:
+    world.pr(1, "a.txt", "a changed\n", **kwargs)
+    world.tick()
+    assert world.trains() == {}
+    assert "queue" in world.host.labels_of(1) and "queue-failed" not in world.host.labels_of(1)
+
+
+def test_a_moved_trunk_lands_nothing_and_rebuilds(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    old_trains = world.trains()
+    world.set_trains("success")
+    pushed = world.push_main("b.txt", "someone pushed past the gate\n")
+    world.tick()
+    assert git(world.origin, "merge-base", "--is-ancestor", pushed, "main") == ""
+    assert world.main() == pushed, "nothing landed on top of the unexpected push"
+    rebuilt = world.trains()
+    assert rebuilt and rebuilt != old_trains, "the batch is rebuilt on the new trunk in the same tick"
+    assert "queue" in world.host.labels_of(1)
+
+
+def test_a_batch_in_flight_blocks_the_next_plan(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.pr(2, "b.txt", "b changed\n")
+    before = world.trains()
+    world.tick()  # train 1 still pending
+    assert world.trains() == before
+    assert world.main() == git(world.origin, "rev-parse", "main")
+
+
+def test_overlapping_footprints_go_to_separate_batches(world: World) -> None:
+    world.pr(1, "shared.txt", "line one changed\nline 2\nline 3\n")
+    world.pr(2, "shared.txt", "line 1\nline 2\nline three changed\n")
+    world.tick()
+    assert list(world.trains()) == [1]
+    assert "queue" in world.host.labels_of(2), "the overlapping PR waits for the next batch"
+
+
+def test_depends_on_waits_for_the_dependency(world: World) -> None:
+    world.pr(2, "b.txt", "b changed\n", body="Refs #102\nDepends-on: #3", enqueued_at="2026-10-26T09:00:00Z")
+    world.pr(3, "a.txt", "a changed\n")
+    world.tick()
+    assert list(world.trains()) == [1]
+    assert world.host.labels_of(2) == ["queue"], "the dependent PR is neither built nor dropped"
+    world.set_trains("success")
+    world.tick()
+    assert list(world.trains()) == [1], "once its dependency landed it builds"
+
+
+def test_serial_mode_tests_one_pr_at_a_time(make_world) -> None:
+    world = make_world(steward_settings={"parallel_trains": False})
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "b.txt", "b changed\n")
+    world.tick()
+    assert list(world.trains()) == [1]
+
+
+def test_a_mention_is_not_a_reference(world: World) -> None:
+    world.host.add_issue(142, labels=["in-progress"])
+    world.pr(1, "a.txt", "a changed\n", body="Refs #101\nRelated to #142, part of #142")
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    sha = world.main()
+    world.verdict(sha, "success")
+    assert world.host.issues[142].state == "open" and world.host.issues[142].comments == []
+    assert world.host.issues[142].labels == ["in-progress"], "a mentioned issue keeps its claim and gets no verdict"
+    assert world.host.issues[101].state == "closed"
+
+
+def test_a_refs_list_reaches_every_issue(world: World) -> None:
+    world.host.add_issue(150, labels=["in-progress"])
+    world.pr(1, "a.txt", "a changed\n", body="Refs #101, #150")
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    for number in (101, 150):
+        assert any(f"merge-steward: landed {world.main()}" in c for c in world.host.issues[number].comments)
+
+
+def test_the_train_commit_carries_no_pr_title(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.host.prs[1]["pr"].title = "Fix #101: the crash"  # type: ignore[union-attr]
+    world.tick()
+    message = git(world.origin, "log", "-1", "--format=%B", world.trains()[1])
+    assert "Fix #101" not in message and "Steward-PR: #1" in message
+
+
+def test_a_commit_message_that_closes_an_issue_is_refused(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n", message="Fix #101: the crash")
+    world.tick()
+    assert world.trains() == {} and "queue-failed" in world.host.labels_of(1)
+    assert any("commit message" in c and "Fix #101" in c for c in world.host.pr_comments[1])
+
+
+def test_a_pr_whose_head_moved_after_its_train_is_not_landed(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    before = world.main()
+    world.tick()
+    world.amend_pr(1, "a.txt", "a changed again, untested\n")
+    world.set_trains("success")
+    world.tick()
+    assert world.main() == before, "the trunk never takes a PR whose head is not the commit its train tested"
+    assert world.host.pr_state(1) == "open" and "queue" in world.host.labels_of(1)
+    assert not any("landed" in c for c in world.host.pr_comments[1])
+
+
+def test_a_pr_dequeued_while_its_train_ran_is_not_landed(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "b.txt", "b changed\n")
+    world.tick()
+    first = git(world.origin, "rev-parse", world.trains()[1])
+    world.host.pr_remove_label(2, "queue")
+    world.set_trains("success", "success")
+    world.tick()
+    assert world.main() == first, "only the prefix before the dequeued PR lands"
+    assert world.host.pr_state(2) == "open" and "queue-failed" not in world.host.labels_of(2)
+
+
+def test_an_interrupted_landing_is_completed_by_the_next_tick(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("success")
+    world.host.fail_once["issue_comment"] = 1
+    world.tick()
+    landed = world.main()
+    assert world.trains(), "an incomplete landing keeps its trains so the next tick can finish it"
+    world.tick()
+    issue = world.host.issues[101]
+    assert sum(f"merge-steward: landed {landed}" in c for c in issue.comments) == 1
+    assert "awaiting-verification" in issue.labels and world.trains() == {}
+    assert sum("merge-steward: landed" in c for c in world.host.pr_comments[1]) == 1
+    assert ("deploy", landed) in world.host.calls
+
+
+def test_an_errored_train_lands_the_green_prefix_and_is_retried_once(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "b.txt", "b changed\n")
+    world.tick()
+    first = git(world.origin, "rev-parse", world.trains()[1])
+    world.set_trains("success", "cancelled")
+    world.tick()
+    assert world.main() == first, "the green train ahead of a cancelled one still lands"
+    assert "queue" in world.host.labels_of(2) and "queue-retried" in world.host.labels_of(2)
+    world.set_trains("cancelled")
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(2), "the second run that cannot finish takes it out of the queue"
+    assert any("could not run CI to a result twice" in c for c in world.host.pr_comments[2])
+
+
+def test_a_dependency_dropped_from_the_batch_holds_its_dependent(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.pr(2, "c.txt", "c from the PR\n")
+    world.pr(3, "b.txt", "b changed\n", body="Refs #103\nDepends-on: #2")
+    world.push_main("c.txt", "c from the trunk\n")
+    world.tick()
+    assert "queue-conflict" in world.host.labels_of(2)
+    trains = world.trains()
+    assert list(trains) == [1] and "#3" not in git(world.origin, "log", "-1", "--format=%B", trains[1])
+    assert "queue" in world.host.labels_of(3), "the dependent waits for its dependency instead of landing first"
+
+
+def test_a_dependency_closed_without_landing_refuses_its_dependent(world: World) -> None:
+    world.pr(2, "b.txt", "b changed\n", body="Refs #102\nDepends-on: #3")
+    world.pr(3, "a.txt", "a changed\n", labels=())
+    world.host.prs[3]["closed"] = True
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(2)
+    assert any("closed without landing" in c for c in world.host.pr_comments[2])
+
+
+def test_a_direct_project_tick_is_green_and_lands_nothing(world: World, tmp_path: Path) -> None:
+    path = tmp_path / "direct.json"
+    config = {"merge": "direct", "verification": "watcher", "trunk": "main", "host": "github"}
+    path.write_text(json.dumps(config), encoding="utf-8")
+    world.settings = ms.load_settings(path)
+    world.pr(1, "a.txt", "a changed\n")
+    before = world.main()
+    assert ms.Steward(world.settings, world.git, world.host, ms.Report()).tick() == ms.EXIT_OK
+    assert world.trains() == {} and world.main() == before
+
+
+def test_dry_run_changes_nothing(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    before = world.main()
+    report = world.tick(dry_run=True)
+    assert world.trains() == {} and world.main() == before
+    assert world.host.calls == [] and world.host.labels_of(1) == ["queue"]
+    assert any("push trains" in line for line in report.lines)
+
+
+def test_a_missing_train_run_is_abandoned_without_blame(make_world) -> None:
+    world = make_world(steward_settings={"dispatch_grace_minutes": 0})
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("missing")
+    world.tick()
+    assert "queue" in world.host.labels_of(1) and "queue-failed" not in world.host.labels_of(1)
+
+
+def test_reverify_redeploys_the_trunk_and_consumes_the_label(world: World) -> None:
+    world.host.add_issue(150, labels=["reverify"])
+    world.tick()
+    assert ("deploy", world.main()) in world.host.calls
+    assert "reverify" not in world.host.issues[150].labels
+
+
+# -------------------------------------------------------------------------------------------- the watcher
+
+
+def landed_world(world: World, body: str) -> str:
+    world.pr(1, "a.txt", "a changed\n")
+    world.host.issues[101].body = body
+    world.host.issues[101].comments.append("merge-steward: claim-started 2026-10-26T08:00:00Z")
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    return world.main()
+
+
+def test_a_green_deploy_containing_the_landing_verifies_and_closes(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n- [ ] the dev check passes (post-deploy)\n")
+    world.verdict(sha, "success")
+    issue = world.host.issues[101]
+    assert issue.state == "closed"
+    assert "- [x] the dev check passes (post-deploy)" in issue.body
+    assert "verified" in issue.labels and "awaiting-verification" not in issue.labels
+    assert "in-progress" not in issue.labels
+    closing = issue.comments[-1]
+    assert "verified" in closing and "2/2" in closing and "Time spent" in closing
+
+
+def test_the_verdict_is_idempotent(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n")
+    world.verdict(sha, "success")
+    count = len(world.host.issues[101].comments)
+    world.host.issues[101].state = "open"
+    world.host.issues[101].labels.append("awaiting-verification")
+    world.verdict(sha, "success")
+    assert len(world.host.issues[101].comments) == count
+
+
+def test_an_issue_waits_for_every_pr_it_queued(world: World) -> None:
+    world.pr(2, "b.txt", "b changed\n", labels=())  # the issue's second PR, still open and not yet queued
+    sha = landed_world(world, "- [x] implement\n")
+    world.host.issues[101].comments.append("merge-steward: queued PR #2")
+    world.verdict(sha, "success")
+    issue = world.host.issues[101]
+    assert issue.state == "open" and "awaiting-verification" in issue.labels
+
+
+def test_an_interrupted_verdict_is_completed_by_the_next_one(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n")
+    world.host.fail_once["issue_close"] = 1
+    with pytest.raises(ms.HostError):
+        world.verdict(sha, "success")
+    issue = world.host.issues[101]
+    assert issue.state == "open" and "awaiting-verification" in issue.labels, "still a candidate"
+    world.verdict(sha, "success")
+    issue = world.host.issues[101]
+    assert issue.state == "closed" and "awaiting-verification" not in issue.labels
+    assert sum("merge-steward: verified" in c for c in issue.comments) == 1
+
+
+def test_open_checklist_items_keep_the_issue_open_for_a_session(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n- [ ] update the operator guide\n")
+    world.verdict(sha, "success")
+    issue = world.host.issues[101]
+    assert issue.state == "open" and "needs-closeout" in issue.labels and "verified" in issue.labels
+    assert "update the operator guide" in issue.comments[-1]
+
+
+def test_a_red_deploy_returns_only_the_covered_issues(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n")
+    world.host.add_issue(190, labels=["awaiting-verification"], comments=["merge-steward: landed " + "f" * 40])
+    world.verdict(sha, "failure")
+    covered = world.host.issues[101]
+    assert {"verification-failed", "needs-rework"} <= set(covered.labels) and covered.state == "open"
+    assert world.host.assignees[101] == []
+    assert world.host.issues[190].labels == ["awaiting-verification"], "a landing the deploy does not contain"
+
+
+def test_a_deploy_older_than_the_landing_does_not_cover_it(world: World) -> None:
+    old = world.main()
+    sha = landed_world(world, "- [x] implement\n")
+    assert old != sha
+    world.verdict(old, "success")
+    assert world.host.issues[101].state == "open"
+    assert "awaiting-verification" in world.host.issues[101].labels
+
+
+def test_verification_none_verifies_at_landing(make_world) -> None:
+    world = make_world(verification="none")
+    world.pr(1, "a.txt", "a changed\n")
+    world.host.issues[101].body = "- [x] implement\n"
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    assert world.host.issues[101].state == "closed"
+    assert not [c for c in world.host.calls if c[0] == "deploy"]
+
+
+def test_record_landing_serves_a_direct_merge(world: World) -> None:
+    head = world.pr(1, "a.txt", "a changed\n")
+    world.host.prs[1]["merge"] = head
+    report = ms.Report()
+    code = ms.Steward(world.settings, world.git, world.host, report).record_landing(1)
+    assert code == ms.EXIT_OK
+    assert any(f"merge-steward: landed {head}" in c for c in world.host.issues[101].comments)
+    assert "awaiting-verification" in world.host.issues[101].labels
+
+
+def test_enqueue_refuses_red_ci_and_accepts_green(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n", ci="failure", labels=())
+    steward = ms.Steward(world.settings, world.git, world.host, ms.Report())
+    assert steward.enqueue(1, allow_pending=False) == ms.EXIT_REFUSED
+    assert "queue" not in world.host.labels_of(1)
+    world.host.prs[1]["ci"] = "success"
+    assert steward.enqueue(1, allow_pending=False) == ms.EXIT_OK
+    assert "queue" in world.host.labels_of(1) and ("tick", None) in world.host.calls
+
+
+# ------------------------------------------------------------------------------------------ pure functions
+
+
+def test_issue_references_tell_closing_keywords_apart() -> None:
+    text = "Refs #12, #16, closes #13 and Fixes: #14\nPart of #15\nRelated to #17\nhotfix #18"
+    assert ms.referenced_issues(text) == ([12, 13, 14, 16], [13, 14])
+
+
+def test_closing_keywords_are_read_as_both_hosts_read_them() -> None:
+    assert ms.referenced_issues("Implements group/proj#9; fixing https://gl/g/p/-/issues/8")[1] == [8, 9]
+    assert ms.closing_line("subject\n\nResolves: #4 and #5") == "Resolves: #4 and #5"
+    assert ms.closing_line("prefix #3, a hotfix #4, see #5") is None
+
+
+def test_a_ci_clone_url_yields_host_and_project_without_its_token() -> None:
+    url = "https://gitlab-ci-token:s3cret@gitlab.example.com/group/sub/proj.git"  # pragma: allowlist secret
+    assert ms.host_and_path(url) == ("https://gitlab.example.com", "group/sub/proj")
+    assert "s3cret" not in ms.redact(url)
+    assert ms.host_and_path("git@github.com:owner/repo.git") == ("https://github.com", "owner/repo")
+    assert ms.host_and_path("ssh://git@gitlab.example.com:2222/g/p.git") == ("https://gitlab.example.com", "g/p")
+
+
+def test_checklist_counts_ignore_fenced_examples() -> None:
+    body = "- [x] one\n```\n- [ ] not an item\n```\n* [ ] two\n"
+    assert ms.checklist_counts(body) == (1, 2, ["two"])
+
+
+def test_post_deploy_items_are_the_only_ones_ticked() -> None:
+    body, count = ms.tick_post_deploy_items("- [ ] smoke on dev (post-deploy)\r\n- [ ] docs\r\n")
+    assert count == 1 and body == "- [x] smoke on dev (post-deploy)\r\n- [ ] docs\r\n"
+
+
+def test_the_last_landing_line_wins() -> None:
+    assert ms.last_landing(["merge-steward: landed abcdef1 (PR #1)", "x\nmerge-steward: landed 1234567 (PR #2)"]) == (
+        "1234567"
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"merge": "steward", "steward": {"batch_sise": 3}},
+        {"merge": "queue"},
+        {"verification": "maybe"},
+        {"steward": {"train_prefix": "trains"}},
+    ],
+)
+def test_the_configuration_is_validated(tmp_path: Path, config: Dict[str, object]) -> None:
+    path = tmp_path / "delivery.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ms.ConfigError):
+        ms.load_settings(path)
+
+
+def test_an_absent_configuration_is_todays_behaviour(tmp_path: Path) -> None:
+    settings = ms.load_settings(tmp_path / "absent.json")
+    assert (settings.merge, settings.verification) == ("direct", "session")
+
+
+def test_the_push_credential_never_reaches_argv_and_is_deleted(tmp_path: Path, monkeypatch) -> None:
+    seen: List[List[str]] = []
+
+    def fake_run(command, **_kwargs):
+        seen.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(ms.subprocess, "run", fake_run)
+    repo = ms.Git(tmp_path, "merge-steward", "steward@example.invalid")
+    repo.use_http_header("Authorization: Basic c2VjcmV0")
+    repo.run("push", "origin", "HEAD")
+    include = next(arg for arg in seen[0] if arg.startswith("include.path="))
+    config = Path(include.split("=", 1)[1])
+    assert "c2VjcmV0" in config.read_text(encoding="utf-8")
+    assert not any("c2VjcmV0" in arg for arg in seen[0])
+    repo.close()
+    assert not config.exists()

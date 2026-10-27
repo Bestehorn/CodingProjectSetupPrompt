@@ -10,8 +10,8 @@ it can resolve its own run state. It degrades cleanly in any other session: with
 state, its scope is the current working tree.
 
 Two differences from the Claude Code twin, both in the ending. Kiro has no session-archive
-tool, so the report leaves ending the session to the user (`/quit` in the CLI) instead of
-offering to archive itself. And Kiro has no structured question tool, so a blocker that
+tool, so the report leaves ending the session to the user (`/quit` in the CLI) where the Claude
+twin archives itself on `CLOSE: YES`. And Kiro has no structured question tool, so a blocker that
 genuinely needs a decision is asked in TEXT, in one batched block under the table, in the
 shape "Output" prescribes — the Claude twin routes the same thing through `AskUserQuestion`.
 The verdict table itself is identical on both sides, deliberately.
@@ -36,8 +36,8 @@ refuse the turn-end anyway.
 files and temp residue. Do not inspect, enumerate, or mention other sessions' worktrees,
 branches, locks or issues — they are not your business and reporting them is noise. Resolve
 your own scope from `.kiro/agent-state/issue-work-orchestrator/registry.json` → your entry's
-`state_dir` → `resume_state.md` and its `CURRENT_ISSUE` / `CURRENT_WORKTREE` /
-`CURRENT_BRANCH` / `CURRENT_PR` fields. The `session-register` gate (run by `kiro_hooks.py`
+`state_dir` → `resume_state.md` and its seeded `CURRENT_ISSUE` / `WORKTREE` / `BRANCH` /
+`PR` fields. The `session-register` gate (run by `kiro_hooks.py`
 at agentSpawn) seeds `resume_state.md` and `workflow_state.md` at the path the registry names;
 if that file is nevertheless missing, create it at exactly that path, never under a readable
 label of your own devising (a state file under an invented name is found only through its
@@ -60,6 +60,15 @@ the deciding number).
    spec artifacts committed, docs touched where the change requires it — the issue's own task
    items are Step 2's subject and are checked there, mechanically). Read the issue and this
    run's `resume_state.md` rather than trusting recall.
+   - **Handed off is done — for this session.** Where `config/delivery.json` says `merge: steward`
+     (or `verification: watcher`), an issue whose PR is ENQUEUED with its own CI green (or merged
+     with its landing recorded) and whose hand-off note carries the `merge-steward:` lines
+     (`.kiro/docs/delivery.md` §3) has met the session's definition of done: the train, the
+     landing, the deploy and the post-deploy check belong to the steward and the verdict watcher,
+     so "green for the merged SHA" reads "green for the PR's head" here. Confirm it mechanically
+     (`queue-status` lists the PR, or the issue carries the `landed` line); a PR that is NOT in the
+     queue (`queue-failed`, `queue-conflict`, `needs-rework`) is unfinished work — finish it per
+     the bullet below.
    - **If anything is missing, FINISH IT NOW** — `@continue-work` semantics: resume the
      recorded phase and drive it to a terminal state. Do not report a gap and stop; do not
      ask whether to finish it. The answer is always yes, and `continuous-work` governs.
@@ -90,7 +99,10 @@ the deciding number).
    - An unticked item is UNFINISHED WORK unless one of two things is evidenced FROM THE ISSUE
      ITSELF: (a) a deferral recorded on the issue BEFORE this close-out, naming its reason
      and its routing per `issue-filing-discipline` (fixed here / a findings-ledger row / ONE
-     gated issue); or (b) a Proven Exception from `continuous-work`, stated with its proof.
+     gated issue); or (b) a Proven Exception from `continuous-work`, stated with its proof; or
+     (c) on a HANDED-OFF issue, the item carries the suffix `(post-deploy)` because only a deploy
+     can prove it — the verdict watcher ticks exactly those, and an issue whose other items are
+     open is never handed off.
      **A deferral written DURING close-out to make this gate pass is not a deferral — it is
      unfinished work renaming itself. Finish the item instead.**
    - One carve-out: an issue this session closed ADMINISTRATIVELY (duplicate, obsolete,
@@ -135,10 +147,14 @@ the deciding number).
 **Step 3 — Is CI still running? (wait for it; it is part of the work)**
    Pending CI means the work is not finished, so this precedes every cleanliness check.
    - Determine your own run: the MR/PR and branch from your run state, via the wrapper script
-     (`use-git-wrapper-scripts`) — never `glab`/`gh`/`curl`.
-   - If a pipeline is non-terminal, WAIT and monitor to a terminal state: repeated
-     `pipeline status` / `get-run <id>` captures on a stated interval, reporting only the
-     latest status plus elapsed. Never a blocking watch command with no clock and no timeout.
+     (`use-git-wrapper-scripts`) — never `glab`/`gh`/`curl`. Your run is the MR/PR's own; a
+     handed-off PR's train, the trunk and the deploy are the steward's (Step 1) and are not
+     waited for here.
+   - If a pipeline is non-terminal, WAIT for it in the FOREGROUND, bounded: `pipeline wait <id>
+     --timeout-seconds 540` (GitHub: `wait-run <id> --timeout-seconds 540`), re-issued while it
+     exits 11 — never a watch command with no clock and no timeout, never a `sleep`, never a
+     background task you then wait for (`parallel-by-default`). Row 3 carries the verdict and the
+     elapsed total.
    - Red CI is the debugging loop, not a close-out: enumerate EVERY failing job and every
      failure inside it, group by root cause, fix them ALL, and push once
      (`remote-ci-must-pass`, `ci-owns-the-test-suite`). If CI cannot run at all, that rule's
@@ -171,10 +187,11 @@ the deciding number).
       removed, and randomized `cdk.out<hash>` assemblies accumulate in the OS temp dir (one
       report reached 170 GB in two days). An aborted bundling also leaves `bundling-temp-*` /
       empty `asset.<hash>` that makes the NEXT deploy fail, so this is correctness, not just
-      disk. Run the reaper — its default 28-minute budget fits a 30-minute tool cap; pass a
-      lower `--budget-minutes` to fit a shorter one:
+      disk. Run the reaper in the foreground with a `--budget-minutes` that fits the tool's
+      timeout (9 for a 10-minute cap), re-running while it exits 3 — never as a background
+      task you then wait for (the 28-minute default budget is for an unattended job):
       ```bash
-      python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply
+      python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply --budget-minutes 9
       ```
       It removes your session-scoped temp contents wholesale (provably yours) and, in the
       shared OS temp dir, only known residue patterns untouched for 30+ minutes whose rename
@@ -196,7 +213,11 @@ the deciding number).
       forbidden.
 
 **Step 6 — Your worktree, branch, lock AND claim markers are gone**
-   Confirm the worktree and branch this session created were removed after merge. Tear down a
+   Confirm the worktree and branch this session created were removed after merge (or after the
+   hand-off — asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty).
+   A handed-off PR's REMOTE branch stays until the steward lands it, and so does the issue's
+   tracker claim — the steward or the watcher releases it when the issue comes back; release only
+   this run's local lock. Tear down a
    per-worktree venv FIRST if one exists (locked DLLs otherwise block removal on Windows);
    `git worktree remove` plain, `--force` only after confirming no uncommitted work would be
    lost; then delete the branch and verify with `git worktree list` and that
@@ -213,6 +234,9 @@ the deciding number).
    Report only your own; say nothing about anyone else's.
 
 **Step 7 — Issues updated and closed with evidence**
+   A HANDED-OFF issue is not closed by the session: its hand-off note is the record, the verdict
+   watcher closes it after a green post-deploy check (`.kiro/docs/delivery.md` §4), and row 7's
+   Detail says `#412 handed off — watcher closes`.
    For each issue this run finished: a final comment linking the merged MR/PR and the
    evidence, the checklist fully ticked — the count re-read after whatever Step 2 made you
    finish, not the count you started with — time spent recorded, and the issue closed via the
@@ -233,14 +257,12 @@ the deciding number).
 
 **Step 9 — A terminal state recorded**
    APPEND a block at the END of this run's `resume_state.md` carrying `Status: COMPLETED`,
-   a terminal `Phase: DONE`, and `WORKABLE_ISSUES_REMAIN: no`. On this host the stop gate
-   blocks while `Status` matches `IN_PROGRESS` AND `WORKABLE_ISSUES_REMAIN` is `yes` AND no
-   `AWAITING_USER` reason is recorded — it does not read `Phase` at all — so what actually
-   releases it is a `Status` that is no longer `IN_PROGRESS`, and `WORKABLE_ISSUES_REMAIN: no`
-   may be written HERE and at the orchestrator's DONE only — the orchestrator's "only at DONE"
-   rule means only at a TERMINAL point, and a close-out whose Steps 1–2 genuinely passed is
-   one. Append; never edit an earlier block (every field read
-   takes the LAST occurrence). Do NOT record a terminal state to end a turn on work that is
+   a terminal `Phase: DONE`, and `WORKABLE_ISSUES_REMAIN: no`. The `issue-loop-gate` (the
+   same gate Claude Code runs) releases on the terminal `Phase`/`Status`, each the WHOLE value
+   of its field (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`); `WORKABLE_ISSUES_REMAIN`
+   gates nothing and is written `no` for the reader, HERE and at the orchestrator's DONE only — a
+   close-out whose Steps 1–2 genuinely passed is a terminal point. Append; never edit an earlier
+   block (every field read takes the LAST occurrence). Do NOT record a terminal state to end a turn on work that is
    not finished: that is the failure the gate exists to catch, and the state file is the
    record someone will trust later. Set your registry entry's `status` to done.
 
@@ -304,7 +326,7 @@ else ever appears on that line.
 worked or filed, ascending by number, `- none` if there were none:
 
 ```
-- #<n> <worked → closed | worked → left open | filed> — <≤70 chars: MR, evidence, or why>
+- #<n> <worked → closed | worked → handed off | worked → left open | filed> — <≤70 chars: MR, evidence, or why>
 ```
 
 One line each, no sub-bullets, no grouping headers. An unticked task item that legitimately
@@ -335,8 +357,8 @@ worktree — those are obligations, not questions, and Steps 1–2 have already 
 "Shall I continue?" stays forbidden. If nothing is blocked, there is no Questions block.
 
 **When `CLOSE: YES`** there is nothing further to say and nothing to invoke: Kiro has no
-session-archive tool, so the table IS the go-ahead and `/quit` is the user's to type. Do not
-add a sentence telling them so.
+session-archive tool, so the table IS the go-ahead and ending or archiving the session is the
+operator's (`/quit`). Do not add a sentence telling them so.
 
 No AI attribution in any comment, commit or issue text (`no-ai-attribution`). Never modify
 anything under `.claude/`.

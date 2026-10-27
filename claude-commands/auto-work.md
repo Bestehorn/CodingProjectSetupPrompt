@@ -2,7 +2,7 @@
 description: Work the open-issue backlog fully autonomously and without stopping — fetch the latest code, claim each issue in-progress the moment it is picked, work it in its own git worktree via the spec/TDD engine (researching via MCP doc servers and the research agent where needed), and continue issue after issue through context compaction until the backlog is empty.
 argument-hint: "[nothing — works the whole backlog; optionally an issue number to start with]"
 disable-model-invocation: true
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, CronCreate, CronDelete, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
 Work this project's open-issue backlog AUTONOMOUSLY, end to end, following
@@ -44,8 +44,9 @@ issue, probably several, in less time than a human takes to answer one question.
    `.claude/worktrees/issue-<N>/` cut off freshly-fetched `origin/<main>` with an explicit
    descriptive branch (`-b issue-<N>-<slug>`). Stay MAIN-CHECKOUT-FREE: never
    `git checkout main`, never fast-forward the shared local `main`. Tear the worktree +
-   branch + lock down after every merge so nothing stale survives (binding:
-   `keep-git-clean.md`).
+   branch + lock down after every merge or hand-off so nothing stale survives — a handed-off
+   PR's remote branch and the issue's tracker claim stay until the steward lands it (binding:
+   `keep-git-clean.md`, `.claude/docs/delivery.md`).
 
 # Run identity — read this before writing any state (NON-NEGOTIABLE)
 
@@ -68,7 +69,9 @@ test command (`python scripts/run_tests.py` — bounded workers, no fail-fast; n
 one CI runs); apply the one-time concurrency-safe git config
 (`gc.auto 0`, `maintenance.auto false`, `gc.autoDetach false`); detect `ISSUE_MECHANISM`
 (the wrapper script — its absence is fatal: exit 3 below); record the in-progress
-convention and merge authority; then `git fetch origin --prune --no-auto-gc`.
+convention, the delivery mode (`config/delivery.json`; absent = direct merge, session
+verification) and, for direct merge, the merge authority; arm the run watchdog
+(`continuous-work.md`); then `git fetch origin --prune --no-auto-gc`.
 
 Set `MODE: AUTO`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
 `WORKABLE_ISSUES_REMAIN: yes` in this run's `resume_state.md`, and keep that last field `yes`
@@ -84,8 +87,9 @@ ability to stop does.
 
 Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → PREPARE
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
-CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → MERGE_CLEANUP → RESOLVE →
-refresh → LOAD_ISSUES. If an issue number was passed as `$ARGUMENTS`, work that one first,
+CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → HAND_OFF (merge steward or
+verdict watcher) or MERGE_CLEANUP → RESOLVE → refresh → LOAD_ISSUES. Returned work — an
+issue labelled `needs-rework` or `needs-closeout` — is selected before any new issue. If an issue number was passed as `$ARGUMENTS`, work that one first,
 then continue with the rest of the backlog.
 
 # Research, and the spec process
@@ -104,8 +108,10 @@ then continue with the rest of the backlog.
   REQUIREMENTS → DESIGN under hard byte caps, the full panel dispatched in ONE message
   with materiality-gated findings, delta review from iteration 2 and a frozen scope (cap 4
   for M, 6 for L, then approve-as-reviewed with residuals), TASKS in waves, and wave-
-  parallel implementation. When in doubt choose the smaller tier. CI is awaited in the
-  background, never with `sleep`; the end-to-end check runs in the pipeline after merge.
+  parallel implementation. When in doubt choose the smaller tier. The PR's CI is awaited
+  in the FOREGROUND, bounded, after the unblocked work — never with `sleep`; the end-to-end
+  check runs in the pipeline after merge, and where the verdict watcher verifies, the deploy's
+  last job — not this run — judges it.
 - Commit the reviewed spec artifacts on the issue branch before implementation begins, so
   the spec is in history independently of the code.
 - Pass the ABSOLUTE worktree path in EVERY delegate prompt (delegates inherit the session
@@ -170,8 +176,8 @@ already achieves:
    block does.
 
 Anything else — a finished issue, a long fix, a filling context window, an urge to
-summarize — is not a stopping point. Select the next issue and keep going. A merged PR, a
-green suite and a closed issue mean the NEXT issue begins in the SAME turn; an accurate
+summarize — is not a stopping point. Select the next issue and keep going. A merged or
+handed-off PR, a green suite and a closed issue mean the NEXT issue begins in the SAME turn; an accurate
 report of finished sub-work is the DISGUISED CHECK-IN described in
 `.claude/rules/continuous-work.md`, the most common form of this failure, and its accuracy is
 exactly what disguises it.
@@ -196,8 +202,8 @@ anything else → a row in `docs/findings-ledger.md`. A pass that files zero iss
 expected result, not a gap.
 
 **Belt and braces.** For a genuinely unattended run the user should pair this command with a
-completion condition — `/goal every open issue is merged and closed, or no workable issue
-remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
+completion condition — `/goal every open issue is merged and closed or handed off, or no
+workable issue remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
 message, so this command cannot set it for them). `/goal` has an independent evaluator judge
 after every turn whether the condition holds, which takes the "am I done?" decision out of
 your hands entirely. If you end this run with workable issues still remaining, the

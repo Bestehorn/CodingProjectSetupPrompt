@@ -21,7 +21,9 @@ WHY THIS EXISTS
        (measured 2026-10-01). Any run wider than named test FILES therefore holds one of the
        host-wide slots of scripts/suite_semaphore.py (`max(1, cores // 4)` slots per user,
        shared by every project and session) and WAITS for one rather than starting another
-       suite; run it as a background task and do other work meanwhile.
+       suite; run it as a background task while you do independent work, and collect it with
+       ONE bounded foreground wait (`python .claude/hooks/wait_for.py --file <log> --line
+       <summary regex> --timeout-seconds 540`), never by ending the turn.
 
     Because every caller — the pre-push hook, the CI test job, the agent fleet, the
     `.pre-commit-config.yaml` manual-stage hook — goes through this script, the local run

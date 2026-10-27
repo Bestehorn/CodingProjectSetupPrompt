@@ -78,11 +78,12 @@ evidence-proven code in one session.
 | `rules/issue-filing-discipline.md` | WHEN an issue may be filed at all: observed defects only, fix-first, zero-is-valid, provenance, findings ledger (all agents) |
 | `rules/continuous-work.md` | WHEN a turn may end: never stop for permission; four proven exceptions only; a question is five lines with the recommended option first; reversible decisions are decided, not asked (all agents + main session) |
 | `rules/proportionality.md` | HOW MUCH spec a change gets: tiers S/M/L from the ASK, hard byte caps, scope frozen once review opens, no measurements in specs (all agents) |
-| `rules/parallel-by-default.md` | Independent work runs concurrently — panels, research, implementation waves in ONE message; CI awaited in the background (all agents) |
+| `rules/parallel-by-default.md` | Independent work runs concurrently — panels, research, implementation waves and independent suites run together; a wait you need runs in the foreground, bounded, after the unblocked work; a green PR is handed to the merge steward, never waited on (all agents) |
 | `rules/native-tools-over-shell.md` | A Bash call is the expensive tool: files through Read/Grep/Glob/Write/Edit, never `cat`/`grep`/`ls`/heredocs; one shell call per step; no foreground sleep (the `no-foreground-sleep` gate); suites through the runner's host-wide slot (all agents) |
 | `docs/review-contract.md` | The finding shape every reviewer uses and the forbidden findings; installs to `.claude/docs/`, read on demand |
+| `docs/delivery.md` | HOW a green PR lands, deploys and is verified, by the mode `config/delivery.json` selects: hand-off to the merge steward, the verdict watcher, the `(post-deploy)` items, the `needs-rework` return path; installs to `.claude/docs/`, read at the PR phase |
 | `rules/ci-owns-the-test-suite.md` | WHERE tests run: affected tests locally, full suite in CI, never as a commit precondition; commit often and push once; bounded local workers (never `-n auto`); fix EVERY failure a CI run reports in one pass (all agents + main session) |
-| `hooks/hooks.py`, `hooks/gate_*.py` | The Python hook dispatcher and its discovered gates: the PUSH gate and stop gate (both accept per-task and wave captures), the issue-loop brake, no-env-vars, no-foreground-sleep, claim-before-worktree, the issue-filing gate; `red_for_right_reason.py` is the RED-audit helper |
+| `hooks/hooks.py`, `hooks/gate_*.py` | The Python hook dispatcher and its discovered gates: the PUSH gate and stop gate (both accept per-task and wave captures), the issue-loop brake (which also releases a single-issue `HANDED_OFF` run), no-env-vars, no-foreground-sleep, no-idle-wait, claim-before-worktree, merge-steward (only the steward writes the trunk), the issue-filing gate, the stop-failure recorder; `red_for_right_reason.py` is the RED-audit helper, `wait_for.py` the bounded wait for a background task's output, `supervisor.py` the `/supervise` backstop |
 
 It reuses the two `spec-review/` agents (the adversarial `spec-review-agent` and the
 `spec-prompt-author-agent`). The four `/spec-*` slash commands live in
@@ -98,8 +99,9 @@ ENTIRE open-issue backlog end to end. Per issue it selects the highest-priority
 not-in-progress issue, creates a git worktree + branch, develops and PROVES a fix
 through the spec/TDD engine (embedding the same phase fragments and leaf agents — it
 does NOT nest the conductor), reviews the proof, documents it on the issue, opens a PR,
-drives CI green, self-approves + merges where allowed, cleans up, closes the issue, and
-repeats — fully resumable via `.claude/agent-state/issue-work-orchestrator/`.
+drives its CI green, hands it to the merge steward (or self-approves + merges where the project
+merges directly), cleans up, closes or hands off the issue, and repeats — fully resumable via
+`.claude/agent-state/issue-work-orchestrator/`.
 
 Run: `claude --agent issue-work-orchestrator` (or `/issues-work`, or "continue the work
 on the existing issues of this project"). For a single named issue, `/work-issue <X>` runs

@@ -1,11 +1,12 @@
 ---
-description: Work ONE specific issue end to end — claim it in-progress on the tracker FIRST, sync from remote, develop the fix in its own git worktree via the spec/TDD engine (spec artifacts committed before implementation), open a PR, drive CI green, merge, clean up, and close. Single issue only; never continues into the backlog.
+description: Work ONE specific issue end to end — claim it in-progress on the tracker FIRST, sync from remote, develop the fix in its own git worktree via the spec/TDD engine (spec artifacts committed before implementation), open a PR and drive its CI green, then hand it to the merge steward (or merge it and verify it, per config/delivery.json), close out the session, and stop. Single issue only; never continues into the backlog.
 argument-hint: "[issue number or ID, e.g. 77 or PROJ-123]"
 disable-model-invocation: true
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, AskUserQuestion, CronCreate, CronDelete, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
-Take issue **$ARGUMENTS** (call it issue X) from open to **merged and closed**, scoped to
+Take issue **$ARGUMENTS** (call it issue X) from open to **merged and verified** — or, where the merge
+steward lands the trunk, to **queued and handed off** (`.claude/docs/delivery.md`) — scoped to
 THIS ONE ISSUE. Steps 1–8 below ARE the single-issue lifecycle; consult the matching phase
 section of `.claude/agents/issue-work-orchestrator.md` only if a detail here leaves a
 question open — never read the whole file up front. You play the orchestrator role in this
@@ -40,6 +41,10 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Record `MODE: SINGLE_ISSUE` (that exact spelling — it is what the loop gate's MODE
      claim matches), `CURRENT_ISSUE: X`, `Status: IN_PROGRESS`, `AWAITING_USER: none`, and
      `WORKABLE_ISSUES_REMAIN: no`.
+   - **Arm the run watchdog** once in this process, exactly as the session-start context prints it
+     (`CronCreate`, session-only, recurring, the `[run-watchdog]` prompt — `continuous-work.md`). It fires only
+     while the session is idle, so a turn an API error kills is resumed without a person; it costs nothing
+     while you work.
    - **`WORKABLE_ISSUES_REMAIN: no` gates NOTHING** (`run-identity.md` §5): it only chooses
      the WORDING of an `issue-loop-gate` refusal. What lets this command finish after ONE
      issue is reaching a terminal `Phase` on X and not selecting another, not this field.
@@ -125,6 +130,12 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      `runs/<run-id>/workflow_state.md` so the TDD/evidence hooks fire for this run.
 
 **Step 4: Classify, then run the spec process (spec-author / spec-review-agent)**
+   - **Ask every open product question NOW, in one batch** (`continuous-work.md`, "How to ask"): list
+     each decision the ask leaves open that no spec, code, doc or decision log settles; post them on the issue
+     and in ONE five-line message; then keep working on everything that does not depend on the answers. Ask
+     with `AskUserQuestion` — which blocks the session — only when the next step depends on an answer and
+     nothing independent remains. A decision asked at the start is answered while you build; one asked at the
+     end costs the operator's whole reply time.
    - CLASSIFY the tier from the ASK (`proportionality.md`): **S** for a value, default,
      config, message or doc change or a bounded local fix — however many files, snapshots
      or infrastructure constants it touches; **M** for a feature or fix across components
@@ -156,8 +167,8 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Once the spec has passed review and BEFORE the first line of implementation, commit
      the spec artifacts on the issue branch:
      `git -C <worktree> add .claude/specs/<slug>` then
-     `git -C <worktree> commit` with a descriptive message referencing issue X (no AI
-     attribution). This is a distinct commit, not folded into the implementation commit,
+     `git -C <worktree> commit` with a descriptive message referencing issue X as `Refs #X` (no AI
+     attribution, no closing keyword). This is a distinct commit, not folded into the implementation commit,
      so the reviewed spec is in the repo's history independent of the code.
    - **Do NOT push it on its own.** The commit is the gate; a separate push is not. A push
      triggers a CI run over a branch with no code change in it, which is a pipeline run
@@ -178,11 +189,20 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      → dispatch all the wave's IMPL tasks in ONE message → run once →
      `evidence/green/wave-N.txt` → ONE commit per wave. Tier S is a single wave. Then run
      `adversarial-verifier` once and produce `evidence/REPORT.md` (≤ 8,000 bytes).
+   - **Overlap the verification, never thin it.** The suites of one capture that do not depend on each other
+     (a Python suite, a UI suite, a type check) start TOGETHER as background tasks, each through
+     `scripts/run_tests.py` / `scripts/suite_semaphore.py run` so the host-wide slots still bound the machine,
+     and are collected with bounded foreground waits (`python .claude/hooks/wait_for.py --file <capture>
+     --line <summary regex> --timeout-seconds 540`, re-issued on exit 11). While a wave's green run is in
+     flight, dispatch the NEXT wave's TEST authors (their files are disjoint by construction); that wave's red
+     capture is taken only after this wave's green capture passed and is committed. Draft the issue note and
+     `evidence/REPORT.md` while the verifier re-runs. Nothing is skipped: every capture, the RED audit and the
+     verifier happen exactly as before — they just stop waiting for each other.
    - **No per-task full-suite run.** Commit per task instead — the pre-commit hook is lint
      + security, about a second. The regression verdict for the whole batch is the CI run
      after Step 7's single push (`ci-owns-the-test-suite.md`). Run the affected module
      locally when a change plainly reaches past its paired tests; never `pytest -n auto`,
-     and never two worktrees running suites at the same time.
+     and never a suite outside the host-wide semaphore.
    - Evidence, not assertion: `spec-implementer` writes code and tests but never certifies
      them; YOU run the tests and capture the output; `adversarial-verifier` independently
      re-runs and tries to refute.
@@ -196,24 +216,30 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      whole-suite check is the CI run in Step 7.
    - PROOF_GATE: accept only when a test reproducing the issue's REPORTED SYMPTOM now
      passes (cite it), the full suite is green with no skip/xfail dodges — cite the CI run
-     for the head SHA (run id + SHA), or the `pre-push` hook's local run while CI-OUTAGE
+     for the PR's head SHA (run id + SHA), or the `pre-push` hook's local run while CI-OUTAGE
      MODE is declared — `adversarial-verifier` returned VERIFIED, coverage of changed code
      meets the project threshold, and — for a bugfix — regressions cover the Unchanged
      Behavior clauses. On insufficient proof, record why as `DL-NNN` and reject back to
-     implement (cap ~5 cycles, then escalate once).
+     implement (cap 3 cycles, then escalate once — the orchestrator's PROOF_GATE).
    - DEFECTS YOU DISCOVER ALONG THE WAY (`issue-filing-discipline.md`): blocking → absorb
      into this change; small and clear (a few lines, no design choice) → **fix it now** in
      this worktree and mention it in the commit/PR, do NOT file it; needs extensive
      research, design options, or work outside this issue → delegate to
      `issue-intake-agent` for ONE gated issue (`Origin: spawned-discovery`,
-     `Spawned-from: #X`, plus `Subject:`/`Filing-rationale:`); anything else → a row in
-     `docs/findings-ledger.md`. Finishing with zero new issues filed is the expected result.
-   - DOCUMENT: post the full writeup on issue X via `comment-issue` (root cause with
-     citation, approach, spec/design summary, tests added, quoted proof / link to
-     `evidence/REPORT.md`), then commit the code, tests, and evidence with an
-     evidence-based message referencing issue X.
+     `Spawned-from: #X`, plus `Subject:`/`Filing-rationale:`); anything else → a row via
+     `python scripts/memory_compile.py ledger add`, committed IN THIS PR. Finishing with zero new issues filed
+     is the expected result.
+   - DOCUMENT, before the push and in this PR (nothing goes to the trunk after the landing — no evidence PR,
+     no ledger PR, `.claude/docs/delivery.md` §2): the full writeup on issue X via `comment-issue` (root cause
+     with citation, approach, spec/design summary, tests added, link to `evidence/REPORT.md`); every checklist
+     item that is DONE ticked; every item only a deploy can prove carries the suffix `(post-deploy)`; then
+     commit the code, tests, evidence and ledger rows with an evidence-based message referencing issue X
+     as `Refs #X` (never a closing keyword in a commit: the host would close X at landing, before the deploy
+     check, and the steward refuses the PR).
 
-**Step 7: PR → CI green → merge (ONE push, ONE run per fix batch)**
+**Step 7: PR → its CI green (ONE push, ONE run per fix batch)**
+   - Read `config/delivery.json` (absent = `merge: direct`, `verification: session`) and
+     `.claude/docs/delivery.md`; the mode decides Step 8.
    - Remote Sync the worktree once more, rebase on the latest `origin/<main>`, delegate any
      conflict to `code-merge-reviewer`, and re-run the AFFECTED tests after integrating.
    - Ensure everything that belongs is committed (`git -C <worktree> status`). Optionally
@@ -223,17 +249,14 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      what CI is about to do anyway (`ci-owns-the-test-suite.md`).
    - **Push ONCE.** The push triggers the pre-push hook (mypy, plus the full suite if
      CI-OUTAGE MODE is declared) and then the CI run that is the authoritative verdict.
-   - Open the PR via `create-pr` (base `main`, head `<branch>`, body linking issue X and
-     the evidence). Title and body describe the change only — strip any AI-attribution
-     line the tool adds. Record `PR` (that field name).
-   - Approve + merge per the recorded authority: `approve-pr` then `merge-pr`. If branch
-     protection forbids self-approval, set `AWAITING_USER: waiting for external approval
-     of PR #<n>`, poll `get-pr` on an interval, checkpoint between polls, and merge once
-     approved and CI is green; clear `AWAITING_USER` back to `none` after merging.
-   - Wait for CI in the BACKGROUND: start the wrapper's blocking wait (`pipeline wait
-     <id>` / `wait-run <id>`) as a background task — never `sleep` in a tool call — and
-     meanwhile write the issue note and the docs. Then read the verdict via
-     `get-pr-checks` / `get-logs`.
+   - Open the PR via `create-pr` (base `main`, head `<branch>`, body linking issue X with
+     `Refs #X` — never a closing keyword when `verification` is `watcher` — and the evidence). Title and body
+     describe the change only — strip any AI-attribution line the tool adds. Record `PR` (that field name).
+   - Wait for the PR's CI WITHOUT ending the turn: the issue note and the docs are already written, so run
+     the wrapper's blocking wait in the FOREGROUND with a bounded timeout (`pipeline wait <id>
+     --timeout-seconds 540` / `wait-run <id> --timeout-seconds 540`, Bash timeout 600000), re-issuing it while
+     it exits 11 — never `sleep` in a tool call, never a background task you then wait for (it dies with the
+     session's process and never wakes you). Then read the verdict via `get-pr-checks` / `get-logs`.
      **On failure, fix the whole run in one pass:** retrieve the COMPLETE logs of EVERY
      non-successful job (the pipeline does not fail fast, so a red run is the complete
      list), enumerate every failing test and check, group them by root cause and record
@@ -241,38 +264,51 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      the worktree committing as you go, then push ONCE and re-monitor. Fixing one failure
      and re-pushing to discover the next is forbidden. Never abandon a red pipeline.
 
-**Step 8: Clean up, close, and STOP**
-   - Confirm the merge landed on the trunk WITHOUT touching local `main`:
-     `git fetch origin --prune --no-auto-gc` then
-     `git merge-base --is-ancestor <merge-sha> origin/<main>`.
-   - `delete-remote-branch` if the host did not auto-delete. Tear down the worktree venv
-     FIRST if one was provisioned (locked DLLs otherwise block removal on Windows), then
-     `git worktree remove .claude/worktrees/issue-<X>` and
-     `git branch -D issue-<X>-<slug>`. Verify with `git worktree list` and that the
-     directory is gone (`keep-git-clean.md`).
-   - Wait for the post-merge trunk pipeline in the background; its deploy and post-deploy
-     stage run the committed end-to-end check, and that verdict on the merged SHA is the
-     E2E evidence (`always-test-e2e.md`) — you never deploy a branch to the shared
-     environment or ask the operator to check anything by hand. If it fails, the fix is
-     not done — rework in a FRESH worktree cut from `origin/<main>` until it is green.
-   - RESOLVE per `issue-tracking.md`: final comment linking the merged PR and the evidence,
-     checklist fully ticked — re-read X and COUNT its `- [ ]` / `- [x]` lines, then finish
-     any item still open rather than closing over it (only an item whose deferral was
-     already recorded on the issue may stay unticked, routed per
-     `issue-filing-discipline.md`, never as an automatic follow-up issue) — time
-     spent recorded (elapsed from the Step 2 start time), then close X via `update-issue`.
-   - Release the local lock (`rmdir .locks/issue-<X>.lock`) — and remove the tracker's
-     in-progress marker BEFORE releasing that lock, since the lock is the ownership evidence
-     the removal guard reads. Then, by APPENDING at the END of `resume_state.md`, record
-     `Status: COMPLETED` and a terminal `Phase: DONE`, plus `WORKABLE_ISSUES_REMAIN: no`, and
-     update your registry entry. **The terminal value is what actually releases the Stop gate**
-     — it must be the WHOLE value of the field (`Phase: DONE`, never
-     `Phase: DONE (was IMPLEMENT)`), and an unrecorded belief that you are finished releases
-     nothing.
+**Step 8: Land, verify or hand off — then close out and STOP**
+   - **`merge: steward` (any verification) — HAND OFF.** `python scripts/<wrapper>.py enqueue-pr <PR>`
+     (exit 4 prints why the queue refuses it: fix that, never work around it; the `merge-steward` gate refuses
+     `merge-pr` and any push to the trunk). Post the hand-off note on X (`.claude/docs/delivery.md` §3: PR,
+     evidence path, what the post-deploy check must show, and the two `merge-steward:` lines verbatim, the
+     claim time from Step 2). APPEND `Phase: HANDED_OFF` to `resume_state.md` and `Phase: DONE` +
+     `Status: COMPLETED` to `workflow_state.md`. The steward lands it; the verdict watcher (or, under
+     `verification: none`, the landing itself) verifies and closes X. A conflict, a red train or a red deploy
+     comes back to X as `needs-rework` with the claim released — a later run picks it up. Keep the tracker
+     claim; release the local lock in the close-out below.
+   - **`merge: direct` + `verification: watcher` — MERGE, RECORD, HAND OFF.** Approve + merge per the
+     recorded authority (`approve-pr`, `merge-pr`; if branch protection forbids self-approval, set
+     `AWAITING_USER: waiting for external approval of PR #<n>`, poll `get-pr` on an interval with
+     checkpoints, merge once approved and CI is green, then clear `AWAITING_USER` to `none`); confirm the
+     merge landed (`git fetch origin --prune --no-auto-gc`, `git merge-base --is-ancestor <merge-sha>
+     origin/<main>`); `python scripts/merge_steward.py record-landing <PR>`; then the hand-off note and
+     `Phase: HANDED_OFF` exactly as above.
+   - **`merge: direct` + `verification: session` — today's lifecycle.** Merge as just described, then wait for
+     the post-merge trunk pipeline in the FOREGROUND, bounded and re-issued — its deploy and post-deploy stage
+     run the committed end-to-end check, and that verdict on a commit containing the merge is the E2E
+     evidence (`always-test-e2e.md`); you never deploy a branch to the shared environment or ask the operator
+     to check anything by hand. If it fails, the fix is not done — rework in a FRESH worktree cut from
+     `origin/<main>` until it is green. Then RESOLVE per `issue-tracking.md`: final comment linking the merged
+     PR and the evidence, checklist fully ticked — re-read X and COUNT its `- [ ]` / `- [x]` lines, then
+     finish any item still open rather than closing over it (only an item whose deferral was already
+     recorded on the issue may stay unticked, routed per `issue-filing-discipline.md`) — time spent recorded
+     (elapsed from the Step 2 start time), then close X via `update-issue`, and append `Status: COMPLETED`
+     and `Phase: DONE`. **The terminal or hand-off value is what releases the Stop gate** — it must be the
+     WHOLE value of the field (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`).
+   - **Close out — every mode, at once, without asking.** Run the `/close-session` checks
+     (`.claude/commands/close-session.md`) as this command's last step: tree clean; nothing unpushed
+     (`git -C <worktree> status --porcelain` empty AND `git -C <worktree> log origin/<branch>..HEAD` empty —
+     otherwise push, never discard); tear down the worktree venv FIRST if one was provisioned (locked DLLs
+     otherwise block removal on Windows), `git worktree remove .claude/worktrees/issue-<X>`, `git branch -D
+     issue-<X>-<slug>` (the REMOTE branch stays while the steward still needs it: `delete-remote-branch` only
+     after a direct merge if the host did not auto-delete), verify with `git worktree list`; the reaper; under
+     `verification: session` remove the tracker's in-progress marker BEFORE releasing the local lock (`rmdir
+     .locks/issue-<X>.lock`); under hand-off keep the tracker claim and release only the lock; `CronDelete`
+     the run watchdog. On `CLOSE: YES` archive the session (`archive_session` with `session_id: "self"`)
+     WITHOUT asking — the measured "Archive this session?" wait was 71 h in two weeks; on `CLOSE: NO` the
+     close-out's own question rules apply.
    - **Then STOP, and reply with the agent definition's Completion Block** — the fixed
-     verdict line, the per-issue table (X as its `closed` row: `Tasks` from a fresh re-read,
-     the merged PR, the CI-run count in `Detail`, plus a `filed` row for anything routed
-     through intake), and the three trailer lines — and nothing else. Do NOT select another
+     verdict line, the per-issue table (X as its `closed` row, or its `handed off` row with the queued or
+     landed PR; `Tasks` from a fresh re-read; the CI-run count in `Detail`; plus a `filed` row for anything
+     routed through intake), and the three trailer lines — and nothing else. Do NOT select another
      issue — that is what `/issues-work` (or `/auto-work`, for an unattended whole-backlog
      run) is for. The block's `Backlog` line is where "other workable issues remain" is
      said; the user decides from there.

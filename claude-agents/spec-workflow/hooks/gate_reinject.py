@@ -47,8 +47,11 @@ to this run's resume_state.md naming the ACTUAL reason (e.g. `AWAITING_USER: wai
 credential for the smoke test`) — a placeholder or a one-word token is REJECTED — then immediately continue
 with every part of the task that does not depend on the answer.
 
-Independent work runs in PARALLEL (review lanes, research, the tasks of a wave: one message), and a pipeline
-is awaited with the wrapper's blocking wait as a BACKGROUND task, never with sleep.
+Independent work runs in PARALLEL (review lanes, research, the tasks of a wave: one message). A pipeline you
+need is awaited AFTER the unblocked work, in the FOREGROUND with the wrapper's bounded wait (`--timeout-seconds
+540`, re-issued while it exits 11) — never with sleep, never by ending the turn. Where the merge steward lands
+the trunk, an issue whose PR is enqueued with green CI is HANDED OFF: the queue, the deploy and the post-deploy
+check are not the session's to wait for (.claude/docs/delivery.md).
 """
 
 
@@ -62,6 +65,14 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one block per verdi
             "The conversation was just COMPACTED. Details of earlier tool calls and reasoning are gone; the WORK\n"
             "is not. Do NOT restart, re-plan, summarize, or ask whether to continue — re-read the state below plus\n"
             "any file you still need, then resume the recorded step.\n"
+        )
+    elif source == "resume":
+        out.append(
+            "The session was RESUMED in a new process. Every background task of the previous process — a CI\n"
+            "wait, a suite, a dispatched agent — is GONE: the harness reports each as `stopped` and runs no turn\n"
+            "for it (measured 2026-10-10: 82 of 82). Re-issue every wait you were holding, in the FOREGROUND with\n"
+            "a bounded timeout (`wait-run <id> --timeout-seconds 540` / `pipeline wait <id> --timeout-seconds\n"
+            "540`, re-issued while it exits 11), then continue the recorded step. Do not summarize.\n"
         )
     else:
         out.append(f"Session start (source: {source}). If work is already in flight below, continue it.\n")
@@ -114,6 +125,16 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one block per verdi
             value = ctx.field(state, name) or "(unrecorded)"
             lines.append(f"- {name + ':':<24} {value}")
         out.append("\n".join(lines) + "\n")
+        if ctx.host.name == lib.CLAUDE.name and source in ("startup", "resume", "unknown"):
+            # A session-only cron dies with its process: every new process arms its own watchdog once. Kiro has no
+            # session cron (its agentSpawn arrives as source "unknown"), so it is never told to arm one.
+            out.append(
+                "Arm this process's run watchdog ONCE, before other work (continuous-work.md): CronCreate with\n"
+                f"cron {lib.WATCHDOG_CRON!r}, recurring true, durable false, and exactly this prompt:\n"
+                f"    {lib.WATCHDOG_PROMPT}\n"
+                "It fires only while the session is idle, so it resumes a turn that died on an API error and\n"
+                "costs nothing while you work.\n"
+            )
         if lib.is_substantive_escalation(ctx.field(state, "AWAITING_USER")):
             out.append(
                 "An escalation/approval wait IS recorded above. Verify it is still real before anything else: if it\n"

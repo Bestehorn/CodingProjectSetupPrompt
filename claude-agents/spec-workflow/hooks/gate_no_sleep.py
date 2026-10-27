@@ -3,13 +3,15 @@
 Blocks (exit 2) a FOREGROUND shell command that waits with `sleep N` (N at or above 10 s), PowerShell
 `Start-Sleep`, or cmd.exe `timeout /t N`, or that sleeps inside a `while`/`until`/`for` loop whatever the
 interval. A command the agent runs as a BACKGROUND task (`run_in_background: true` in the tool input) is never
-blocked: its completion re-invokes the agent, which is the sanctioned shape of a wait (`parallel-by-default.md`,
-`ci-owns-the-test-suite.md`).
+blocked by THIS gate. Since 2026-10-10 a background task is for output the agent reads later while it keeps
+working, never for a wait the turn needs: the sanctioned wait is the wrapper's bounded FOREGROUND wait
+(`wait-run <id> --timeout-seconds 540`, re-issued while it exits 11), which is not a sleep and passes here, and
+the `no-idle-wait` Stop gate refuses a turn that ends to wait (`parallel-by-default.md`).
 
 WHY A GATE AND NOT ONLY A RULE. Measured 2026-10-01 on an 8-vCPU Windows host at 100 percent CPU, 70 to 75
 percent of it kernel time: every Bash tool call costs a login shell of about 21 processes before the command
 runs, and 257 of the 2,420 Bash calls in six hours — one in ten — were `sleep 240` to `sleep 580` polls of a
-pipeline that the wrapper's blocking `wait` would have awaited in ONE background call. The rule had said
+pipeline that the wrapper's blocking `wait` would have awaited in ONE bounded call. The rule had said
 "never sleep-poll" for a month; the gate makes the cheap path the only foreground path.
 
 Fail-open decisions, each deliberate: a sleep under MAX_FOREGROUND_SLEEP_SECONDS settles a just-started
@@ -84,7 +86,7 @@ def run(ctx: lib.Context) -> lib.Decision:
         return lib.allow()
     tool_input = ctx.payload.data.get("tool_input")
     if isinstance(tool_input, dict) and tool_input.get("run_in_background") is True:
-        return lib.allow()  # a background wait is the sanctioned shape; its completion re-invokes the agent
+        return lib.allow()  # a background task is not a foreground poll; the no-idle-wait Stop gate judges the turn
     active = active_text(command)
     found = list(waits(active))
     if not found:
@@ -97,15 +99,22 @@ def run(ctx: lib.Context) -> lib.Decision:
         return lib.allow()
     shape = "a sleep inside a loop" if in_loop else f"a wait of {MAX_FOREGROUND_SLEEP_SECONDS:g}s or more"
     rules = ctx.host.rules_dir
+    background = (
+        "start the process with `run_in_background: true`"
+        if ctx.host.name == lib.CLAUDE.name
+        else "start the process in the background"
+    )
     return lib.block(
         f"{HOOK}: `{offending[0]}` in a FOREGROUND command is refused — {shape} is the sleep-poll that\n"
         f"{rules}/parallel-by-default.md and {rules}/ci-owns-the-test-suite.md forbid. Every Bash tool call\n"
         "costs a login shell of about 20 processes before your command runs, and a repeated sleep holds the turn\n"
-        "open for nothing. Wait the sanctioned way and do unblocked work meanwhile:\n"
-        "  - a pipeline, run or merge: the wrapper's blocking wait (`pipeline wait <id>` on GitLab, `wait-run <id>`\n"
-        "    on GitHub) as a BACKGROUND task; its completion re-invokes you.\n"
-        "  - anything else (a local process, a file that must appear): run THIS command with\n"
-        "    `run_in_background: true` — one call, one process tree, and its completion re-invokes you.\n"
+        "open for nothing. Do the unblocked work first, then wait the sanctioned way — bounded, in the foreground:\n"
+        "  - a pipeline or run: the wrapper's blocking wait (`wait-run <id> --timeout-seconds 540` on GitHub,\n"
+        "    `pipeline wait <id> --timeout-seconds 540` on GitLab), re-issued while it exits 11. A PR the merge\n"
+        "    steward lands is ENQUEUED (`enqueue-pr`) and handed off — there is no merge or deploy to wait for.\n"
+        f"  - a local process or a file that must appear: {background}, keep working, then\n"
+        f"    collect it with `python {ctx.host.hooks_dir}/wait_for.py --file <path> [--line <regex>]\n"
+        "    [--pid <pid>] --timeout-seconds 540`, re-issued while it exits 11.\n"
         f"A sleep under {MAX_FOREGROUND_SLEEP_SECONDS:g}s that lets a process settle passes; a loop around a sleep "
         "never does.\n"
     )

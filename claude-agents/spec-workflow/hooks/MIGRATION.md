@@ -261,7 +261,7 @@ not affirmatively released, so a seed has to satisfy both halves:
   case-insensitively.
 - `AWAITING_USER: none` — a placeholder, so no escalation is recorded. A SUBSTANTIVE reason here
   releases the gate; `none`, `<reason>`, `no`, `false`, `0` and anything shorter than
-  `HOOK_MIN_ESCALATION_REASON` do not.
+  `MIN_ESCALATION_REASON` (`hooklib.py`, 12 characters) do not.
 - `WORKABLE_ISSUES_REMAIN: no` — records that this is a single-issue recovery. It gates NOTHING:
   it selects the refusal's wording and feeds the progress fingerprint.
 
@@ -350,6 +350,9 @@ reach. So the evidence class of each load-bearing claim is stated explicitly.
   undeclared stop is refused) but not a judgement of the reason's quality.
 - **A determined agent can delete a hook.** Both gates are file-editable. Defence in depth, not a
   boundary.
+- **A turn an API error ends runs no Stop hook.** No gate can hold or continue it. What the
+  framework does instead (§9): the `stop-failure-recorder` gate records it, the run's own
+  watchdog cron resumes it once the session is idle, and `/supervise` is the host backstop.
 - **The cap is a real exit.** After `the block cap` consecutive blocks the gate allows the stop,
   saying the work is not done — and the harness ends the turn after 8 consecutive blocks in any
   case. The gates bound spurious stops; they do not eliminate them.
@@ -372,8 +375,8 @@ printf '{"session_id":"probe","cwd":"%s","hook_event_name":"Stop"}' "$PWD" \
 mkdir -p /tmp/gp/hooks && cp .claude/hooks/hooks.py .claude/hooks/gate_*.py /tmp/gp/hooks/
 ( cd /tmp/gp && printf '{"session_id":"x","cwd":"."}' | python hooks/hooks.py stop ); echo "exit $?"
 
-# 4. The ten pytest modules. A registered run with NO state file must BLOCK; if it is allowed the
-#    deployment is inert. Zero failures is the criterion.
+# 4. Every pytest module. A registered run with NO state file must BLOCK; if it is allowed the
+#    deployment is inert. Zero failures is the criterion. Among them:
 python -m pytest .claude/hooks/tests -q -p no:cacheprovider
 #   test_crlf_hygiene       a CR smuggled through a payload, a state file, a version file, a capture
 #   test_hook_state_lib     identity, parsing, counters, cap validation
@@ -385,6 +388,9 @@ python -m pytest .claude/hooks/tests -q -p no:cacheprovider
 #   test_unpinned_fixes     handshake BLOCK by text, evidence substance, mtime, cross-gate
 #   test_scoped_temp        the self-writing settings.local.json env block
 #   test_dispatcher         gate discovery and order, a project gate, the disable switch, the launcher
+#   test_no_idle_wait       a turn that ends to wait is refused; a Completion Block verdict is not
+#   test_reinject_resume    the resume context and the run-watchdog instruction
+#   test_delivery_gates     HANDED_OFF (single-issue only), the merge-steward gate, stop-failure, watchdog
 
 # 5. Confirm the gates have actually fired in this clone. This directory is created ONLY on a
 #    blocking path, so its absence across many sessions means never-blocked.
@@ -564,3 +570,39 @@ own suite, each is a contract a project had built on and the framework did not k
 - **The self-test leaves project gates out of its scratch project** (an `ORDER` above 100
   or below 10, read from the source). Their libraries under `scripts/` are not copied
   there; the project's own `tests/` modules cover them.
+
+## 9. The delivery revision (2026-10-26): what a live project needs, in order
+
+Contract `2026.10.26-delivery-5`; the agent-facing contract is `.claude/docs/delivery.md`.
+
+1. **Copy the files** (`hooks/*.py` now includes `gate_merge_steward.py`, `gate_stop_failure.py`,
+   `wait_for.py`, `supervisor.py`; plus `docs/delivery.md`, `commands/supervise.md`) and
+   **re-paste the registration** that `python .claude/hooks/hooks.py registration` prints: it now
+   registers `StopFailure`. Without that paste the recorder never runs and nothing else changes.
+2. **Nothing changes until `config/delivery.json` exists.** Absent, the mode is `merge: direct` +
+   `verification: session` — today's behaviour — and the `merge-steward` gate allows everything.
+   A broken file fails OPEN the same way (the steward's own CLI refuses it with exit 2).
+3. **Bootstrap, in two PRs.** The FIRST installs `scripts/merge_steward.py`, its test, the steward
+   workflow and the deploy changes, and writes `config/delivery.json` with `merge: direct` and
+   `verification: session` — today's behaviour — but with `host`, `trunk` and the workflow names
+   filled in (the tick reads them; an absent file means GitHub). It merges DIRECTLY: a steward is
+   not live until its workflow is on the default branch, and under `direct` a tick serves only
+   `reverify`, lands nothing and runs green. The SECOND PR, after a tick has run green on the trunk
+   (`merge_steward.py status`), sets `merge: steward` and the verification the project wants; it
+   is the last PR merged directly — from then on the gate refuses direct merges and trunk pushes.
+4. **Live sessions** learn it through the contract handshake (REVISION_NOTICE item 11). A session
+   whose process started before the update has no run watchdog: the issue-loop brake's refusal
+   names the `CronCreate` to arm it, and the session-start context prints it to every new process.
+5. **`/supervise` reaches another session only where that session accepts cross-session
+   messages** — a USER-level setting the operator sets; a project's settings cannot. Without it
+   every `due` request reports `unreachable`, which is still the record a person acts on.
+6. **Labels.** Create `queue`, `queue-failed`, `queue-conflict`, `queue-retried`,
+   `do-not-merge`, `awaiting-verification`, `verified`, `verification-failed`, `needs-rework`,
+   `needs-closeout` and `reverify` once, with a one-line description each (`config/delivery.json`
+   may rename any of them). The steward only ADDS and REMOVES labels; whether a host creates a
+   missing one on first use is not something to depend on.
+
+What is NOT weakened: every PR still needs its own green CI before the queue takes it, the train
+re-runs the full CI on the exact state that lands, an issue closes only after a green post-deploy
+check on a commit that contains its landing and with its counted checklist complete, and every
+TDD capture, review and gate is unchanged.

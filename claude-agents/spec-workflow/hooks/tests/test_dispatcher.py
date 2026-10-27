@@ -54,9 +54,17 @@ def _present_in_order(event: str, expected: list[str]) -> None:
 def test_framework_gates_are_discovered_in_order() -> None:
     _present_in_order(
         "pre-tool-use",
-        ["no-env-vars", "no-foreground-sleep", "spec-tdd-gate", "claim-before-worktree", "issue-filing-gate"],
+        [
+            "no-env-vars",
+            "no-foreground-sleep",
+            "spec-tdd-gate",
+            "claim-before-worktree",
+            "merge-steward",
+            "issue-filing-gate",
+        ],
     )
-    _present_in_order("stop", ["spec-stop-gate", "issue-loop-gate"])
+    _present_in_order("stop", ["spec-stop-gate", "no-idle-wait", "issue-loop-gate"])
+    _present_in_order("stop-failure", ["stop-failure-recorder"])
     _present_in_order("session-start", ["session-register", "scoped-temp-init", "continuous-work-reinject"])
 
 
@@ -105,7 +113,8 @@ def test_a_project_gate_joins_the_event_without_a_second_registration(tmp_path: 
         encoding="utf-8",
     )
     names = [g[0] for g in hooks.discover_gates("pre-tool-use", hooks_dir)]
-    assert names[-1] == "project-write-gate" and len(names) == 6
+    framework = [g[0] for g in hooks.discover_gates("pre-tool-use", HOOKS_DIR) if g[1] <= hooks.PROJECT_ORDER_FLOOR]
+    assert names[-1] == "project-write-gate" and len(names) == len(framework) + 1
     write_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "x.py", "content": "# TODO"}})
     decision = hooks.dispatch("pre-tool-use", write_payload, environ={}, cwd=tmp_path, hooks_dir=hooks_dir)
     assert decision.exit_code == 2 and "project-write-gate" in decision.stderr

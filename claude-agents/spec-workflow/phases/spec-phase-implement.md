@@ -41,27 +41,40 @@ For each wave in `tasks.md` order (tier S: the single wave in `change.md`):
 4. If a wave's change plainly reaches beyond its own tests, run the affected module or
    package locally — still never the whole suite.
 
+**Overlap the waits, never the proofs.** While wave N's green run is in flight (a background task
+through `scripts/run_tests.py`, naming the wave's test files), dispatch wave N+1's TEST authors in
+the same message. Wave N+1's red capture runs only after wave N's green capture passed and wave N
+is committed — `git add` names wave N's files, never the next wave's — so every capture still
+proves exactly its own wave. Independent suites of ONE capture (a Python suite and a UI suite) run
+concurrently, each in its own host-wide slot, collected with `python .claude/hooks/wait_for.py`.
+Nothing is skipped, merged or reordered to save time; only the waiting stops being serial.
+
 The Stop and push gates accept a wave capture for every task id its `# tasks:` line
 declares; a task marked `[x]` with no capture that declares it is refused.
 
-## Batch boundary — push ONCE, wait in the background
+## Batch boundary — push ONCE, wait in the foreground, bounded
 
 After the last wave is committed:
 
 1. Push the branch ONCE (`ci-owns-the-test-suite.md`).
-2. Start the wrapper's blocking wait (`pipeline wait <id>` / `wait-run <id>`) as a
-   BACKGROUND task and continue: the evidence report skeleton, the issue note, the
-   docs. Never `sleep`-poll (`parallel-by-default.md`).
+2. Do the unblocked work first — the evidence report skeleton, the issue note, the docs —
+   then wait for the run in the FOREGROUND with the wrapper's blocking wait (`pipeline wait
+   <id> --timeout-seconds 540` / `wait-run <id> --timeout-seconds 540`), re-issued while
+   it exits 11. Never `sleep`-poll, and never end the turn to be notified
+   (`parallel-by-default.md`).
 3. The run's verdict is the regression evidence: capture it to
    `evidence/regress/ci-<run id>-<sha>.txt`. Red → enumerate EVERY failing job and failure
-   before changing anything, group by root cause, fix them all, push once, wait again.
+   before changing anything, group by root cause, fix them all, push once, wait again. Green →
+   VERIFY; the PR is enqueued only after VERIFY and the EVIDENCE_REPORT (`.claude/docs/delivery.md`).
 4. During a declared CI outage the `pre-push` hook's local run is the capture instead.
 
 ## The end-to-end check runs in CI
 
 Where the project deploys, the E2E script committed in the final wave runs in the
 pipeline's post-deploy stage after the merge; its verdict on the merged SHA is the E2E
-evidence, captured from the wrapper. The agent never deploys a branch to a shared
+evidence, captured from the wrapper — or, where `config/delivery.json` names the verdict
+watcher, judged by the deploy's last job on the first deployed commit that CONTAINS the
+landing, which ticks the issue's `(post-deploy)` items and closes it. The agent never deploys a branch to a shared
 environment, never takes a deploy lock or asks for a merge freeze, and never asks the
 operator to sign in, copy a response or observe a screen. A red post-merge E2E is a
 defect fixed in an immediate follow-up commit on a fresh worktree (or a revert if the

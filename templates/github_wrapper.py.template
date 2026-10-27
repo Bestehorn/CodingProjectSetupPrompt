@@ -3,12 +3,12 @@
 Usage:
     python scripts/github_wrapper.py list-workflows
     python scripts/github_wrapper.py list-runs --limit 5
-    python scripts/github_wrapper.py wait-run <run_id> [--timeout-seconds 3600]
+    python scripts/github_wrapper.py wait-run <run_id> --timeout-seconds 540   # foreground; re-issue on exit 11
         # BLOCKS until the workflow run completes, polling internally; exit 0 on success,
         # 10 when it completed with any non-success conclusion (failure/cancelled/skipped/
         # timed_out/...), 11 on timeout — distinct from the wrapper's own 1 (API error),
-        # 2 (usage), 3 (claim-check unclaimed). Agents run it as a BACKGROUND task and
-        # keep working (parallel-by-default.md) — never `sleep` in a tool call.
+        # 2 (usage), 3 (claim-check unclaimed). Agents run it AFTER the unblocked work, in the
+        # FOREGROUND, bounded (parallel-by-default.md) — never `sleep` in a tool call.
     python scripts/github_wrapper.py get-logs <run_id> --failed-only
     python scripts/github_wrapper.py list-issues
     python scripts/github_wrapper.py list-issues --state open --assignee "*" --label in-progress
@@ -21,8 +21,11 @@ Usage:
     python scripts/github_wrapper.py get-pr <pr_number>
     python scripts/github_wrapper.py get-pr-checks <pr_number>
     python scripts/github_wrapper.py approve-pr <pr_number>
-    python scripts/github_wrapper.py merge-pr <pr_number> --method squash
+    python scripts/github_wrapper.py merge-pr <pr_number> --method squash   # "merge": "direct" only
     python scripts/github_wrapper.py delete-remote-branch <branch>
+    python scripts/github_wrapper.py enqueue-pr <pr_number>     # "merge": "steward": hand the PR to the queue
+    python scripts/github_wrapper.py dequeue-pr <pr_number> --reason "..."
+    python scripts/github_wrapper.py queue-status [--json]
 
 Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
 The owner/repo are auto-detected from .git/config — do NOT hardcode them.
@@ -153,9 +156,11 @@ def wait_run(
     skipped, timed_out, ...), 11 timeout — distinct from the wrapper's 1/2/3 (API error / usage
     error / claim-check unclaimed).
 
-    The ONE sanctioned way for an agent to wait on CI: started as a background task while the agent keeps
-    working; the harness re-invokes the agent when it exits. A `sleep N` in a tool call, repeated, was
-    measured at over a thousand hours of idle across three projects.
+    The ONE sanctioned way for an agent to wait on CI: after the unblocked work is done, run in the FOREGROUND
+    with `--timeout-seconds 540` (under the tool's 10-minute ceiling) and re-issued while it exits 11. Not as
+    a background task: that dies with the session's process and a stopped task never wakes the agent
+    (measured 2026-10-10: 82 of 82). A `sleep N` in a tool call, repeated, was measured at over a thousand
+    hours of idle across three projects.
     """
     import time
 
@@ -212,6 +217,19 @@ def wait_run(
 #       (Accept: application/vnd.github.v3.diff); and
 #     update_pr_description(pr_number, body): PATCH the PR body to link
 #     the fix documentation / evidence.
+#
+# Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
+# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
+#   - enqueue_pr(pr_number): run `python scripts/merge_steward.py enqueue <n>` and pass its exit code
+#     through (0 queued, 4 refused with the reason printed — PR CI not green on the head, a closing
+#     keyword under watcher verification, a hold label, an unlanded Depends-on, ...).
+#   - dequeue_pr(pr_number, reason): `merge_steward.py dequeue <n> --reason <text>`.
+#   - queue_status(): `merge_steward.py status` (add --json for the machine form).
+# The steward reads the same credentials/github-pat.txt, so no second secret is needed. Under
+# "merge": "steward", merge_pr is refused by the merge-steward PreToolUse gate (only the steward
+# lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap PR
+# that installs the steward.
 #
 # Issue metadata + checklist subcommands (best-effort; see the
 # issue-tracking rule, .claude/rules/issue-tracking.md). GitHub models

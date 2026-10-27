@@ -1,0 +1,94 @@
+# Delivery for a GitLab project: the merge steward, the train pipelines, deploy supersession and the verdict.
+# Installed from templates/ci/gitlab-delivery.gitlab-ci.yml.template; merge these jobs and rules into the
+# project's .gitlab-ci.yml (keep its own stages and jobs). config/delivery.json selects the modes.
+#
+# PREFER GitLab's own merge trains when the instance licenses them (Premium/Ultimate: Settings > Merge requests >
+# "Enable merged results pipelines" + "Enable merge trains"): then `enqueue-pr` adds the MR to the train
+# ("merge when pipeline succeeds"), the `merge-steward` job below is not installed, and config/delivery.json
+# keeps "merge": "steward" so the merge-steward gate still keeps agents off the trunk. Everything else in this
+# file — deploy supersession and the verdict job — applies either way.
+#
+# THE TOKEN. The steward pushes train branches and fast-forwards the trunk, which the job token cannot do. Create
+# a project access token (role Maintainer, scopes `api` and `write_repository`), store it as a MASKED, PROTECTED
+# CI/CD variable of type FILE named STEWARD_TOKEN, and allow that token's bot user to push to the protected trunk.
+# A File variable puts the token in a temporary file and only its PATH in the environment, which is what
+# `--token-file` reads (no-environment-vars: the secret itself never sits in a shell variable).
+#
+# THE TICK is event-driven: `enqueue-pr` starts a tick pipeline through the API when an MR joins the queue, and
+# every train pipeline's last job (`steward-wake`) starts one when the train's CI is done — exactly when a landing
+# becomes possible. A pipeline schedule (CI/CD > Schedules, every 30 minutes, variable MERGE_STEWARD=tick) is
+# only the safety net. Every tick pipeline runs the default branch, so no MR can change the steward that merges
+# it. While MERGE_STEWARD is "tick", NO other job may run: add the `.not-on-tick` rule to every other job (or to
+# `workflow:rules`). On gitlab.com shared runners every job counts against the compute quota (the safety net alone
+# is about 1,440 jobs a month): run the steward jobs on the project's own runner (`tags:`).
+
+.not-on-tick:
+  rules:
+    - if: '$MERGE_STEWARD == "tick"'
+      when: never
+
+merge-steward:
+  stage: .pre
+  image: {{PYTHON_IMAGE}}
+  resource_group: merge-steward # one tick at a time; a tick is never cancelled
+  interruptible: false
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      when: never
+    - if: '$MERGE_STEWARD == "tick" && $CI_PIPELINE_SOURCE =~ /^(schedule|api|pipeline)$/'
+  script:
+    - python scripts/merge_steward.py --token-file "$STEWARD_TOKEN" tick --run-url "$CI_PIPELINE_URL"
+
+# THE TRAINS. Each train branch `steward/train-<batch>-<k>` gets a BRANCH pipeline running the full CI (the same
+# jobs a merge request runs). If `workflow:rules` restricts branch pipelines, admit these explicitly:
+#   workflow:
+#     rules:
+#       - if: '$CI_COMMIT_BRANCH =~ /^steward\/train-/'
+#       - ... the project's existing rules ...
+# Train pipelines must NOT be auto-cancelled: give the test jobs `interruptible: false` on train branches, or
+# leave "Auto-cancel redundant pipelines" off for them.
+
+# The train's last job wakes the steward. It starts a tick pipeline on the default branch and does NOT mirror
+# that pipeline's status (no `strategy: depend`), and `allow_failure: true` keeps a failed wake-up from turning a
+# green train red — a train's verdict is its own tests, never this job; the safety-net schedule covers a lost one.
+steward-wake:
+  stage: .post
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^steward\/train-/'
+      when: always
+  allow_failure: true
+  variables:
+    MERGE_STEWARD: tick
+  trigger:
+    project: $CI_PROJECT_PATH
+    branch: $CI_DEFAULT_BRANCH
+
+# DEPLOY SUPERSESSION. On the deploy job(s) of the trunk pipeline:
+#   resource_group: deploy-{{ENVIRONMENT}}   # one deploy at a time, never two in parallel
+#   environment: { name: {{ENVIRONMENT}} }
+#   interruptible: false                     # a running deploy is never cancelled
+# and enable Settings > CI/CD > General pipelines > "Prevent outdated deployment jobs": an older pending deploy is
+# then dropped once a newer one exists — the batching that keeps a long deploy from queueing behind every
+# landing. Verification is by ANCESTRY, so the dropped deploy loses no verdict. A `reverify` label makes the steward
+# start a trunk pipeline with MERGE_STEWARD=redeploy: the deploy jobs' rules must admit it on the default branch
+# (`$MERGE_STEWARD == "redeploy"`), as `delivery-verdict` below does.
+
+delivery-verdict:
+  stage: .post
+  image: {{PYTHON_IMAGE}}
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$MERGE_STEWARD == "tick"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && ($CI_PIPELINE_SOURCE == "push" || $MERGE_STEWARD == "redeploy")'
+      when: always
+  script:
+    # --conclusion auto reads the listed jobs: all success -> success; one failed -> failure; an outdated
+    # (superseded) deployment job or anything that did not run to a result -> no verdict at all.
+    - >-
+      python scripts/merge_steward.py --token-file "$STEWARD_TOKEN" verdict --sha "$CI_COMMIT_SHA"
+      --conclusion auto --gitlab-pipeline "$CI_PIPELINE_ID" --deploy-jobs "{{DEPLOY_AND_E2E_JOBS}}"
+      --run-url "$CI_PIPELINE_URL" --environment {{ENVIRONMENT}}

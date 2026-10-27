@@ -13,7 +13,9 @@ THE CAP DRIVES RETENTION
     Measured on one project: 47 ledger rows written in five days, median row 1,228 bytes, none under 240;
     the lessons file 12 bytes under its cap. A six-week age rule can never fire at that churn, so the next
     write broke the build while two always-loaded rules told agents to write exactly those rows. Hence:
-    the active files are size-bounded WINDOWS. ``reconcile`` runs the age pass first, then rolls the OLDEST
+    the active files are size-bounded WINDOWS. ``reconcile`` drops exact duplicate ledger rows (the files
+    merge with git's ``union`` driver, so parallel branches never conflict over an appended row and a row
+    both branches carry can arrive twice), runs the age pass, then rolls the OLDEST
     rows and entries (status ignored; undated ones count as oldest) into the dated archive until the file
     fits its cap. It runs automatically at write time (``ledger add``, ``lesson add``) and from the
     pre-commit hook ``memory-reconcile``; ``/compile-memory`` keeps only the judgment (promote, enforce).
@@ -458,12 +460,35 @@ def archive_ledger(*, weeks: int, apply: bool, until_under_cap: bool = False) ->
     return 0
 
 
+def _duplicate_rows(rows: list[LedgerRow]) -> list[LedgerRow]:
+    """Every row whose exact text an EARLIER row already has. The ledger merges with git's ``union`` driver
+    (``.gitattributes``), so two branches never conflict over appended rows; the price is that a row both
+    branches carry (a cherry-pick, a rebase replaying an older commit) can arrive twice. The copy adds nothing."""
+    seen: set[str] = set()
+    duplicates: list[LedgerRow] = []
+    for row in rows:
+        key = row.text()
+        if key in seen:
+            duplicates.append(row)
+        else:
+            seen.add(key)
+    return duplicates
+
+
 def _reconcile_ledger(*, weeks: int, apply: bool) -> Reconciled:
-    """Age pass, then oldest-first (status ignored) until the active ledger fits LEDGER_CAP_BYTES."""
+    """Exact duplicate rows dropped, then the age pass, then oldest-first (status ignored) until the active
+    ledger fits LEDGER_CAP_BYTES."""
     if not LEDGER.exists():
         return Reconciled(path=LEDGER, before=0, after=0, cap=LEDGER_CAP_BYTES, moved=0, unit="rows", present=False)
     text = _read(LEDGER)
     blocks = _parse_ledger(text)
+    duplicates = _duplicate_rows(_ledger_rows(blocks))
+    if duplicates:
+        print(f"ledger: {len(duplicates)} exact duplicate rows (a union merge carried them twice) dropped")
+        deduplicated = _render_ledger(blocks=blocks, drop=set(duplicates))
+        if apply:
+            _write(path=LEDGER, text=deduplicated)
+        blocks = _parse_ledger(deduplicated)
     rows = _ledger_rows(blocks)
     aged = _aged_rows(rows=rows, weeks=weeks)
     extra = _oldest_until_under_cap(

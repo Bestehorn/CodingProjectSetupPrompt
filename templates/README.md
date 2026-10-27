@@ -18,11 +18,19 @@ final filename) and then extends or adapts it as the project evolves.
 | `suite_semaphore.py.template` | `scripts/suite_semaphore.py` | Always (the host-wide cap on concurrent suites: `max(1, cores // 4)` slots per user, OS file locks the kernel releases on exit; `run_tests.py` takes a slot, a synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <cmd>`; `selftest` proves it on the host) |
 | `run_checks.py.template` | `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
 | `ci_outage_mode.py.template` | `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
-| `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`) |
-| `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects (includes the REQUIRED blocking `pipeline wait`) |
+| `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`, and `enqueue-pr` / `dequeue-pr` / `queue-status` delegating to the merge steward) |
+| `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects (includes the REQUIRED blocking `pipeline wait`, and the same three queue subcommands) |
 | `gitlab.json.template` | `config/gitlab.json.template` | GitLab-hosted projects |
 | `test_instruction_corpus_budget.py.template` | `test/test_instruction_corpus_budget.py` | Always (caps the always-loaded corpus and the memory docs; the mechanical half of the token budget) |
-| `memory_compile.py.template` | `scripts/memory_compile.py` | Always (report budgets; archive aged ledger rows and lessons; move incident text out of rules — run by `/compile-memory`) |
+| `memory_compile.py.template` | `scripts/memory_compile.py` | Always (report budgets; archive aged ledger rows and lessons; drop the exact duplicate rows a `union` merge can carry; move incident text out of rules — run by `/compile-memory`) |
+| `reap_agent_temp.py.template` | `scripts/reap_agent_temp.py` | Always (bounded removal of the session-scoped temp and of known agent-tooling residue in the shared OS temp; `/close-session` runs it) |
+| `test_reap_agent_temp.py.template` | `test/test_reap_agent_temp.py` | With the reaper |
+| `delivery.json.template` | `config/delivery.json` | Projects with several agents merging to one trunk (selects `merge: steward` / `direct` and `verification: watcher` / `session` / `none`; absent = direct + session, today's behaviour) |
+| `merge_steward.py.template` | `scripts/merge_steward.py` | With `delivery.json` (the merge queue, the train builder and the post-deploy verdict; run by CI, never by an agent session except `enqueue` / `dequeue` / `status` / `check-pr`) |
+| `test_merge_steward.py.template` | `test/test_merge_steward.py` | With the steward (drives it against a real bare git origin and a fake host) |
+| `ci/github-merge-steward.yml.template` | `.github/workflows/merge-steward.yml` | GitHub + steward (the scheduled tick; never cancelled) |
+| `ci/github-deploy.yml.template` | `.github/workflows/deploy.yml` (or merged into the existing deploy) | GitHub + steward or watcher (one deploy per environment at a time, `cancel-in-progress: false`, the newest pending deploy supersedes; the verdict job last) |
+| `ci/gitlab-delivery.gitlab-ci.yml.template` | merged into `.gitlab-ci.yml` | GitLab + steward or watcher (the tick job, train pipelines, deploy supersession, the verdict job) |
 
 Git hooks pattern: the hooks themselves are TRACKED files under the
 project's `.githooks/` directory (copied from `templates/githooks/`), so
@@ -69,6 +77,21 @@ weeks to `docs/archive/` (verbatim, still in git), and moves dated incident sect
 the rules. The judgment half — promote a finding to an issue, turn a lesson into a test — is
 the `/compile-memory` command (`claude-commands/compile-memory.md`, Kiro:
 `kiro-prompts/compile-memory.md`).
+
+## Delivery: the merge steward (what the newest templates implement)
+
+With ten or more pull requests in flight, merging each one directly cancels the trunk run of the
+merge before it and starves the deploy that only a green trunk tip may start (measured
+2026-10-25: 29 of 34 trunk runs cancelled in one day, about three deploys a day, 4.7 h queued).
+The steward replaces "every session merges" with ONE trunk writer: a session whose PR is green
+enqueues it and hands off; the steward builds cumulative trains of the queued PRs, runs the full
+CI on each train, fast-forwards the trunk to the longest green prefix — so the commit that lands
+is exactly the commit that was tested — and drops only the culprit. Deploys never cancel each
+other; the newest pending one supersedes, and the verdict job verifies every issue whose landing
+the deployed commit CONTAINS (`git merge-base --is-ancestor`). The agent-facing contract is
+`claude-agents/spec-workflow/docs/delivery.md`; the design and its quality invariants are in
+`project-docs/delivery-redesign-2026-10-26.md`. GitLab Premium projects can use native merge
+trains instead of the steward's queue and keep the verdict job.
 
 ## Conventions
 

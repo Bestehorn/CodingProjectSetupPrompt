@@ -3,12 +3,12 @@
 Usage:
     python scripts/gitlab_wrapper.py pipeline status
     python scripts/gitlab_wrapper.py pipeline log
-    python scripts/gitlab_wrapper.py pipeline wait <pipeline_id> [--timeout-seconds 3600]
+    python scripts/gitlab_wrapper.py pipeline wait <pipeline_id> --timeout-seconds 540   # foreground; re-issue on 11
         # BLOCKS until the pipeline is terminal, polling internally; exit 0 on success,
         # 10 when it ended without success (failed/canceled/skipped/manual), 11 on timeout —
         # distinct from the wrapper's own 1 (API error), 2 (usage), 3 (claim-check unclaimed).
-        # Agents run it as a BACKGROUND task and keep working (parallel-by-default.md) —
-        # never `sleep` in a tool call.
+        # Agents run it AFTER the unblocked work, in the FOREGROUND, bounded
+        # (parallel-by-default.md) — never `sleep` in a tool call.
     python scripts/gitlab_wrapper.py issue list
     python scripts/gitlab_wrapper.py issue list --state opened --assignee "*" --labels in-progress
     python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
@@ -24,8 +24,11 @@ Usage:
     python scripts/gitlab_wrapper.py mr get <mr_iid>
     python scripts/gitlab_wrapper.py mr checks <mr_iid>
     python scripts/gitlab_wrapper.py mr approve <mr_iid>
-    python scripts/gitlab_wrapper.py mr merge <mr_iid>
+    python scripts/gitlab_wrapper.py mr merge <mr_iid>            # "merge": "direct" only
     python scripts/gitlab_wrapper.py delete-branch <branch>
+    python scripts/gitlab_wrapper.py enqueue-pr <mr_iid>          # "merge": "steward": hand the MR to the queue
+    python scripts/gitlab_wrapper.py dequeue-pr <mr_iid> --reason "..."
+    python scripts/gitlab_wrapper.py queue-status [--json]
 
 Credentials: config/gitlab.json (gitignored).
 
@@ -133,8 +136,10 @@ def pipeline_wait(
     Exit-code semantics: 0 success, 10 not success (failed/canceled/skipped/manual), 11 timeout —
     distinct from the wrapper's 1/2/3 (API error / usage error / claim-check unclaimed).
 
-    This is the ONE sanctioned way for an agent to wait on CI. The agent starts it as a background task
-    and continues with unblocked work; the harness re-invokes the agent when it exits. A `sleep N` in a
+    This is the ONE sanctioned way for an agent to wait on CI. The agent does the unblocked work first, then
+    runs this in the FOREGROUND with `--timeout-seconds 540` (under the tool's 10-minute ceiling), re-issuing
+    it while it exits 11 — never as a background task, which dies with the session's process and never wakes
+    the agent once stopped (measured 2026-10-10: 82 of 82). A `sleep N` in a
     tool call, repeated, was measured at over a thousand hours of idle across three projects, each
     wake-up re-reading a 400,000-token context.
     """
@@ -192,6 +197,20 @@ def pipeline_wait(
 #        "merge_when_pipeline_succeeds": true (optional)}
 #   - delete_branch(branch): DELETE /repository/branches/{url-encoded-branch}
 #     (only needed if the MR did not auto-remove the source branch).
+#
+# Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
+# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
+#   - enqueue_pr(mr_iid), wired as `enqueue-pr` (the same verb on both hosts, so the docs name
+#     one): run `python scripts/merge_steward.py enqueue <n>` and pass its exit code through
+#     (0 queued, 4 refused with the reason printed — MR pipeline not green on the head, a
+#     closing keyword under watcher verification, a hold label, an unlanded Depends-on, ...).
+#   - dequeue_pr(mr_iid, reason): `merge_steward.py dequeue <n> --reason <text>`.
+#   - queue_status(): `merge_steward.py status` (add --json for the machine form).
+# The steward reads the same token of config/gitlab.json, so no second secret is needed. Under
+# "merge": "steward", mr_merge is refused by the merge-steward PreToolUse gate (only the steward
+# lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap MR
+# that installs the steward.
 #
 # Issue metadata + checklist subcommands (best-effort; see the
 # issue-tracking rule, .claude/rules/issue-tracking.md). GitLab supports

@@ -3,9 +3,11 @@
 
 Usage:
     python .claude/hooks/hooks.py session-start     # SessionStart: register, scoped temp, re-inject
-    python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, sleep, push gate, claim, filing (+ project)
+    python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, sleep, push gate, claim, merge steward,
+                                                    #             filing (+ project)
     python .claude/hooks/hooks.py post-tool-use     # PostToolUse: project gates only (none shipped)
-    python .claude/hooks/hooks.py stop              # Stop: evidence gate, loop brake
+    python .claude/hooks/hooks.py stop              # Stop: evidence gate, no-idle-wait, loop brake
+    python .claude/hooks/hooks.py stop-failure      # StopFailure: record a turn an API error ended (resume request)
     python .claude/hooks/hooks.py selftest          # prove the registered launch form executes and blocks
     python .claude/hooks/hooks.py registration      # print the settings.json hooks block to install
 
@@ -50,6 +52,8 @@ Decision semantics (the harness contract: exit 0 allows, exit 2 blocks and shows
   * stop: EVERY gate runs so every decision-log line is written; any block wins and every block message is
     delivered; a gate that raises REFUSES the stop (fail CLOSED), because a gate whose machinery is broken
     must not look like a gate that is satisfied.
+  * stop-failure: the harness fires StopFailure INSTEAD of Stop when an API error ends the turn, and gives it no
+    decision control. Every gate runs (they record); exit is ALWAYS 0; a gate that raises is noted and skipped.
 
 THE LIBRARY IS IMPORTED DEFENSIVELY. A missing, truncated or syntax-broken `hooklib.py` would otherwise end this
 process with exit 1 — a non-blocking error the harness proceeds past, i.e. every gate silently inert, which is
@@ -88,14 +92,17 @@ except Exception as _exc:  # noqa: BLE001 — any import failure takes the degra
     lib = None  # type: ignore[assignment]
     LIB_ERROR = f"{_exc.__class__.__name__}: {_exc}"
 
-VERSION = "2026.10.10-python-4"
-EVENTS = ("session-start", "pre-tool-use", "post-tool-use", "stop")
+VERSION = "2026.10.26-python-6"
+EVENTS = ("session-start", "pre-tool-use", "post-tool-use", "stop", "stop-failure")
 EVENT_KEYS = {
     "session-start": "SessionStart",
     "pre-tool-use": "PreToolUse",
     "post-tool-use": "PostToolUse",
     "stop": "Stop",
+    "stop-failure": "StopFailure",
 }
+#: Events whose exit code the harness ignores or must never see as a block: every gate runs, the exit is 0.
+NON_BLOCKING_EVENTS = ("session-start", "stop-failure")
 DEFAULT_BLOCK_CAP = 8
 REINJECT_SOURCES = {"compact", "resume", "startup", ""}  # an absent source (Kiro agentSpawn) re-injects
 CONFIG_FILENAME = "hooks.config.json"
@@ -112,7 +119,7 @@ LAUNCHER = (
 INTERPRETER_FLAGS = ["-I", "-X", "utf8"]
 # A timed-out hook renders NO decision and the action proceeds, so a tight timeout is a fail-open. PreToolUse
 # is 60 s because `claim-before-worktree` asks the tracker (its own 25 s limit) after a cold Windows start.
-REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 60, "post-tool-use": 30, "stop": 60}
+REGISTRATION_TIMEOUTS = {"session-start": 30, "pre-tool-use": 60, "post-tool-use": 30, "stop": 60, "stop-failure": 30}
 # The matcher of a tool event is the UNION of the tools its discovered gates declare (`tool_matcher`); this is
 # the default when no gate can be read. A gate declaring no TOOLS matches every tool, so the matcher is dropped.
 REGISTRATION_MATCHERS = {"pre-tool-use": "Bash", "post-tool-use": "Bash"}
@@ -217,7 +224,7 @@ def dispatch(  # noqa: C901 — the per-event policy, in one place
             blocked = True
             if event == "pre-tool-use":
                 break
-    if event == "session-start":
+    if event in NON_BLOCKING_EVENTS:
         blocked = False
     return lib.Decision(2 if blocked else 0, merge_stdout(stdout), "".join(stderr))
 
@@ -328,6 +335,8 @@ def degraded(event: str, payload_text: str) -> Tuple[int, str, str]:
     payload = _degraded_payload(payload_text)
     if event == "stop":
         return _degraded_stop(payload, why)
+    if event == "stop-failure":
+        return 0, "", why + "the API-error turn end was not recorded; nothing will queue its resume.\n"
     if event in ("pre-tool-use", "post-tool-use"):
         command = (payload.get("tool_input") or {}).get("command", "")
         stripped = _QUOTED_RE.sub("", command if isinstance(command, str) else "")
@@ -386,8 +395,8 @@ def registration_block(project_dir_placeholder: str = "${CLAUDE_PROJECT_DIR}") -
     del project_dir_placeholder
     block: Dict[str, Any] = {"hooks": {}}
     for event in EVENTS:
-        if event == "post-tool-use" and not (lib is not None and discover_gates(event, HERE)):
-            continue  # the framework ships no PostToolUse gate; a project that adds one gets the entry
+        if event in ("post-tool-use", "stop-failure") and not (lib is not None and discover_gates(event, HERE)):
+            continue  # registered only when a gate declares the event (the framework ships no PostToolUse gate)
         key = EVENT_KEYS[event]
         entry: Dict[str, Any] = {
             "hooks": [
@@ -664,6 +673,69 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
                     "Stop refuses a run recording unfinished work",
                     stop.returncode == 2 and "UNFINISHED" in stop.stderr,
                     f"exit {stop.returncode} {stop.stderr[:120]}",
+                )
+            )
+        if "stop-failure-recorder" not in off and "issue-loop-gate" not in off:
+            failure = spawn(
+                "stop-failure",
+                json.dumps(
+                    {
+                        "session_id": sid,
+                        "cwd": project.as_posix(),
+                        "hook_event_name": "StopFailure",
+                        "error": "authentication_failed",
+                        "last_assistant_message": "API Error: 401",
+                    }
+                ),
+                project,
+            )
+            request = (
+                project / ".claude" / "agent-state" / lib.ORCHESTRATOR_DIRNAME / lib.RESUME_REQUESTS_DIRNAME
+            ) / f"{sid[:8]}.json"
+            results.append(
+                (
+                    "StopFailure exits 0 and queues a resume for unfinished work",
+                    failure.returncode == 0 and request.is_file(),
+                    f"exit {failure.returncode} request={request.is_file()} {failure.stderr[:120]}",
+                )
+            )
+        if "no-idle-wait" not in off:
+            # An UNREGISTERED session (the loop gate allows it, the evidence gate has no state) whose final text
+            # ends the turn to wait: only the transcript-reading gate can hold it.
+            transcript = Path(tmp) / "transcript.jsonl"
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "model": "claude",
+                            "content": [
+                                {"type": "text", "text": "CI is running; I'm waiting on it in the background."}
+                            ],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            waiting = spawn(
+                "stop",
+                json.dumps(
+                    {
+                        "session_id": "selftest-wait-2222-3333-444455556666",
+                        "cwd": project.as_posix(),
+                        "hook_event_name": "Stop",
+                        "transcript_path": str(transcript),
+                    }
+                ),
+                project,
+            )
+            results.append(
+                (
+                    "Stop refuses a turn that ends to wait for a notification",
+                    waiting.returncode == 2 and "no-idle-wait" in waiting.stderr,
+                    f"exit {waiting.returncode} {waiting.stderr[:120]}",
                 )
             )
 

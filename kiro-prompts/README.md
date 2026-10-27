@@ -68,7 +68,13 @@ is the task-item gate — it counts the issue's `- [ ]` / `- [x]` lines from a f
 read and, if the issue was CLOSED while items were still unfinished, REOPENS it, says so,
 finishes them, and re-closes. That needs the wrapper's `issue reopen` / `reopen-issue`
 subcommand and its checklist toggle (Part 6.2). Its worktree/lock/CI steps degrade gracefully
-outside an orchestrator run. Two endings differ from the Claude twin: Kiro has no
-session-archive tool (the table is the go-ahead; `/quit` is the user's), and no structured
+outside an orchestrator run. A handed-off issue (PR enqueued with the merge steward, or landed
+and recorded — `.kiro/docs/delivery.md`) counts as the session's work done; the verdict watcher
+closes it. Two endings differ from the Claude twin: Kiro has no session-archive tool (the
+table is the go-ahead; ending or archiving the session is the operator's), and no structured
 question tool, so a blocker needing a decision becomes one batched `Questions` block instead
 of an `AskUserQuestion` call.
+
+Not ported, by harness: Claude Code's `/supervise` and its run watchdog (a session cron) and
+StopFailure recorder have no Kiro counterpart — Kiro has no session cron, no StopFailure event
+and no cross-session messaging — so a turn an API error ends is resumed with `@continue-work`.

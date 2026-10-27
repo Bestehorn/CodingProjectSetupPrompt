@@ -20,10 +20,14 @@ changelog entry, not here.)
 - **Bash is for executing**: tests, linters, git, the wrapper scripts, build and deploy tools.
   One Bash call carries a whole step (`a && b && c`), not one call per command, and a
   timestamp or a value a step needs is fetched in the same call that uses it, never alone.
-- **Never `sleep` in a foreground call.** A pipeline is awaited with the wrapper's blocking
-  `wait` as a background task; anything else is awaited by running THAT command with
-  `run_in_background: true`. The `no-foreground-sleep` gate refuses a foreground wait of
-  10 s or more and any sleep inside a loop (`parallel-by-default.md`).
+- **Never `sleep` in a foreground call, and never end a turn to wait.** A pipeline is
+  awaited with the wrapper's blocking `wait` in the FOREGROUND with a bounded timeout
+  (`--timeout-seconds 540`, re-issued while it exits 11) after the unblocked work is done;
+  a background task is for output you read later while you keep working, and its result is
+  collected with ONE bounded foreground `python .claude/hooks/wait_for.py --file <path>
+  --timeout-seconds 540` — never a polling loop (`parallel-by-default.md`). The
+  `no-foreground-sleep` gate refuses a foreground `sleep` of 10 s or more and any sleep inside
+  a loop.
 - **Local suites go through `scripts/run_tests.py`**, which bounds its workers AND holds one
   of the host-wide suite slots (`scripts/suite_semaphore.py`) for any run wider than named
   test files; a CDK synth, `npm test` or a harness runs under
@@ -32,5 +36,6 @@ changelog entry, not here.)
 ## Self-check before a Bash call
 
 Does this command only read, search or write a file? Then it is a Read, Grep, Glob, Write or
-Edit call. Does it wait? Then it runs in the background. Is it a suite or a synth? Then it goes
-through the runner or the semaphore. Otherwise, chain the step into ONE call.
+Edit call. Does it wait? Then it is the wrapper's bounded wait in the foreground, after the
+unblocked work. Is it a suite or a synth? Then it goes through the runner or the semaphore.
+Otherwise, chain the step into ONE call.
