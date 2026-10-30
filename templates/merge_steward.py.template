@@ -51,8 +51,10 @@ in-progress label and the assignees removed), because SELECT skips a claimed iss
 
 USAGE
   python scripts/merge_steward.py [--token-stdin | --token-file F] tick [--run-url URL] [--dry-run]
-  python scripts/merge_steward.py [...] verdict --sha SHA --conclusion success|failure|auto [--run-url URL]
-         [--environment NAME] [--gitlab-pipeline ID --deploy-jobs job1,job2]
+  python scripts/merge_steward.py [...] verdict --sha SHA | --sha-from-event FILE
+         --conclusion success|failure|auto [--run-url URL] [--environment NAME]
+         [--gitlab-pipeline ID --deploy-jobs job1,job2]
+  python scripts/merge_steward.py deploy-guard --event-file FILE   # GitHub deploy: a 40-hex trunk commit or exit 4
   python scripts/merge_steward.py [...] enqueue <pr> [--allow-pending]      # what `enqueue-pr` runs
   python scripts/merge_steward.py [...] dequeue <pr> [--reason TEXT]
   python scripts/merge_steward.py [...] check-pr <pr>                       # would the queue take it now?
@@ -221,6 +223,26 @@ def depends_on(body: str) -> List[int]:
             if int(number) not in found:
                 found.append(int(number))
     return found
+
+
+def deployed_sha(event: Dict[str, Any]) -> str:
+    """The commit a GitHub deploy run deploys, read from its event payload (`${{ github.event_path }}`): the
+    dispatch input `sha` (the steward's dispatch), else the pushed `after` (a direct merge's trunk push). Read
+    from the FILE, so the workflow needs no `env:` map to pass an untrusted dispatch input to a shell safely."""
+    sha = str((event.get("inputs") or {}).get("sha") or event.get("after") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ConfigError(f"the event names no 40-hex commit to deploy (got {sha[:60]!r})")
+    return sha
+
+
+def read_event(path: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read the event payload {path!r} ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"the event payload {path!r} is not an object")
+    return data
 
 
 def checklist_counts(body: str) -> Tuple[int, int, List[str]]:
@@ -991,6 +1013,7 @@ class Steward:
         self.run_url = run_url
         self.dry = report.dry_run
         self._queued_refs: Optional[Dict[int, set]] = None  # issue -> queued PRs referencing it (one verdict run)
+        self._batches: set = set()  # batch ids this process has built
 
     # -- small helpers --------------------------------------------------------------------------------
     @property
@@ -1464,8 +1487,22 @@ class Steward:
                 issue, self.s.label("rework_label"), f"merge-steward: PR #{pr.number} left the queue — {why}"
             )
 
+    def _fresh_batch(self, trunk: str) -> str:
+        """A batch id no train of this repository carries: the UTC second plus the trunk prefix, and never one
+        already used. Two builds in one second — a culprit's retry rebuilt in the same tick on a fast runner —
+        would otherwise produce the same branches and byte-identical commits, and the first train's culprit mark
+        would then read as "already judged", leaving a twice-red PR in the queue. So the id waits for the next
+        second instead (the train trailers carry it, which makes every train commit distinct)."""
+        taken = set(self._batches) | set(self.trains_in_flight())
+        while True:
+            batch = utcnow().strftime("%Y%m%d%H%M%S") + trunk[:7]
+            if batch not in taken:
+                self._batches.add(batch)
+                return batch
+            time.sleep(0.25)
+
     def build(self, trunk: str, chosen: List[PullRequest]) -> List[Train]:
-        batch = utcnow().strftime("%Y%m%d%H%M%S") + trunk[:7]
+        batch = self._fresh_batch(trunk)
         prefix = str(self.s.steward["train_prefix"])
         refspecs = [self.host.pr_head_refspec(pr.number) for pr in chosen]
         self.git.run("fetch", "--no-auto-gc", self.s.remote, *refspecs)
@@ -1690,6 +1727,17 @@ class Steward:
         self._do(f"issue #{number}: close", self.host.issue_close, number)
         self._issue_labels(number, remove=done_labels)
 
+    def deploy_guard(self, event_file: str) -> int:
+        """The GitHub deploy's first job: the commit it is asked to deploy is a 40-hex commit ON the trunk. Runs
+        the default branch's copy of this file, so a dispatch can never make the guard run the commit it guards."""
+        sha = deployed_sha(read_event(event_file))
+        trunk = self.fetch()
+        if self.git.has_commit(sha) and (sha == trunk or self.git.is_ancestor(sha, self.trunk_ref)):
+            self.report.say(f"deploying {sha} from {self.s.trunk} (at {trunk[:12]})")
+            return EXIT_OK
+        self.report.say(f"REFUSED: {sha} is not a commit on {self.s.trunk} — nothing is deployed, no verdict follows")
+        return EXIT_REFUSED
+
     # -- agent-facing ---------------------------------------------------------------------------------
     def check(self, number: int, allow_pending: bool = False) -> Tuple[bool, str]:
         pr = self.host.pr(number)
@@ -1778,6 +1826,16 @@ def read_token(args: argparse.Namespace, settings: Settings) -> str:
     return token
 
 
+class _NoHost:
+    """The host of a command that needs none (`deploy-guard`): any tracker call is a programming error."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise ConfigError(f"deploy-guard reached the tracker ({name}) — it must use git only")
+
+
+NO_HOST: Any = _NoHost()
+
+
 def make_host(settings: Settings, token: str, git: Git) -> HostAPI:
     if settings.host == "github":
         return GitHubAPI(token, settings, git)
@@ -1798,7 +1856,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     tick.add_argument("--run-url", default="")
     tick.add_argument("--dry-run", action="store_true")
     verdict = sub.add_parser("verdict")
-    verdict.add_argument("--sha", required=True)
+    which = verdict.add_mutually_exclusive_group(required=True)
+    which.add_argument("--sha")
+    which.add_argument("--sha-from-event", metavar="FILE", help="read the deployed commit from a GitHub event file")
     verdict.add_argument("--conclusion", required=True, choices=("success", "failure", "auto"))
     verdict.add_argument("--run-url", default="")
     verdict.add_argument("--environment", default="dev")
@@ -1819,6 +1879,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     record.add_argument("--dry-run", action="store_true")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
+    guard = sub.add_parser("deploy-guard")
+    guard.add_argument("--event-file", required=True)
     return parser.parse_args(list(argv))
 
 
@@ -1843,6 +1905,8 @@ def main(argv: Sequence[str]) -> int:  # noqa: C901 — one dispatch per subcomm
         return EXIT_USAGE
     git = Git(ROOT, str(settings.steward["git_user_name"]), str(settings.steward["git_user_email"]))
     try:
+        if args.command == "deploy-guard":  # git only: no token, no tracker
+            return Steward(settings, git, NO_HOST, Report()).deploy_guard(args.event_file)
         token = read_token(args, settings)
         host = make_host(settings, token, git)
         report = Report(dry_run=bool(getattr(args, "dry_run", False)))
@@ -1856,7 +1920,8 @@ def main(argv: Sequence[str]) -> int:  # noqa: C901 — one dispatch per subcomm
                 if conclusion == "none":
                     report.say("no verdict: the deploy did not run to a result (superseded, cancelled or skipped)")
                     return EXIT_OK
-            return steward.verdict(args.sha, conclusion, args.run_url, args.environment)
+            sha = args.sha or deployed_sha(read_event(args.sha_from_event))
+            return steward.verdict(sha, conclusion, args.run_url, args.environment)
         if args.command == "enqueue":
             return steward.enqueue(args.pr, args.allow_pending)
         if args.command == "check-pr":

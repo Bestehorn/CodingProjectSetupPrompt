@@ -69,6 +69,15 @@
 #     Kiro has no session cron, no StopFailure event and no cross-session messaging, so
 #     the Claude twin's run watchdog and `/supervise` have no counterpart here: a turn an
 #     API error ends is resumed with @continue-work.
+#   - 2026-10-30: fifth round of project feedback. `supervisor.py` joins the hooks-bin copy
+#     (the copied tests import it); the Kiro steering copies of kernel rules are now
+#     three-way merged in an update, with the front matter taken from the export (a verbatim
+#     copy reverted project corrections); the steward and deploy jobs run on the project's
+#     own `runs-on`; on GitHub, moving deploys under the steward redesigns their admission
+#     (dispatch, not trunk push or `workflow_run`); the deploy template reads the dispatch
+#     input from the event file (no `env:` maps); steward batch ids are unique; the memory
+#     report caps scoped files per host; the steering's delivery text is cut to its norms.
+#     CONTRACT_VERSION 2026.10.30-delivery-6.
 #   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
 #   - Aligns every MCP server config with the canonical install snippet from
 #     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,
@@ -1467,8 +1476,17 @@ What each piece guarantees — keep all of them; each closes a measured failure:
   `--token-file`), never a shell variable (Rule 2); on GitLab it pushes with a project
   access token in a File-type CI variable (the job token cannot push). A GitLab instance
   that licenses merge trains may use them instead — the template says how.
-- **Bootstrap:** the PR that installs the steward merges directly (the steward is not there
-  yet to land it); every later PR is enqueued.
+- **Runners:** `{{STEWARD_RUNS_ON}}` / `{{DEPLOY_RUNS_ON}}` are the `runs-on` the project's CI
+  jobs already use, never a hosted label a private repository cannot run (every tick would fail,
+  every half hour); dispatch the steward workflow once and see its job start before the switch.
+- **Deploy admission (GitHub):** the steward's `GITHUB_TOKEN` push starts no workflow, so a deploy
+  chain admitted only by a trunk `push` or a `workflow_run` of the CI never fires again —
+  inventory those workflows and job `if:`s and re-admit them for the steward's dispatch
+  (`inputs.sha || github.sha`); a post-merge job that is not a deploy moves into the deploy
+  workflow after `guard`. GitLab is unaffected (a project-token push starts the pipeline).
+- **Bootstrap, in two PRs:** the first installs the steward with `config/delivery.json` at
+  `merge: direct` and merges directly (the steward is not there yet to land it); the second, after
+  a tick ran green, switches to `steward`; every later PR is enqueued.
 
 The agent-facing contract is `.kiro/docs/delivery.md` (PART 8A.1); the mechanism is the
 header of `scripts/merge_steward.py`.
@@ -2989,10 +3007,9 @@ licence to skip this classification.
 - Per-issue/per-task worktrees and branches are EPHEMERAL: when work reaches a
   terminal state (merged, handed off, abandoned, escalated), `git worktree remove
   <path>` and `git branch -d/-D`, and verify nothing is left behind — after asserting
-  nothing is unpushed (`git log origin/<branch>..<branch>` empty). The clean end-state
-  is **per run**. A handed-off PR's REMOTE branch stays until the merge steward lands
-  it; where `config/delivery.json` says `merge: steward`, only the steward writes the
-  trunk (the `merge-steward` gate enforces it).
+  nothing is unpushed (`git log origin/<branch>..<branch>` empty); a handed-off PR's
+  REMOTE branch stays until it lands, and under the merge steward only the steward
+  writes the trunk. The clean end-state is **per run**.
 - **Do NOT move the shared local `main` branch.** When multiple runs may share one
   clone, a run NEVER `git checkout main`s or fast-forwards local `main`. Fetch and
   base new worktrees on `origin/<main>`, and verify merges with
@@ -3048,11 +3065,10 @@ the log) — never treat a missing optional field as a blocker.
   runs ahead of reality is worse than no checklist at all.
 - **Live updates at PHASE TRANSITIONS (resume-anywhere):** ONE short note when the issue
   is claimed (branch, worktree, tier), when the spec is approved (spec path), when the
-  implementation is pushed (PR link, evidence path), and when it is handed off (the queued
-  PR and the two `merge-steward:` lines of `.kiro/docs/delivery.md` §3) or merged and closed
-  (time spent, evidence) — plus the checklist ticks as items genuinely complete. An item
-  only a deploy can prove carries the suffix `(post-deploy)`; the verdict watcher ticks
-  exactly those, after a green post-deploy check on a commit that contains the change. Step-level
+  implementation is pushed (PR link, evidence path), and when it is handed off
+  (`.kiro/docs/delivery.md` §3) or merged and closed (time spent, evidence) — plus the
+  checklist ticks as items genuinely complete. An item only a deploy can prove carries the
+  suffix `(post-deploy)`. Step-level
   progress lives in the run's `resume_state.md`, not on the issue; four to six agent notes
   per issue is typical, twenty is a defect.
 - **Q&A always on the issue:** any question put to the user about an issue and the
@@ -3073,11 +3089,9 @@ the log) — never treat a missing optional field as a blocker.
   ISSUE with its reason and its routing, recorded when the decision was taken — a deferral
   invented at the moment of closing is just closing over unfinished work with extra words.
   Then close with a final comment linking the merged PR/MR and evidence, the checklist
-  fully ticked, and the time spent. Where the verdict watcher verifies
-  (`config/delivery.json`), IT closes the issue on that same precondition, counted
-  mechanically: a handed-off issue whose only open items are `(post-deploy)` ones is
-  closed by the watcher; one with any other open item is labelled `needs-closeout` and
-  left for a session to finish — never closed over it. A deferred item is NOT an automatic follow-up issue —
+  fully ticked, and the time spent. Where the verdict watcher verifies, it closes on the
+  same counted precondition, never over an open item (`.kiro/docs/delivery.md` §4). A
+  deferred item is NOT an automatic follow-up issue —
   route it through `issue-filing-discipline.md` (fix it now, one gated issue, or a
   findings-ledger row).
 - **A close made over unticked items is corrected, not explained: REOPEN the issue**
@@ -3211,9 +3225,7 @@ checklist items. Same evidence standard as an issue, no obligation of work — t
 makes "nothing may be dropped" compatible with "do not file it". **Rows are written ONLY
 with** `python scripts/memory_compile.py ledger add --subject S --finding F --evidence E
 --why W [--status open]`, never by editing the file, and committed in the change they came
-from, before its push (a ledger-only PR after the landing is one more trunk run and one more
-collision); the file merges with git's `union` driver (`.gitattributes`), so two PRs that
-each add a row never conflict. A row is one line of at most 240 bytes, a
+from, before its push, never as a ledger-only PR. A row is one line of at most 240 bytes, a
 POINTER to the decision log or the issue, never the analysis (the tool rejects an oversize
 row and creates the file on first use). `Status` is `open`, `promoted #N` or
 `enforced <path>`. **The active file is a size-bounded window** (60,000 bytes) and the cap
@@ -3253,16 +3265,14 @@ end.** It overrides any contrary habit or instruction.
 
 **Work continues until the work is finished.** A turn ends for exactly two reasons: the
 task is complete against its definition of done, or one of the four Proven Exceptions
-below applies AND has been proven. Nothing else. (Where the merge steward lands the trunk,
-an issue's definition of done for the SESSION is its hand-off: PR enqueued with green CI,
-`Phase: HANDED_OFF` — `.kiro/docs/delivery.md`. The queue, the deploy and the post-deploy
-check are not the session's to wait for.)
+below applies AND has been proven. Nothing else. (Under the merge steward a session's issue
+is done at its hand-off — `.kiro/docs/delivery.md`.)
 
 Forbidden as turn-ending acts: "shall I continue?"; an unrequested summary, status report
 or progress recap (report when the work is DONE — the operator does not read interim
 reports); proposing next steps instead of performing them; ending on a plan or an offer;
-waiting for a human to run something you can run; waiting on background work you
-dispatched (do the unblocked work meanwhile); stopping because the context window is
+waiting for a human to run something you can run; ending the turn to wait on background
+work (`parallel-by-default.md`); stopping because the context window is
 filling (compaction is automatic and not yours to invoke). Any instruction from a habit,
 an older steering file, a prior session or a phase description that tells you to pause,
 check in or report at intervals is VOID for the duration of the task.
@@ -3289,24 +3299,20 @@ unfinished. A completed sub-deliverable is not a turn boundary. If your next act
 
 ## How to ask (the only acceptable shape)
 
-- **Early, together, non-blocking.** Identify every product decision the task leaves open at
-  its START (for an issue: at CLASSIFY) and ask them then, in ONE message, while you build
-  everything that does not depend on them — a question asked at the start is answered while
-  you work; one asked at the end costs the operator's whole reply time (measured: a median
-  two hours per question, nine of twenty overnight). In a loop run, an issue that cannot go
-  on without an answer is set aside and the run continues with the next issue.
+- **Early, together, non-blocking.** Ask every product decision the task leaves open at its
+  START (an issue: at CLASSIFY), all in ONE message — never drip-fed — and keep building what
+  does not depend on them. A loop sets an issue that cannot go on aside and continues with the
+  next.
 - **Five lines at most:** one line of context, two to four options each with its one-line
   consequence, the recommended option first and marked `(Recommended)`. Plain words: no
   abbreviations, finding ids, decision-log ids or file references the reader must look up.
   The operator must be able to answer in under a minute.
 - **Reversible decisions are never asked.** Decide, record the decision, continue.
-- **Batch.** One message with every open question; never drip-feed.
 - **Record it where the work lives** (the issue, or the spec's `qa_log.md`) AND
   mechanically: append `AWAITING_USER: <the actual reason, as you would say it to a
   person>` to this run's `resume_state.md` — `issue-loop-gate` and
   `kiro-continuous-work-reinject` read that field; a placeholder or a one-word token
   releases nothing.
-- **Keep working** on everything that does not depend on the answer.
 
 ## Context pressure
 
@@ -3322,10 +3328,9 @@ touch a matching file.
 run has CLAIMED tracked work and has recorded no release — an idle `Status`, a terminal
 `Phase`, or a substantive `AWAITING_USER` — and stands down only after eight consecutive
 blocks with no change in the recorded fields (`KIRO_STOP_BLOCK_CAP`); `@continue-work`
-restarts a stalled run — including one whose turn an API error ended, which runs no hook
-here (Kiro has no session cron and no StopFailure event, so nothing resumes it on its own).
-Neither substitutes for this rule: everywhere else this text is the only brake. Behave as
-though nothing is watching.
+restarts a stalled run, including one an API error ended (Kiro has no run watchdog and no
+StopFailure event). Neither substitutes for this rule: everywhere else this text is the only
+brake. Behave as though nothing is watching.
 ```
 
 ### 8.34 `ci-owns-the-test-suite.md` (always) — fleet convention — NEW
@@ -3398,9 +3403,8 @@ derives a BOUNDED worker count — `min(4, cores // 4)`, floor 1 — and refuses
   it again. `run_tests.py` therefore takes one of the `max(1, cores // 4)`
   host-wide slots of `scripts/suite_semaphore.py` and WAITS for a free one;
   a synth or `npm test` runs under `python scripts/suite_semaphore.py run --
-  <command>`. Suites of one capture that do not depend on each other start
-  together, each in its own slot, and are collected with ONE bounded
-  `python .kiro/hooks-bin/wait_for.py` wait (`parallel-by-default.md`).
+  <command>` (independent suites of one capture start together, each in its own
+  slot — `parallel-by-default.md`).
 - If a suite is flaky under parallelism, `--workers 1` is the honest answer
   while the shared state gets fixed — not a retry loop, and never an `xfail`
   (`tests-must-not-fail.md`).
@@ -3456,21 +3460,13 @@ set, every push in every worktree pays for a full local suite.
 A pipeline takes as long as it takes; what is yours to decide is what happens
 meanwhile. Do every piece of work that does not depend on the verdict FIRST —
 the docs, the issue note, the evidence report — then run the wrapper's blocking
-wait in the FOREGROUND with a bounded timeout (`pipeline wait <id>
---timeout-seconds 540` on GitLab, `wait-run <id> --timeout-seconds 540` on
-GitHub; both poll internally and exit with the terminal verdict — 0 success,
-10 not success, 11 timeout, distinct from the wrapper's own 1/2/3), re-issued
-while it exits 11. A `sleep N` in a shell call, repeated, is the measured shape
-of a thousand hours of nothing (`parallel-by-default.md`), and each wake-up
-re-reads the whole context.
-
-The run you wait for is the PR's own. Where `config/delivery.json` says
-`merge: steward`, a PR whose CI is green is enqueued and handed off: the
-steward runs the full CI on the exact merged state (the train), lands only a
-green train, and returns a red one to the issue as `needs-rework`; the trunk
-and the deploy are never yours to wait for (`.kiro/docs/delivery.md`). A red
-train is fixed exactly like a red PR run — every failing job read, grouped,
-fixed in one pass, one push, re-enqueued. If the push transport's credential lapses mid-run (an
+wait in the FOREGROUND, bounded (`wait-run <id> --timeout-seconds 540`; GitLab
+`pipeline wait`; exit 0 success, 10 not success, 11 timeout — re-issue), never
+as a background task and never as a `sleep` loop (`parallel-by-default.md`).
+The run you wait for is the PR's own: under the merge steward a green PR is
+enqueued and handed off, and a red train comes back as `needs-rework` — fixed
+like a red PR run, every failure in one pass (`.kiro/docs/delivery.md`). If the
+push transport's credential lapses mid-run (an
 expired SSH certificate), the push is queued, not the work: keep implementing
 locally and ask ONCE in the five-line shape of `continuous-work.md`, naming the
 exact command the operator must run.
@@ -3584,37 +3580,28 @@ are not. A sequential dispatch of independent work is a defect, not a style choi
   disjoint files and depend only on earlier waves. All TEST tasks of a wave are dispatched
   together, the wave's tests run once (red), then all IMPL tasks are dispatched together
   and the wave's tests run once (green). One commit per wave. The gates accept a wave
-  capture whose `# tasks:` header names the tasks it proves.
-- **Independent verification.** The suites of one capture that do not depend on each other
-  (a Python suite, a UI suite, a type check) start together, each through
-  `scripts/run_tests.py` or `scripts/suite_semaphore.py run` (the host-wide slots still bound
-  the machine), and are collected with bounded foreground waits. The next wave's TEST authors
-  start while this wave's green run is in flight; that wave's red capture waits for this
-  wave's green capture to pass and be committed. Captures are never skipped or merged to save
-  time — they stop waiting for each other.
+  capture whose `# tasks:` header names the tasks it proves. The next wave's TEST authors
+  start while this wave's green run is in flight; its red capture waits for this wave's
+  commit.
+- **Independent suites** of one capture start together, each through `scripts/run_tests.py`
+  or `scripts/suite_semaphore.py run`. Captures overlap; they are never skipped or merged.
 - **Independent issues.** Separate issues run in separate worktrees and sessions.
 
 ## What waits, and how
 
-Never `sleep`-poll in a shell call, and never end a turn to wait. Do every piece of work
-that does not depend on the verdict first; then a CI run, a deploy or a merge is waited on
-with the wrapper's blocking `wait` subcommand in the FOREGROUND with a bounded timeout
-(`--timeout-seconds 540`, re-issued while it exits 11) — a background task dies with the
-session's process and a stopped task never wakes the agent (measured 2026-10-10: 82 of 82).
-A process you started in the background is collected the same way: `python
-.kiro/hooks-bin/wait_for.py --file <path> [--line <regex>] [--pid <pid>]
---timeout-seconds 540` (exit 0 found, 10 the writer ended without it, 11 timeout —
-re-issue). The `no-foreground-sleep` gate refuses a foreground `sleep` of 10 s or more and
-any sleep inside a loop; a wrapper wait and `wait_for.py` are not sleeps. (Kiro's stop
-payload names no transcript, so the Claude twin's `no-idle-wait` gate allows here: this
-sentence is the brake.) Idling on a pipeline is a stop in disguise (`continuous-work.md`).
+Never `sleep`-poll in a shell call, and NEVER END A TURN TO WAIT: a background task dies
+with the session's process and never wakes it. Do every unblocked piece of work first, then
+wait in the FOREGROUND, bounded, re-issued while it exits 11: a run with the wrapper's
+`wait-run <id> --timeout-seconds 540` (GitLab: `pipeline wait`); a local process started as
+`<command> > <log> 2>&1; echo "exit=$?" >> <log>` with `python .kiro/hooks-bin/wait_for.py
+--file <log> --line '^exit=' --timeout-seconds 540`. A background task is for output you
+read LATER while you keep working. The `no-foreground-sleep` gate refuses a foreground
+`sleep` of 10 s or more and any sleep in a loop; Kiro's stop payload names no transcript,
+so the Claude twin's `no-idle-wait` gate allows here and this sentence is the brake.
 
-What you never wait for: where `config/delivery.json` says `merge: steward`, a PR whose own
-CI is green is ENQUEUED (`enqueue-pr`) and handed off — the merge steward tests the exact
-merged state and lands it, the deploy's verdict job verifies the issue by ancestry and
-closes it, and anything that comes back arrives on the issue as `needs-rework`
-(`.kiro/docs/delivery.md`). A session that waits for its PR to merge, for the trunk
-pipeline or for a deploy is idling on work that is no longer its own.
+Under the merge steward (`config/delivery.json`) a PR whose own CI is green is enqueued and
+handed off: its merge, the trunk run and the deploy are not yours to wait for
+(`.kiro/docs/delivery.md`).
 
 ## Self-check before any dispatch
 
@@ -3641,11 +3628,10 @@ one in ten a `sleep` poll, most of the rest `cat`, `ls`, `grep` and heredoc writ
 - Write and edit with the file-writing tools, never `cat > file <<EOF`, `echo >`, `sed -i`.
 - The shell is for EXECUTING: tests, linters, git, the wrapper scripts, build and deploy
   tools. One call carries a whole step (`a && b && c`), never one call per command.
-- Never `sleep` in a foreground call, and never end a turn to wait: the `no-foreground-sleep`
-  gate refuses a `sleep` of 10 s or more and any sleep in a loop; await a pipeline with the
-  wrapper's blocking `wait` in the FOREGROUND, bounded (`--timeout-seconds 540`) and
-  re-issued, after the unblocked work — a background process is for output read later,
-  collected with ONE bounded `python .kiro/hooks-bin/wait_for.py` call, never a polling loop.
+- Never `sleep` in a foreground call, and never end a turn to wait: await a pipeline with
+  the wrapper's blocking `wait` in the FOREGROUND, bounded and re-issued, after the unblocked
+  work; a background process's output is collected with ONE bounded `wait_for.py` call. The
+  `no-foreground-sleep` gate refuses a `sleep` of 10 s or more and any sleep in a loop.
 - Local suites go through `scripts/run_tests.py`, which holds a host-wide suite slot; a
   synth, `npm test` or a harness runs under `python scripts/suite_semaphore.py run -- <cmd>`.
 
@@ -3831,6 +3817,7 @@ cp claude-agents/spec-workflow/hooks/hooks.py                .kiro/hooks-bin/   
 cp claude-agents/spec-workflow/hooks/gate_*.py               .kiro/hooks-bin/   # every gate
 cp claude-agents/spec-workflow/hooks/red_for_right_reason.py .kiro/hooks-bin/
 cp claude-agents/spec-workflow/hooks/wait_for.py             .kiro/hooks-bin/   # the bounded wait for a background process
+cp claude-agents/spec-workflow/hooks/supervisor.py           .kiro/hooks-bin/   # not run on Kiro, but tests/ import it
 cp cli-agents/spec-workflow/hooks/kiro_hooks.py              .kiro/hooks-bin/   # the Kiro entry point
 cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION        .kiro/hooks-bin/   # keys the contract handshake
 cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md      .kiro/hooks-bin/   # printed at spawn while valid

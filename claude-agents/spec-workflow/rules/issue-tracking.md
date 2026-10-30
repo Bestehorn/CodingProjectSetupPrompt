@@ -27,11 +27,9 @@ optional field cleanly and note it — never treat one as a blocker.
 
 The issue carries enough to resume from, not a step-by-step diary. Post ONE short note at
 each phase transition — claimed (branch, worktree, tier); spec approved (spec path);
-implementation pushed (PR link, evidence path); handed off (the queued PR, the two
-`merge-steward:` lines of `.claude/docs/delivery.md` §3) or merged and closed (time spent,
-evidence) — plus the checklist ticks as items genuinely complete. An item only a deploy can
-prove carries the suffix `(post-deploy)`; the verdict watcher ticks exactly those, after a green
-post-deploy check on a commit that contains the change. Step-level progress lives in the
+implementation pushed (PR link, evidence path); handed off (`.claude/docs/delivery.md` §3) or
+merged and closed (time spent, evidence) — plus the checklist ticks as items genuinely complete.
+An item only a deploy can prove carries the suffix `(post-deploy)`. Step-level progress lives in the
 run's `resume_state.md`, not on the issue. A typical issue carries four to six notes from
 an agent; twenty is a defect. **Every question put to the user, and the answer, goes on
 the issue as a comment, verbatim** — a Q&A decision must never live only in transient
@@ -64,10 +62,8 @@ which is just closing over unfinished work with extra words. The same applies to
 whose work is tracked as CHILD ISSUES: every child closed, or the parent is not closeable.
 
 Close with a final comment linking the merged PR and the evidence, the checklist fully
-ticked, and the time spent. Where the verdict watcher verifies (`config/delivery.json`), IT
-closes the issue on that same precondition, counted mechanically: a handed-off issue whose only
-open items are `(post-deploy)` ones is closed by the watcher; one with any other open item is
-labelled `needs-closeout` and left for a session to finish — never closed over it. A deferred item is NOT an automatic follow-up issue — route it
+ticked, and the time spent. Where the verdict watcher verifies, it closes on the same counted
+precondition, never over an open item (`.claude/docs/delivery.md` §4). A deferred item is NOT an automatic follow-up issue — route it
 through `issue-filing-discipline.md` (fix now if small and clear; ONE gated issue if it needs
 research/design/out-of-scope work; else the findings ledger), and let the deferral reason
 name which happened.

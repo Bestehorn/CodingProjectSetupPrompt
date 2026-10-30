@@ -76,9 +76,7 @@ with "do not file it".
 
 **Rows are written ONLY with** `python scripts/memory_compile.py ledger add --subject S
 --finding F --evidence E --why W [--status open]` — never by editing the file — and committed in
-the change they came from, before its push: a ledger-only PR after the landing is one more trunk
-run and one more collision (`.claude/docs/delivery.md` §2). The file is merged with git's `union`
-driver (`.gitattributes`), so two PRs that each add a row never conflict. A row is one
+the change they came from, before its push, never as a ledger-only PR. A row is one
 line of at most 240 bytes: a POINTER, never the analysis. The analysis lives in the decision
 log or the issue, and the row names where; the tool rejects an oversize row (exit 2) and
 creates the file on first use. `Status` is `open`, `promoted #N` or `enforced <path>` (a

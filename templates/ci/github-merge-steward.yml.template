@@ -14,8 +14,9 @@
 # (it stops chaining `workflow_run` beyond three levels). A tick that is already running is never cancelled; a newer
 # pending tick replaces an older pending one, which is harmless because every tick reads the whole queue.
 #
-# Runners: the tick is a few git and API calls. Any runner works; on a CodeBuild-hosted runner use the
-# project's label form, e.g. `codebuild-<runner-project>-${{ github.run_id }}-${{ github.run_attempt }}`, so a
+# Runners: the tick is a few git and API calls. Use the `runs-on` the project's CI jobs already use — a private
+# repository whose GitHub-hosted runners start no job would fail this tick every half hour; on a CodeBuild-hosted
+# runner that is the project's label form, e.g. `codebuild-<runner-project>-${{ github.run_id }}-${{ github.run_attempt }}`, so a
 # quota-limited hosted account is not needed for the queue to move. On GitHub-hosted runners every run is billed
 # as at least one minute: the 30-minute safety net is about 1,440 runs a month, plus one per enqueue and one per
 # train; a `*/10` schedule alone would be about 4,300 — more than a Free organisation's private-repo quota.

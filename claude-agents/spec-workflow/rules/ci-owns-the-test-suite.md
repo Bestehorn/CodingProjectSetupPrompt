@@ -55,9 +55,8 @@ host-wide suite slot for any run wider than named test files.
   2026-10-01). So `run_tests.py` takes one of the `max(1, cores // 4)` slots that
   `scripts/suite_semaphore.py` keeps per user — shared by every project, worktree, Claude
   and Kiro session on the machine; override in `~/.claude/suite-semaphore/cap` — and WAITS
-  for a free one rather than starting another suite. Suites of one capture that do not depend
-  on each other start together as background tasks, each in its own slot, and are collected with
-  `python .claude/hooks/wait_for.py` (`parallel-by-default.md`). A CDK synth, `npm test`, a vitest run or a mutation harness
+  for a free one rather than starting another suite (independent suites of one capture start
+  together, each in its own slot — `parallel-by-default.md`). A CDK synth, `npm test`, a vitest run or a mutation harness
   takes a slot the same way: `python scripts/suite_semaphore.py run -- <command>`.
   `python scripts/suite_semaphore.py status` shows who holds what.
 - If a suite is flaky under parallelism, `--workers 1` is the honest answer while the shared
@@ -110,20 +109,12 @@ worktree pays for a full local suite.
 
 A pipeline takes as long as it takes; what is yours to decide is what happens meanwhile.
 Do every piece of work that does not depend on the verdict FIRST — the docs, the issue note,
-the evidence report — then run the wrapper's blocking wait in the FOREGROUND with a bounded
-timeout (`wait-run <id> --timeout-seconds 540` on GitHub, `pipeline wait <id>
---timeout-seconds 540` on GitLab; both poll internally and exit with the terminal verdict —
-0 success, 10 not success, 11 timeout, distinct from the wrapper's own 1/2/3), re-issued while
-it exits 11 (`parallel-by-default.md`). Not as a background task: it dies with the session's
-process and never wakes you. A `sleep N` inside a tool call, repeated, is the measured shape of
-a thousand hours of nothing, and each wake-up re-reads the whole context.
-
-The run you wait for is the PR's own. Where `config/delivery.json` says `merge: steward`, a PR
-whose CI is green is enqueued and handed off: the steward runs the full CI on the exact merged
-state (the train), lands only a green train, and returns a red one to the issue as
-`needs-rework`; the trunk and the deploy are never yours to wait for (`.claude/docs/delivery.md`).
-A red train is fixed exactly like a red PR run — every failing job read, grouped, fixed in one
-pass, one push, re-enqueued.
+the evidence report — then run the wrapper's blocking wait in the FOREGROUND, bounded
+(`wait-run <id> --timeout-seconds 540`; GitLab `pipeline wait`; exit 0 success, 10 not
+success, 11 timeout — re-issue), never as a background task and never as a `sleep` loop
+(`parallel-by-default.md`). The run you wait for is the PR's own: under the merge steward a
+green PR is enqueued and handed off, and a red train comes back as `needs-rework` — fixed like
+a red PR run, every failure in one pass (`.claude/docs/delivery.md`).
 
 If the push transport's credential lapses mid-run (an expired SSH certificate, a
 `Permission denied (publickey)`), the push is queued, not the work: keep implementing and

@@ -1,6 +1,9 @@
 # Deploy {{ENVIRONMENT}} — the newest landed commit, never cancelled while running, verified by ancestry.
 # Installed from templates/ci/github-deploy.yml.template as the project's deploy workflow (merge it into an
-# existing one: keep its deploy steps, take the trigger, the concurrency block and the two last jobs from here).
+# existing one: keep its deploy steps, take the triggers, the concurrency block, `guard` and the two last jobs).
+# Under the steward the trunk moves by a GITHUB_TOKEN push, which starts no workflow: a deploy chain admitted only
+# by `workflow_run` of the CI or by a trunk `push` never fires again, so its admission (`on:`, job `if:`s, reads
+# of `github.event.workflow_run.head_sha`) must admit this dispatch — setup prompt Part 7.1 item 4.
 #
 # THE THREE RULES (each from a measured failure, project-docs/merge-velocity-chess-2026-10-25.md):
 #   1. The merge steward starts this workflow with the commit it just landed (`workflow_dispatch`, input `sha`);
@@ -18,6 +21,11 @@
 #      it happens to contain as `needs-rework`.
 #
 # The end-to-end job runs the project's committed post-deploy checks (always-test-e2e.md); never a human step.
+#
+# NO `env:` MAPS. The one untrusted value — the dispatch input `sha` — never reaches a shell: the guard and the
+# verdict read it from the run's event file (`${{ github.event_path }}`) with the default branch's copy of
+# scripts/merge_steward.py, which validates it; `checkout` takes it as a `with:` input. Everything else interpolated
+# into a `run:` line is a GitHub-controlled value (job results, server URL, run id).
 name: Deploy {{ENVIRONMENT}}
 
 on:
@@ -41,21 +49,16 @@ jobs:
   guard:
     runs-on: {{DEPLOY_RUNS_ON}}
     steps:
-      - uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
+      - name: Check out the default branch (the trusted copy of the steward, with the trunk's history)
+        uses: actions/checkout@v4 # pin to a commit SHA per the project's supply-chain policy
         with:
-          ref: ${{ inputs.sha || github.sha }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
-      - name: Guard — deploy only a commit that is on the trunk
-        # A dispatch input is data: it is passed through the step's env and validated before any use.
-        env:
-          DEPLOY_SHA: ${{ inputs.sha || github.sha }}
-          TRUNK: ${{ github.event.repository.default_branch }}
-        run: >-
-          python -c "import re,subprocess,sys,os;
-          sha=os.environ['DEPLOY_SHA']; trunk='origin/'+os.environ['TRUNK'];
-          ok=bool(re.fullmatch('[0-9a-f]{40}', sha)) and subprocess.run(['git','merge-base','--is-ancestor',sha,trunk]).returncode==0;
-          print('deploying', sha, 'from', trunk) if ok else print('REFUSED: not a 40-hex commit on', trunk, sha);
-          sys.exit(0 if ok else 1)"
+      - uses: actions/setup-python@v5 # pin to a commit SHA per the project's supply-chain policy
+        with:
+          python-version: "{{PYTHON_VERSION}}"
+      - name: Guard — deploy only a 40-hex commit that is on the trunk
+        run: python scripts/merge_steward.py deploy-guard --event-file "${{ github.event_path }}"
 
   deploy:
     needs: guard
@@ -93,11 +96,9 @@ jobs:
         with:
           python-version: "{{PYTHON_VERSION}}"
       - name: Verify every issue this deploy contains
-        env:
-          DEPLOY_SHA: ${{ inputs.sha || github.sha }}
-          CONCLUSION: ${{ (needs.deploy.result == 'success' && needs.e2e.result == 'success') && 'success' || 'failure' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: >-
           printf '%s\n' '${{ github.token }}' |
-          python scripts/merge_steward.py --token-stdin verdict --sha "$DEPLOY_SHA" --conclusion "$CONCLUSION"
-          --run-url "$RUN_URL" --environment {{ENVIRONMENT}}
+          python scripts/merge_steward.py --token-stdin verdict --sha-from-event "${{ github.event_path }}"
+          --conclusion ${{ (needs.deploy.result == 'success' && needs.e2e.result == 'success') && 'success' || 'failure' }}
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --environment {{ENVIRONMENT}}

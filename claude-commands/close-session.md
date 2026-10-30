@@ -175,10 +175,11 @@ deciding number).
       removed, and randomized `cdk.out<hash>` assemblies accumulate in the OS temp dir (one
       report reached 170 GB in two days). An aborted bundling also leaves `bundling-temp-*` /
       empty `asset.<hash>` that makes the NEXT deploy fail, so this is correctness, not just
-      disk. Run the reaper in the FOREGROUND with `--budget-minutes 9` and the Bash tool's
-      maximum timeout (600000), re-running while it exits 3 — never as a background task you
-      then wait for: a background task dies with the session's process and its result never
-      arrives (the 28-minute default budget is for an unattended job):
+      disk. Run the reaper in the FOREGROUND in the BOUNDED form its header documents, with the
+      Bash tool's maximum timeout (600000), re-running while it says its budget ran out — never
+      as a background task you then wait for: a background task dies with the session's process
+      and its result never arrives. The framework's reaper (a project that keeps its own runs
+      ITS documented form instead — never a flag that reaper does not take):
       ```bash
       python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply --budget-minutes 9
       ```

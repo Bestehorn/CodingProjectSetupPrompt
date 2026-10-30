@@ -23,11 +23,9 @@ changelog entry, not here.)
 - **Never `sleep` in a foreground call, and never end a turn to wait.** A pipeline is
   awaited with the wrapper's blocking `wait` in the FOREGROUND with a bounded timeout
   (`--timeout-seconds 540`, re-issued while it exits 11) after the unblocked work is done;
-  a background task is for output you read later while you keep working, and its result is
-  collected with ONE bounded foreground `python .claude/hooks/wait_for.py --file <path>
-  --timeout-seconds 540` — never a polling loop (`parallel-by-default.md`). The
-  `no-foreground-sleep` gate refuses a foreground `sleep` of 10 s or more and any sleep inside
-  a loop.
+  a background task's output is collected with ONE bounded foreground `wait_for.py` call,
+  never a polling loop (`parallel-by-default.md`). The `no-foreground-sleep` gate refuses a
+  foreground `sleep` of 10 s or more and any sleep inside a loop.
 - **Local suites go through `scripts/run_tests.py`**, which bounds its workers AND holds one
   of the host-wide suite slots (`scripts/suite_semaphore.py`) for any run wider than named
   test files; a CDK synth, `npm test` or a harness runs under

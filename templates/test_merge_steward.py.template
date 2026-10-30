@@ -13,6 +13,7 @@ Run: ``python scripts/run_tests.py test/test_merge_steward.py`` (needs git on PA
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import importlib.util
 import json
 import shutil
@@ -640,6 +641,29 @@ def test_a_dependency_closed_without_landing_refuses_its_dependent(world: World)
     assert any("closed without landing" in c for c in world.host.pr_comments[2])
 
 
+def test_two_batches_in_one_second_get_distinct_ids(world: World, monkeypatch) -> None:
+    """A culprit's retry rebuilt in the same second must not reuse the batch id: identical ids rebuild
+    byte-identical train commits, and the first train's culprit mark would then read as already judged."""
+    clock = [dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=dt.timezone.utc)]
+    monkeypatch.setattr(ms, "utcnow", lambda: clock[0])
+    monkeypatch.setattr(ms.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + dt.timedelta(seconds=1)))
+    steward = ms.Steward(world.settings, world.git, world.host, ms.Report())
+    first, second = steward._fresh_batch("a" * 40), steward._fresh_batch("a" * 40)
+    assert first != second and second.startswith("20261030120001")
+
+
+def test_the_deploy_guard_admits_only_a_trunk_commit(world: World, tmp_path: Path) -> None:
+    on_trunk = world.main()
+    off_trunk = world.pr(1, "a.txt", "a changed\n")
+    world.git.run("fetch", "origin", "+refs/heads/pr-1:refs/remotes/origin/pr-1")
+    event = tmp_path / "event.json"
+    steward = ms.Steward(world.settings, world.git, ms.NO_HOST, ms.Report())
+    event.write_text(json.dumps({"inputs": {"sha": on_trunk}}), encoding="utf-8")
+    assert steward.deploy_guard(str(event)) == ms.EXIT_OK
+    event.write_text(json.dumps({"inputs": {"sha": off_trunk}}), encoding="utf-8")
+    assert steward.deploy_guard(str(event)) == ms.EXIT_REFUSED, "a commit off the trunk is never deployed"
+
+
 def test_a_direct_project_tick_is_green_and_lands_nothing(world: World, tmp_path: Path) -> None:
     path = tmp_path / "direct.json"
     config = {"merge": "direct", "verification": "watcher", "trunk": "main", "host": "github"}
@@ -811,6 +835,15 @@ def test_a_ci_clone_url_yields_host_and_project_without_its_token() -> None:
     assert "s3cret" not in ms.redact(url)
     assert ms.host_and_path("git@github.com:owner/repo.git") == ("https://github.com", "owner/repo")
     assert ms.host_and_path("ssh://git@gitlab.example.com:2222/g/p.git") == ("https://gitlab.example.com", "g/p")
+
+
+def test_the_deployed_commit_is_read_from_the_event_file() -> None:
+    sha = "0123456789abcdef0123456789abcdef01234567"  # pragma: allowlist secret — a fake commit id
+    assert ms.deployed_sha({"inputs": {"sha": sha}, "after": "f" * 40}) == sha, "a dispatch names its commit"
+    assert ms.deployed_sha({"after": sha}) == sha, "a trunk push deploys the pushed commit"
+    for bad in ({"inputs": {"sha": "main"}}, {"inputs": {"sha": sha + '"; rm -rf /'}}, {}):
+        with pytest.raises(ms.ConfigError):
+            ms.deployed_sha(bad)
 
 
 def test_checklist_counts_ignore_fenced_examples() -> None:

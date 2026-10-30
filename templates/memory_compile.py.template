@@ -957,9 +957,10 @@ class BudgetRow:
 
 def _budget_rows() -> tuple[list[BudgetRow], list[Path]]:
     """The capped files with their sizes, plus the always-loaded corpus the per-file listing walks."""
-    # Each host's always-loaded corpus is capped SEPARATELY, exactly as test_instruction_corpus_budget.py
-    # caps them: a dual-host project loads .claude/rules into Claude Code sessions and the always-on steering
-    # into Kiro sessions, never both into one. Summing them reported OVER where the test passed.
+    # Each host's corpus — the always-loaded one AND the scoped one — is capped SEPARATELY, exactly as
+    # test_instruction_corpus_budget.py caps them: a dual-host project loads .claude/rules into Claude Code
+    # sessions and the steering into Kiro sessions, never both into one. Summing them reported OVER where the
+    # test passed (measured on a dual-host project: 70,149 B of scoped files against one 45,000 B cap).
     unscoped = _unscoped_rules()
     claude_corpus = [CLAUDE_MD, *[p for p in unscoped if p.parent == RULES_DIR]]
     kiro_corpus = [p for p in unscoped if p.parent == STEERING_DIR]
@@ -973,13 +974,14 @@ def _budget_rows() -> tuple[list[BudgetRow], list[Path]]:
         rows.append(
             BudgetRow(name="Kiro always-on steering", size=kiro_bytes, cap=CORPUS_CAP_BYTES, kiro_bytes=kiro_bytes)
         )
+    claude_scoped = sum(_size(p) for p in scoped if p.parent != STEERING_DIR)
+    kiro_scoped = sum(_size(p) for p in scoped if p.parent == STEERING_DIR)
+    rows.append(BudgetRow(name="paths:-scoped rules", size=claude_scoped, cap=SCOPED_RULES_CAP_BYTES))
+    if STEERING_DIR.is_dir():
+        rows.append(
+            BudgetRow(name="fileMatch steering", size=kiro_scoped, cap=SCOPED_RULES_CAP_BYTES, kiro_bytes=kiro_scoped)
+        )
     rows += [
-        BudgetRow(
-            name="paths:-scoped rules + fileMatch steering",
-            size=sum(_size(p) for p in scoped),
-            cap=SCOPED_RULES_CAP_BYTES,
-            kiro_bytes=sum(_size(p) for p in scoped if p.parent == STEERING_DIR),
-        ),
         BudgetRow(name="docs/forLLMConsumption.md", size=_size(FOR_LLM), cap=FOR_LLM_CAP_BYTES),
         BudgetRow(name="docs/lessons-learned.md", size=_size(LESSONS), cap=LESSONS_CAP_BYTES),
         BudgetRow(name="docs/findings-ledger.md", size=_size(LEDGER), cap=LEDGER_CAP_BYTES),

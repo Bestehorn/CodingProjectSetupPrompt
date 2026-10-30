@@ -48,11 +48,17 @@ reason, not delegated to a person.
 5. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
    the update procedure: project-specific values and content are preserved, conflicts are
    flagged, relocated assets are installed at the new location before the old copy is
-   removed, obsolete assets are removed only when nothing references them. Two kinds of
-   asset are taken VERBATIM from the export, never three-way merged: the Kiro agent
-   descriptors under `cli-agents/` (a merge produced a duplicate `agentSpawn` key, and JSON
-   keeps the last one, the retired form), and the Kiro steering copies of kernel rules, which
-   carry their own front matter (`inclusion: always`) that the Claude rule file lacks. The
+   removed, obsolete assets are removed only when nothing references them. ONE kind of asset
+   is taken VERBATIM from the export, never three-way merged: the Kiro agent descriptors under
+   `cli-agents/` (a merge produced a duplicate `agentSpawn` key, and JSON keeps the last one,
+   the retired form). The Kiro steering copies of kernel rules ARE three-way merged like the
+   Claude rules (base: the framework revision the project last installed; ours: the project's
+   file; theirs: the export), with the FRONT MATTER taken from the export (`inclusion: always`,
+   which the Claude rule file lacks): a project may have corrected a kernel statement that is
+   false for it — a worker bound, a script it deliberately does not install — and a verbatim
+   copy silently reverts that. Record each such kept correction in the update PR. The same
+   holds for a line a clean merge carries into a project-specific command: a project that
+   keeps its own reaper keeps its own close-out reaper command, not the framework's flags. The
    first commit of the update carries the pre-commit config, `scripts/memory_compile.py` and
    the compiled memory files TOGETHER: the `memory-reconcile` hook that config installs runs
    the tool against the ledger at commit time.
@@ -226,7 +232,9 @@ it is the order `.claude/hooks/MIGRATION.md` §9 gives:
    until `config/delivery.json` says so.
 2. **PR 1 — this update.** Install `scripts/merge_steward.py`, `test/test_merge_steward.py`, the
    steward workflow (`{{CI_WORKFLOW_NAME}}` = the `name:` of the CI workflow; GitLab: the
-   `merge-steward` and `steward-wake` jobs and the 30-minute schedule), `workflow_dispatch` on
+   `merge-steward` and `steward-wake` jobs and the 30-minute schedule; `{{STEWARD_RUNS_ON}}` /
+   `{{DEPLOY_RUNS_ON}}` = the `runs-on` the CI jobs already use, never a hosted label the repository
+   cannot run — dispatch the steward workflow once and see its job start), `workflow_dispatch` on
    the CI workflow, a trunk CI that a later push can no longer cancel
    (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`), the eleven labels, and a
    `config/delivery.json` that says `"merge": "direct"`, `"verification": "session"` — today's
@@ -238,7 +246,11 @@ it is the order `.claude/hooks/MIGRATION.md` §9 gives:
    scripts/merge_steward.py status`): `"merge": "steward"`, `"verification": "watcher"`
    (`"none"` where nothing deploys), and on GitHub the deploy workflow's triggers (the steward's
    dispatch plus the trunk push), per-environment concurrency (`cancel-in-progress: false`, no
-   `queue: max`), the `guard` job and the `verdict` job from the template — keeping the project's own deploy steps. It is the last PR merged
+   `queue: max`), the `guard` job and the `verdict` job from the template — keeping the project's own deploy steps.
+   On GitHub this is an ADMISSION redesign, not a trigger edit (setup prompt Part 7.1 item 4): the
+   steward's `GITHUB_TOKEN` push starts no workflow, so every workflow and job admitted only by a
+   trunk `push` or a `workflow_run` of the CI must be re-admitted for the dispatch, or it never runs
+   again — inventory them first and put the list in the PR. It is the last PR merged
    directly. Open and merge it in this run when that tick has run green after step 8;
    otherwise its exact diff is the PR's recorded post-merge step.
    Recommended: go straight to `steward` + `watcher`. It is what stops the trunk-run
@@ -269,7 +281,7 @@ registered run's next turn-end and at every compaction, and the freshness check 
 registered run once per later revision with the fast-forward instruction. Leave both
 channels intact: install `REVISION_NOTICE.md` and `CONTRACT_VERSION` as-is, and do not
 delete the notice before its `Valid-until` date. The 2026-10-26 revision
-(`CONTRACT_VERSION` `2026.10.26-delivery-5`, REVISION_NOTICE item 11) reaches a live session
+(`CONTRACT_VERSION` `2026.10.30-delivery-6`, REVISION_NOTICE items 9 and 11) reaches a live session
 the same way; a process that started before it has no run watchdog until the brake's refusal
 names the `CronCreate` that arms one.
 

@@ -128,6 +128,16 @@
 #     `/supervise` bring back a turn an API error ended; close-out archives the session on
 #     `CLOSE: YES`; the ledger and lessons merge with git's `union` driver. REVISION_NOTICE item 11;
 #     `CONTRACT_VERSION` 2026.10.26-delivery-5.
+#   - 2026-10-30: FIFTH ROUND OF PROJECT FEEDBACK (the first project on the delivery redesign).
+#     The steward's batch id never repeats (two builds in one second rebuilt identical trains, and
+#     a twice-red PR stayed queued); the GitHub deploy's guard and verdict read the dispatch input
+#     from the run's event file (`merge_steward.py deploy-guard`, `verdict --sha-from-event`), so
+#     the workflow templates carry no `env:` maps; the steward and deploy runner is the project's
+#     own `runs-on` (Part 7.1 item 2) and GitHub deploy ADMISSION is a redesign under the steward,
+#     with an inventory (item 4); the close-out reaper line fits a project's own reaper; Kiro
+#     steering copies are three-way merged (front matter from the export); the memory report caps
+#     each host's scoped rules on its own; the kernel's delivery text is cut to its norms (its
+#     growth 6.5 KB -> 2.0 KB). `CONTRACT_VERSION` 2026.10.30-delivery-6.
 
 ---
 
@@ -1393,7 +1403,13 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    stdin. The event-driven shape is a quota decision: a GitHub-hosted run bills at least a
    minute, and a 10-minute schedule alone is about 4,300 runs a month — more than a Free
    organisation's private-repo quota — where the safety net is about 1,440 (CodeBuild-hosted
-   runners do not count). The project's CI workflow gains a `workflow_dispatch` trigger: a push
+   runners do not count).
+   **The runner is the project's own.** `{{STEWARD_RUNS_ON}}` and `{{DEPLOY_RUNS_ON}}` are the
+   `runs-on` the project's CI jobs already use — read them from its CI workflow; never default to
+   `ubuntu-latest`. In a private repository whose GitHub-hosted runners start no job (no minutes
+   left, or the organisation does not allow them) a hosted label makes every tick fail, every half
+   hour. Before the switch, dispatch the steward workflow once and see its job START and run green.
+   The project's CI workflow gains a `workflow_dispatch` trigger: a push
    made with `GITHUB_TOKEN` starts no workflow, so the steward DISPATCHES the full CI on each
    train branch `steward/train-<batch>-<k>` (the trunk plus the PRs ahead plus this one), and
    the deploy the same way. GitLab: merge `templates/ci/gitlab-delivery.gitlab-ci.yml.template`
@@ -1428,6 +1444,19 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    `${{ inputs.sha || github.sha }}`: under the steward the trunk moves only by its GITHUB_TOKEN
    push, which starts no workflow, so one landing never deploys twice; under `merge: direct` the
    merge's own push starts it, so a direct project keeps deploying.
+   **On GitHub, deploy ADMISSION is a redesign, not a trigger edit.** Under the steward the trunk
+   moves only by the steward's `GITHUB_TOKEN` push, and that push starts NO workflow: no trunk CI
+   run, no `workflow_run` of it, no `push`-triggered job. (The landed commit IS the train commit
+   whose CI the steward already ran green, so the trunk run is not needed for testing.) Inventory
+   everything that runs BECAUSE the trunk moved: workflows `on: push` to the trunk, workflows
+   `on: workflow_run` of the CI workflow (a deploy chain), job `if:`s that admit only those events
+   (`github.event_name == 'push'`, `github.event.workflow_run.conclusion == 'success'`,
+   `github.event.workflow_run.head_branch == ...`), and reads of `github.event.workflow_run.head_sha`
+   or `github.event.after`. Each must admit the steward's DISPATCH of the deploy workflow
+   (`workflow_dispatch` with `sha`; the commit is `inputs.sha || github.sha`); a post-merge job that
+   is not a deploy (publishing, a coverage upload, a release) moves into the deploy workflow as a job
+   after `guard`. GitLab is not affected: the steward pushes with a project access token, and that
+   push starts the trunk pipeline as before.
 5. **The labels**, created once per repository: `queue`, `queue-failed`, `queue-conflict`,
    `queue-retried`, `do-not-merge`, `awaiting-verification`, `verified`, `verification-failed`,
    `needs-rework`, `needs-closeout`, `reverify`.

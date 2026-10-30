@@ -573,7 +573,7 @@ own suite, each is a contract a project had built on and the framework did not k
 
 ## 9. The delivery revision (2026-10-26): what a live project needs, in order
 
-Contract `2026.10.26-delivery-5`; the agent-facing contract is `.claude/docs/delivery.md`.
+Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, item 7 below); the agent-facing contract is `.claude/docs/delivery.md`.
 
 1. **Copy the files** (`hooks/*.py` now includes `gate_merge_steward.py`, `gate_stop_failure.py`,
    `wait_for.py`, `supervisor.py`; plus `docs/delivery.md`, `commands/supervise.md`) and
@@ -601,6 +601,14 @@ Contract `2026.10.26-delivery-5`; the agent-facing contract is `.claude/docs/del
    `needs-closeout` and `reverify` once, with a one-line description each (`config/delivery.json`
    may rename any of them). The steward only ADDS and REMOVES labels; whether a host creates a
    missing one on first use is not something to depend on.
+
+7. **(2026-10-30) The runner and the deploy admission.** `{{STEWARD_RUNS_ON}}` / `{{DEPLOY_RUNS_ON}}`
+   are the `runs-on` the project's CI already uses: a hosted label in a private repository whose hosted
+   runners start no job fails every tick. On GitHub the steward's `GITHUB_TOKEN` push starts no
+   workflow, so every workflow or job admitted only by a trunk `push` or a `workflow_run` of the CI —
+   typically a deploy chain — must be re-admitted for the steward's dispatch before PR 2, or it never
+   runs again (setup prompt Part 7.1 item 4 has the inventory). The deploy template's guard and verdict
+   read the commit from the event file; a project that audits workflow `env:` maps has none to register.
 
 What is NOT weakened: every PR still needs its own green CI before the queue takes it, the train
 re-runs the full CI on the exact state that lands, an issue closes only after a green post-deploy
