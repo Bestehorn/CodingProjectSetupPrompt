@@ -44,6 +44,11 @@ BLOCKED = [
     "git commit -m 'a' -n 2>&1",
     "git commit -n -m 'use -n carefully'",
     "git commit \\\n  -n -m x",
+    # `-S[<keyid>]` and `-u[<mode>]` take an OPTIONAL value that must be attached, so the next word is never one
+    # (measured on git 2.53: both skip the pre-commit hook)
+    "git commit -S -n -m x",
+    "git commit -u -n -m x",
+    "git commit -S -m x -n",
 ]
 
 ALLOWED = [
@@ -58,6 +63,9 @@ ALLOWED = [
     "git commit --message --no-verify",
     "git commit -am --no-verify",  # the cluster ends with a value letter, so the next word is its value
     "git commit -F -n",  # the message FILE is named "-n"
+    "git commit -Sn -m x",  # the key id is "n" (measured: the hook runs)
+    "git commit -uno -m x",  # --untracked-files=no (measured: the hook runs)
+    "git commit -U -n -m x",  # -U takes the next word; git rejects "-n" as its value before any hook
     "git push -o --no-verify origin main",  # a push option for the server, not a hook bypass
     "git push",
     "git push -n origin main",
@@ -105,3 +113,14 @@ def test_classification_sees_every_simple_command() -> None:
 def test_unbalanced_quote_falls_back_to_text_classification() -> None:
     assert gate_tdd.classify("git commit -n -m 'unterminated").bypass
     assert gate_tdd.classify("echo 'unterminated").is_commit is False
+
+
+def test_the_text_fallback_reads_one_command_per_line() -> None:
+    """Without shlex, `git status` on one line and `commit` on the next are two commands, and an `echo -n` after
+    a commit is not its bypass — while a bypass on its own line is still one."""
+    joined = gate_tdd.classify("git status\necho commit -n 'unterminated")
+    assert joined.is_commit is False and joined.bypass == ""
+    after = gate_tdd.classify("git commit -m x\necho -n 'unterminated")
+    assert after.is_commit and after.bypass == ""
+    assert gate_tdd.classify("cd sub\ngit push --no-verify 'unterminated").bypass == "--no-verify"
+    assert gate_tdd.classify("git status\ngit commit -n 'unterminated").bypass

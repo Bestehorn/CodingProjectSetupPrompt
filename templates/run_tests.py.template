@@ -56,14 +56,16 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess  # nosec B404 — pytest with this script's own argv, never a shell
+import subprocess  # nosec B404  # pytest with this script's own argv, never a shell
 import sys
 from pathlib import Path
 
+SLOT_IMPORT_ERROR = ""
 try:
     from suite_semaphore import suite_slot  # installed beside this script (templates/suite_semaphore.py.template)
-except ImportError:  # an older project without the helper: run unbounded, and say so
+except ImportError as exc:  # missing, or present but failing to import: run unbounded, and say exactly why
     suite_slot = None
+    SLOT_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 # Local parallelism ceiling. A quarter of the cores leaves the machine usable, and capping
 # at MAX_LOCAL_WORKERS keeps a 64-core host from spawning 16 pytest processes per worktree.
@@ -228,17 +230,19 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"run_tests: {' '.join(cmd)}", flush=True)
     if not needs_slot(extra):
-        return subprocess.call(cmd)  # nosec B603 — pytest with this script's own argv, no shell
+        return subprocess.call(cmd)  # nosec B603  # pytest with this script's own argv, no shell
     if suite_slot is None:
         print(
-            "run_tests: scripts/suite_semaphore.py is missing - running WITHOUT the host-wide suite "
-            "slot; install templates/suite_semaphore.py.template beside this script.",
+            f"run_tests: WARNING - the host-wide suite cap is NOT held for this run: importing "
+            f"scripts/suite_semaphore.py failed ({SLOT_IMPORT_ERROR}). Concurrent suites on this machine are "
+            "unbounded until it imports; install or repair templates/suite_semaphore.py.template beside this "
+            "script.",
             file=sys.stderr,
             flush=True,
         )
-        return subprocess.call(cmd)  # nosec B603 — as above
+        return subprocess.call(cmd)  # nosec B603  # as above
     with suite_slot(label=f"run_tests {' '.join(extra) or '(whole suite)'}"):
-        return subprocess.call(cmd)  # nosec B603 — as above
+        return subprocess.call(cmd)  # nosec B603  # as above
 
 
 if __name__ == "__main__":

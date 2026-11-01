@@ -60,15 +60,18 @@ USAGE
   python scripts/merge_steward.py [...] check-pr <pr>                       # would the queue take it now?
   python scripts/merge_steward.py [...] record-landing <pr>                 # merge "direct": the landing line
   python scripts/merge_steward.py [...] status [--json]
-Without a token option the token comes from the wrapper's credential file (``credentials/github-pat.txt``;
-GitLab: the ``token`` of ``config/gitlab.json``), so an agent session needs no extra secret.
+The git wrapper's delivery verbs pass the wrapper's own token with ``--token-stdin``, so an agent session needs
+no extra secret. Without a token option the steward reads ``credentials/github-pat.txt`` (GitHub) or the ``token``
+of ``config/gitlab.json`` — and the latter only while git ignores that file: a token is never read from a
+tracked file. ``steward.cookie_file`` adds an authenticating proxy's cookies to every API call and git push.
 
 EXIT CODES  0 ran (check-pr / enqueue: accepted) · 1 host or git error · 2 usage or configuration error ·
             4 refused (check-pr / enqueue: the PR is not acceptable; the reason is printed)
 
 SECURITY  The tick runs the DEFAULT BRANCH's copy of this file (schedule / dispatch triggers only, never
           ``pull_request``), merges PR content as data and executes none of it (git runs with
-          ``core.hooksPath`` pointed at an empty directory), and reads its token from stdin or a file —
+          ``core.hooksPath`` pointed at an empty directory and without any inherited ``GIT_DIR``-style
+          variable, so a parent git process cannot redirect it), and reads its token from stdin or a file —
           never from a shell variable (``no-environment-vars``). It pushes only branches under
           ``train_prefix`` and fast-forwards of the trunk; it never force-pushes.
 """
@@ -82,7 +85,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — git with a fixed argv, never a shell
+import subprocess  # nosec B404  # git with a fixed argv, never a shell
 import sys
 import tempfile
 import time
@@ -91,7 +94,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from http.cookiejar import MozillaCookieJar
+from urllib.request import HTTPCookieProcessor, OpenerDirector, Request, build_opener, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "delivery.json"
@@ -131,9 +135,11 @@ STEWARD_DEFAULTS: Dict[str, Any] = {
     "train_timeout_minutes": 240,
     "git_user_name": "merge-steward",
     "git_user_email": "merge-steward@noreply.invalid",
-    "github_api": "https://api.github.com",
+    "github_api": "",  # "" = derived from the remote's host (github.com, or GitHub Enterprise's /api/v3)
     "gitlab_url": "",
     "gitlab_project": "",
+    "cookie_file": "",  # a Netscape cookie file for an authenticating proxy in front of the host (API and git)
+    "reference_keywords": ["refs", "references"],  # the words that make `<word> #N` a reference
 }
 
 # ------------------------------------------------------------------------------------------- conventions
@@ -149,10 +155,24 @@ def _ref_list(ref: str) -> str:
     return rf"(?:{ref})(?:\s*(?:,|&|\band\b)?\s*(?:issues?\s+)?(?:{ref}))*"
 
 
-#: The ONE way a PR names the issue(s) it delivers: `Refs #12` / `References: #12, #13`. "Part of", "related
-#: to" and a bare mention are NOT references — the steward acts on every referenced issue (the landing line,
-#: verification and closing, returning it with its claim released), so a mention must never count as one.
-REFS_RE = re.compile(rf"\b(?:refs?|references?)\b\s*:?\s+(?:issues?\s+)?(?P<list>{_ref_list(_LOCAL_REF)})", re.I)
+#: The way a PR names the issue(s) it delivers: `Refs #12` / `References: #12, #13` by default; a project sets
+#: its own words with `steward.reference_keywords`. "Part of", "related to" and a bare mention are NOT
+#: references unless configured — the steward acts on every referenced issue (the landing line, verification and
+#: closing, returning it with its claim released), so a mention must never count as one.
+def refs_pattern(keywords: Sequence[str]) -> "re.Pattern[str]":
+    words = "|".join(r"\s+".join(re.escape(part) for part in str(word).split()) for word in keywords)
+    return re.compile(rf"\b(?:{words})\b\s*:?\s+(?:issues?\s+)?(?P<list>{_ref_list(_LOCAL_REF)})", re.I)
+
+
+REFS_RE = refs_pattern(["refs", "references"])
+
+
+def configure_references(keywords: Sequence[str]) -> None:
+    """Use the project's reference words for every reference this process reads."""
+    global REFS_RE
+    REFS_RE = refs_pattern(keywords)
+
+
 #: A closing keyword as GitHub and GitLab's DEFAULT patterns read a PR description or a commit message (GitLab
 #: also takes "implements" and the -ing forms): the host closes the issue when the commit reaches the default
 #: branch — before any deploy check. Deliberately wider than either host; an instance with a CUSTOM GitLab
@@ -363,6 +383,15 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         raise ConfigError(f"{path}: host must be one of {HOSTS}, not {settings.host!r}")
     if not str(steward["train_prefix"]).endswith("-") or ".." in str(steward["train_prefix"]):
         raise ConfigError(f"{path}: train_prefix must end with '-' and contain no '..'")
+    words = steward["reference_keywords"]
+    if not isinstance(words, list) or not words or not all(isinstance(w, str) and w.strip() for w in words):
+        raise ConfigError(f"{path}: steward.reference_keywords must be a non-empty list of words")
+    closing = [w for w in words if CLOSING_RE.search(f"{w} #1")]
+    if closing:
+        raise ConfigError(
+            f"{path}: steward.reference_keywords {closing} are closing keywords — the host would close the issue "
+            "at landing, before the deploy check"
+        )
     return settings
 
 
@@ -371,6 +400,39 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
 
 class GitError(RuntimeError):
     pass
+
+
+#: The variables with which a parent git process points its children at ITS repository (`git rev-parse
+#: --local-env-vars`). Run from a git hook or under another git command, the steward would otherwise read and
+#: push a different clone than the one it was started in.
+GIT_LOCAL_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+
+
+def isolated_git_env() -> Dict[str, str]:
+    """This process's environment without any variable that would point git at another repository."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in GIT_LOCAL_ENV and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
 
 
 class Git:
@@ -392,7 +454,7 @@ class Git:
         path = folder / "credential.gitconfig"
         path.write_text(f"[http]\n\textraHeader = {header}\n", encoding="utf-8")
         os.chmod(path, 0o600)
-        self.extra = ["-c", f"include.path={path.as_posix()}"]
+        self.extra += ["-c", f"include.path={path.as_posix()}"]
 
     def close(self) -> None:
         shutil.rmtree(self._hooks, ignore_errors=True)
@@ -412,8 +474,15 @@ class Git:
             *self.extra,
             *args,
         ]
-        completed = subprocess.run(  # nosec B603 — fixed argv, no shell
-            command, cwd=str(self.cwd), capture_output=True, text=True, encoding="utf-8", errors="replace"
+        completed = subprocess.run(  # nosec B603  # fixed argv, no shell
+            command,
+            cwd=str(self.cwd),
+            env=isolated_git_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.DEVNULL,
         )
         if check and completed.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed ({completed.returncode}): {completed.stderr.strip()[:800]}")
@@ -535,8 +604,24 @@ class HostError(RuntimeError):
         self.status = status
 
 
+_OPENER: Optional[OpenerDirector] = None
+
+
+def use_cookie_file(path: Path) -> None:
+    """Send the cookies of a Netscape cookie file with every API request (an authenticating proxy in front of the
+    host). The file is read, never written; its path is configuration, its content a secret kept out of git."""
+    global _OPENER
+    jar = MozillaCookieJar(str(path))
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except OSError as exc:
+        raise ConfigError(f"cannot read the cookie file {path} ({exc})") from exc
+    _OPENER = build_opener(HTTPCookieProcessor(jar))
+
+
 def http_json(method: str, url: str, headers: Dict[str, str], payload: Any = None, attempts: int = 3) -> Any:
-    """One JSON request with a short retry on 5xx and connection errors. 404 on a DELETE is success."""
+    """One JSON request with a short retry on 5xx and connection errors. 404 on a DELETE is success. An answer
+    that is not JSON — an authenticating proxy's sign-in page — is a host error, never a crash."""
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     last: Optional[Exception] = None
     for attempt in range(attempts):
@@ -546,9 +631,17 @@ def http_json(method: str, url: str, headers: Dict[str, str], payload: Any = Non
         if body is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urlopen(request, timeout=30) as response:  # nosec B310 — the configured host's https API
-                text = response.read().decode("utf-8")
+            opened = _OPENER.open(request, timeout=30) if _OPENER else urlopen(request, timeout=30)  # nosec B310
+            with opened as response:
+                text = response.read().decode("utf-8", errors="replace")
+                kind = str(response.headers.get("Content-Type") or "")
+            try:
                 return json.loads(text) if text.strip() else {}
+            except ValueError as exc:
+                raise HostError(
+                    f"{method} {url} answered {kind or 'a non-JSON body'}, not JSON ({text.strip()[:80]!r}) — an "
+                    "authenticating proxy's sign-in page? Set steward.cookie_file in config/delivery.json"
+                ) from exc
         except HTTPError as exc:
             if method == "DELETE" and exc.code == 404:
                 return {}
@@ -565,6 +658,13 @@ def http_json(method: str, url: str, headers: Dict[str, str], payload: Any = Non
 
 def remote_url(git: Git, remote: str) -> str:
     return git.out("remote", "get-url", remote)
+
+
+def github_api_root(web: str) -> str:
+    """The REST root of a GitHub host, from its web origin: `api.<host>` for github.com, `<host>/api/v3` for a
+    GitHub Enterprise Server. Derived, so no API host is a literal of this file."""
+    host = urllib.parse.urlsplit(web).hostname or ""
+    return f"https://api.{host}" if host == "github.com" else f"{web.rstrip('/')}/api/v3"
 
 
 def redact(url: str) -> str:
@@ -603,7 +703,7 @@ class GitHubAPI:
         if not parsed or parsed[1].count("/") != 1:
             raise ConfigError(f"cannot read owner/repo from the remote URL {redact(url)!r}")
         self.repo = parsed[1]
-        self.api = str(settings.steward["github_api"]).rstrip("/")
+        self.api = str(settings.steward["github_api"]).rstrip("/") or github_api_root(parsed[0])
         self.settings = settings
         self.headers = {
             "Authorization": f"Bearer {token}",
@@ -978,7 +1078,13 @@ class GitLabAPI:
         for job in self._pages(f"/pipelines/{pipeline}/jobs?include_retried=false"):
             name = str(job.get("name"))
             if name in listed:
-                statuses[name] = (str(job.get("status")), str(job.get("failure_reason") or ""))
+                status = str(job.get("status"))
+                if status == "failed" and job.get("allow_failure"):
+                    # The pipeline itself passes (with a warning): a job the jobs API reports with
+                    # `allow_failure: true` failed in a way the project declared acceptable — not a failed deploy.
+                    print(f"merge_steward: deploy job {name} failed, but is allowed to fail — counted as passed")
+                    status = "success"
+                statuses[name] = (status, str(job.get("failure_reason") or ""))
         if any(reason == "forward_deployment_failure" for _status, reason in statuses.values()):
             return "none"
         if any(status == "failed" for status, _reason in statuses.values()):
@@ -1013,7 +1119,8 @@ class Steward:
         self.run_url = run_url
         self.dry = report.dry_run
         self._queued_refs: Optional[Dict[int, set]] = None  # issue -> queued PRs referencing it (one verdict run)
-        self._batches: set = set()  # batch ids this process has built
+        self._batches: set = set()  # every batch id this process has built OR judged — never reused
+        configure_references(settings.steward["reference_keywords"])
 
     # -- small helpers --------------------------------------------------------------------------------
     @property
@@ -1129,6 +1236,10 @@ class Steward:
     def finish(self, trunk: str) -> bool:  # noqa: C901 — one verdict per train state, in order
         """True when a batch is still in flight (the tick must not plan another)."""
         batches = self.trains_in_flight()
+        # A batch judged and deleted here is gone from the remote, but its id must never be built again in this
+        # process: a retry rebuilt within the same second would reuse it, produce byte-identical train commits,
+        # and the culprit mark of the first judgement would then read as "already judged".
+        self._batches.update(batches)
         if not batches:
             return False
         in_flight = False
@@ -1820,7 +1931,19 @@ def read_token(args: argparse.Namespace, settings: Settings) -> str:
         token = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
     else:
         path = ROOT / "config" / "gitlab.json"
-        token = str(json.loads(path.read_text(encoding="utf-8")).get("token", "")) if path.is_file() else ""
+        token = ""
+        if path.is_file():
+            ignored = Git(ROOT, "x", "x")
+            try:
+                tracked = ignored.run("check-ignore", "-q", str(path), check=False).returncode != 0
+            finally:
+                ignored.close()
+            if tracked:
+                raise ConfigError(
+                    f"{path} is not ignored by git, so it must not hold a token: pass the token with --token-stdin "
+                    "(the wrapper's delivery verbs do) or --token-file"
+                )
+            token = str(json.loads(path.read_text(encoding="utf-8")).get("token", ""))
     if not token or "PASTE" in token:
         raise ConfigError("no token: pass --token-stdin / --token-file, or fill the wrapper's credential file")
     return token
@@ -1837,6 +1960,12 @@ NO_HOST: Any = _NoHost()
 
 
 def make_host(settings: Settings, token: str, git: Git) -> HostAPI:
+    cookies = str(settings.steward["cookie_file"])
+    if cookies:
+        path = Path(cookies).expanduser()
+        path = path if path.is_absolute() else ROOT / path
+        use_cookie_file(path)
+        git.extra += ["-c", f"http.cookieFile={path.as_posix()}"]
     if settings.host == "github":
         return GitHubAPI(token, settings, git)
     # The GitLab job token cannot push: the steward's project access token goes to git as an HTTP header.

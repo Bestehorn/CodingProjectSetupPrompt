@@ -23,6 +23,8 @@ Delegates (pre-authorized above): `spec-author`, `spec-researcher`, `spec-review
 
 # Binding rules (always loaded; the ones you apply most)
 
+"PR" means a GitLab merge request on GitLab, and `#n` its `!iid` (the steward's machine lines keep the literal `PR #<n>` form on both hosts).
+
 - `proportionality.md` — tiers, hard byte caps, scope freeze, no measurements in specs.
 - `parallel-by-default.md` — panels and waves go out in ONE message; independent suites run
   together; a wait you need runs in the foreground, bounded, after the unblocked work.

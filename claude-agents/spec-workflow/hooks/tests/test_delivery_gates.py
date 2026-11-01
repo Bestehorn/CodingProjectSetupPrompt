@@ -84,6 +84,14 @@ def stop(arena: Path, **extra: object) -> lib.Decision:
         "python scripts/merge_steward.py --token-file credentials/x.txt verdict --sha abc --conclusion success",
         "python scripts/merge_steward.py tick --dry-run",
         "curl -X PUT https://api.github.com/repos/o/r/pulls/7/merge",
+        # the three bypasses a project measured: a global option, a quoted script path, `--signed` + refspec
+        "python scripts/merge_steward.py --config config/delivery.json tick",
+        'python "scripts/merge_steward.py" tick',
+        "python 'scripts/github_wrapper.py' merge-pr 7",
+        'python "D:/Code Workspace/x/scripts/merge_steward.py" verdict --sha abc --conclusion success',
+        "python scripts/gitlab_wrapper.py --verbose mr merge 3",
+        "git push --signed origin main",
+        "git push --signed=if-asked origin main",
     ],
 )
 def test_the_trunk_is_written_only_by_the_steward(arena: Path, command: str) -> None:
@@ -104,6 +112,14 @@ def test_the_trunk_is_written_only_by_the_steward(arena: Path, command: str) -> 
         "python scripts/run_tests.py test/test_merge_steward.py -k verdict",
         "python -m pytest test/test_github_wrapper.py -k merge-pr",
         "python scripts/merge_steward.py status --json",
+        'git commit -m "touch scripts/merge_steward.py" -m tick',
+        'git commit -m "python scripts/github_wrapper.py merge-pr 7"',
+        "python scripts/merge_steward.py deploy-guard --event-file event.json",
+        "python scripts/merge_steward.py enqueue 7",
+        "python scripts/merge_steward.py check-pr 7",
+        "python scripts/merge_steward.py dequeue 7 --reason x",
+        "python scripts/merge_steward.py record-landing 7",
+        "git push --signed origin issue-7-fix-timeout",
     ],
 )
 def test_everything_else_passes(arena: Path, command: str) -> None:

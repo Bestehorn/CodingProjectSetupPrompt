@@ -147,7 +147,7 @@ def wait_run(
     repo: str,
     token: str,
     run_id: int,
-    timeout_seconds: int = 3600,
+    timeout_seconds: int = 540,  # the contract's bounded foreground wait; the caller re-issues on 11
     interval_seconds: int = 30,
 ) -> int:
     """Block until the workflow run completes.
@@ -221,12 +221,11 @@ def wait_run(
 # Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
 # .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
 # rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
-#   - enqueue_pr(pr_number): run `python scripts/merge_steward.py enqueue <n>` and pass its exit code
-#     through (0 queued, 4 refused with the reason printed — PR CI not green on the head, a closing
-#     keyword under watcher verification, a hold label, an unlanded Depends-on, ...).
-#   - dequeue_pr(pr_number, reason): `merge_steward.py dequeue <n> --reason <text>`.
-#   - queue_status(): `merge_steward.py status` (add --json for the machine form).
-# The steward reads the same credentials/github-pat.txt, so no second secret is needed. Under
+#   - `enqueue-pr <n>` -> `steward_delegate("enqueue-pr", [n], _load_token(), "github")` (below):
+#     the steward's exit code passes through (0 queued, 4 refused with the reason printed — PR CI not
+#     green on the head, a closing keyword under watcher verification, a hold label, ...).
+#   - `dequeue-pr <n> --reason <text>` and `queue-status [--json]` the same way.
+# The wrapper hands the steward ITS token on stdin (`--token-stdin`), so no second secret exists. Under
 # "merge": "steward", merge_pr is refused by the merge-steward PreToolUse gate (only the steward
 # lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap PR
 # that installs the steward.
@@ -286,6 +285,37 @@ def wait_run(
 # Reference: see the original scaffold in
 # CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
 # and extend per project needs.
+
+
+# The delivery verbs (`enqueue-pr`, `dequeue-pr`, `queue-status`) — a REFERENCE IMPLEMENTATION, wired as-is in
+# main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
+STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
+DELIVERY_CONFIG = Path("config") / "delivery.json"
+DELIVERY_VERBS = {"enqueue-pr": "enqueue", "dequeue-pr": "dequeue", "queue-status": "status"}
+EXIT_DELIVERY_ELSEWHERE = 2
+
+
+def steward_delegate(verb: str, args: list[str], token: str, host: str) -> int:
+    """Run the project's merge steward for one delivery verb and return its exit code (0 accepted, 4 refused
+    with the reason printed, 1 host error, 2 usage). This wrapper's own token goes to the steward on STDIN —
+    never in argv, a URL, an environment variable or a second credential file. The queue lives on ONE host
+    (`config/delivery.json` `host`): on any other — a host kept as a read-only archive or mirror — every
+    delivery verb refuses, because no PR lands there."""
+    primary = "github"
+    if DELIVERY_CONFIG.is_file():
+        primary = str(json.loads(DELIVERY_CONFIG.read_text(encoding="utf-8")).get("host") or "github")
+    if primary != host:
+        logger.error(
+            "%s: the merge queue lives on %s (config/delivery.json), not on this %s host; enqueue the PR there",
+            verb,
+            primary,
+            host,
+        )
+        return EXIT_DELIVERY_ELSEWHERE
+    import subprocess  # nosec B404  # the project's own steward script, a fixed argv, never a shell
+
+    command = [sys.executable, str(STEWARD_SCRIPT), "--token-stdin", DELIVERY_VERBS[verb], *args]
+    return subprocess.run(command, input=token + "\n", text=True, check=False).returncode  # nosec B603  # fixed argv
 
 
 def main() -> None:

@@ -110,7 +110,7 @@ worktree pays for a full local suite.
 A pipeline takes as long as it takes; what is yours to decide is what happens meanwhile.
 Do every piece of work that does not depend on the verdict FIRST — the docs, the issue note,
 the evidence report — then run the wrapper's blocking wait in the FOREGROUND, bounded
-(`wait-run <id> --timeout-seconds 540`; GitLab `pipeline wait`; exit 0 success, 10 not
+(`wait-run <id> --timeout-seconds 540`; GitLab `pipeline wait <id> --timeout-seconds 540`; exit 0 success, 10 not
 success, 11 timeout — re-issue), never as a background task and never as a `sleep` loop
 (`parallel-by-default.md`). The run you wait for is the PR's own: under the merge steward a
 green PR is enqueued and handed off, and a red train comes back as `needs-rework` — fixed like

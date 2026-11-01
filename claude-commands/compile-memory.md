@@ -26,10 +26,12 @@ recurred or caused measured damage to an issue, ENFORCE one with a test, hook or
 fill in a lesson's `Enforced-by`.
 
 **Step 1 — Measure.** Run `python scripts/memory_compile.py report`. It prints every
-capped file with its size and cap: the always-loaded corpus (`CLAUDE.md` + every
-`.claude/rules/*.md` without `paths:`), `docs/forLLMConsumption.md`,
-`docs/lessons-learned.md`, `docs/findings-ledger.md`, and any rule file carrying dated
-incident headings. Read the whole output.
+capped file with its size and cap — each host's corpus on its own: the always-loaded one
+(`CLAUDE.md` + every `.claude/rules/*.md` without `paths:`; on a dual-host project also the
+always-on Kiro steering) and the scoped one (`paths:` rules; `fileMatch` steering) —
+`docs/forLLMConsumption.md`, `docs/lessons-learned.md`, `docs/findings-ledger.md`, any rule
+file carrying dated incident headings, and the LIST of rows and lessons Steps 3 and 4
+decide. Read the whole output.
 
 **Step 2 — Rules carry rules, not incidents.** For every rule file the report flags with
 dated headings or with more than 12,000 bytes: keep the normative statements (what to do,
@@ -39,8 +41,10 @@ extract-rule-incidents --apply` does the mechanical move), and leave one pointer
 Where a narrative proves a mechanism is missing (a guard the incident shows was inert), add
 the mechanism — a test under `test/`, a hook check — rather than the story.
 
-**Step 3 — Compile the ledger.** For every `docs/findings-ledger.md` row older than the
-window (default six weeks; `memory_compile.py report` lists them): decide one of three.
+**Step 3 — Compile the ledger.** For every UNRESOLVED `docs/findings-ledger.md` row older
+than the window — status not yet `promoted`/`enforced`; default six weeks; `memory_compile.py
+report` lists exactly these — decide one of three. A row already promoted or enforced carries
+its decision; `reconcile` archives it when the cap needs the room.
 `promoted #N` — it recurred or caused measured damage: file ONE issue through
 `issue-intake-agent` with `Origin: agent-sweep`, `Filing-rationale: RESEARCH |
 DESIGN-OPTIONS | OUT-OF-SCOPE`. `enforced <path>` — a test, a hook check or a one-line
@@ -81,7 +85,7 @@ session's lifecycle calls for one.
 ```
 | File | Before | After | Cap |
 | CLAUDE.md + unscoped rules | … | … | 100,000 |
-| paths:-scoped rules + fileMatch steering | … | … | 45,000 |
+| paths:-scoped rules | … | … | 45,000 |
 | docs/forLLMConsumption.md | … | … | 40,000 |
 | docs/lessons-learned.md | … | … | 40,000 |
 | docs/findings-ledger.md | … | … | 60,000 |
@@ -90,3 +94,6 @@ Lessons: <n> archived, <m> enforced
 Rule incidents moved: <n> (from <files>)
 Corpus test: PASS | FAIL (<assertion>)
 ```
+
+On a dual-host project the table also carries the report's `Kiro always-on steering`
+(100,000) and `fileMatch steering` (45,000) rows — the same labels the report prints.

@@ -95,6 +95,22 @@ def test_a_genuine_falsification_in_each_vocabulary_is_red_for_the_right_reason(
 
 
 @pytest.mark.parametrize(
+    "banner",
+    [
+        "Falsifying example: test_roundtrip(\n    value=-1,\n)",
+        "Falsifying explicit example: test_explicit(\n    x=-1,\n)",  # a failing @example (Hypothesis 6.151)
+        "Failing test case: test_roundtrip(value=-1)",
+        "Failing example: test_roundtrip(value=-1)",
+    ],
+    ids=["falsifying-example", "falsifying-explicit-example", "failing-test-case", "failing-example"],
+)
+def test_each_property_banner_alone_is_red_for_the_right_reason(banner: str) -> None:
+    """The banner is the ONLY right-reason signal in the capture (no `assert `, no `hypothesis.errors`)."""
+    ok, message = judge_module.judge(f"test/test_props.py F\n{banner}\n1 failed in 0.40s\n")
+    assert ok, message
+
+
+@pytest.mark.parametrize(
     "capture, fragment",
     [
         (COLLECTION_ERROR, "collection/import error dominates"),

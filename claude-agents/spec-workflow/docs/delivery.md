@@ -15,6 +15,7 @@ has this shape: `project-docs/delivery-redesign-2026-10-26.md` in the framework 
 | `direct` | `session` | merges, waits for the trunk pipeline and its post-deploy check, closes | the worker | the worker (the pre-2026-10-26 lifecycle) |
 
 No `config/delivery.json` = `direct` + `session`. Read the file at the PR step; never guess the mode.
+"PR" means a GitLab merge request on GitLab, and `#n` its `!iid` (the steward's machine lines keep the literal `PR #<n>` form on both hosts).
 
 ## 2. What the worker does before the push (everything the PR must carry)
 
@@ -25,9 +26,9 @@ No `config/delivery.json` = `direct` + `session`. Read the file at the PR step; 
 - Checklist items that only a deploy can prove get the literal suffix `(post-deploy)` — e.g.
   `- [ ] the dev smoke check passes (post-deploy)`. The watcher ticks exactly those after a green post-deploy
   check; every other item must be ticked by the worker, or the issue is not closed (§5).
-- The PR body names its issue(s) with `Refs #N` (a list: `Refs #12, #13`) — the ONLY form the steward reads
-  as a reference; "part of" or "related to" is a mention, and a mentioned issue is never landed, verified or
-  returned. NEVER a closing keyword (`Closes`/`Fixes`/`Resolves`/`Implements #N`, in the PR description or in
+- The PR body names its issue(s) with `Refs #N` (a list: `Refs #12, #13`; a project may name other words in
+  `steward.reference_keywords`) — the ONLY form the steward reads as a reference; anything else is a mention,
+  and a mentioned issue is never landed, verified or returned. NEVER a closing keyword (`Closes`/`Fixes`/`Resolves`/`Implements #N`, in the PR description or in
   any commit message on the branch) under `watcher` verification: the host would close the issue at landing,
   before the deploy check, and the steward refuses the PR. `Depends-on: #<PR>` lines order dependent PRs.
 - An issue delivered by several PRs carries one `merge-steward: queued PR #<n>` line per PR; the watcher
@@ -49,7 +50,8 @@ No `config/delivery.json` = `direct` + `session`. Read the file at the PR step; 
    (in-progress label, assignee) STAYS: the issue is still in flight until it is verified.
 5. Close out at once — a single-issue run runs the close-out checks as its last step, a loop run its HAND_OFF
    clean-up: worktree, local branch, per-worktree venv, local lock and temp residue go; the REMOTE branch stays
-   until the steward lands it. Then the Completion Block with the issue as a `handed off` row.
+   until the steward lands it — the steward merges from it, and deleting a PR's head branch closes the GitHub PR
+   and leaves a GitLab MR without its source; after the landing the host's delete-on-merge setting removes it. Then the Completion Block with the issue as a `handed off` row.
 
 `HANDED_OFF` releases a single-issue run (`MODE: SINGLE_ISSUE`) and NOTHING else: in `/issues-work` and
 `/auto-work` handing one issue off is a checkpoint — record `Phase: LOAD_ISSUES` and select the next issue.
@@ -83,6 +85,10 @@ its open checklist items finished and the issue closed (RESOLVE). A red deploy s
 the last green one; if the failure is not yours, say so on the issue with the evidence, append the
 `reverify` label, and leave the deploy to the steward — sessions never re-run, cancel or dispatch trunk or
 deploy runs (one owner for trunk health). `/close-session` treats a handed-off issue as the session's work done.
+
+The queue lives on ONE host, `config/delivery.json` `host`. A second host kept as a read-only archive or
+mirror has no queue: its wrapper's delivery verbs refuse (exit 2), and a PR is opened and enqueued on the
+primary host only.
 
 ## 6. Labels (created once per repository; names configurable under `steward` in `config/delivery.json`)
 

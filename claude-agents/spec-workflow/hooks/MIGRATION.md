@@ -573,12 +573,18 @@ own suite, each is a contract a project had built on and the framework did not k
 
 ## 9. The delivery revision (2026-10-26): what a live project needs, in order
 
-Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, item 7 below); the agent-facing contract is `.claude/docs/delivery.md`.
+Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, item 7; 2026-10-31: `2026.10.31-delivery-7`, item 8); the agent-facing contract is `.claude/docs/delivery.md`.
 
 1. **Copy the files** (`hooks/*.py` now includes `gate_merge_steward.py`, `gate_stop_failure.py`,
    `wait_for.py`, `supervisor.py`; plus `docs/delivery.md`, `commands/supervise.md`) and
    **re-paste the registration** that `python .claude/hooks/hooks.py registration` prints: it now
    registers `StopFailure`. Without that paste the recorder never runs and nothing else changes.
+   The paste can also change the PreToolUse matcher — it is the union of the gates' `TOOLS`, so a
+   project gate on `Write`/`Edit` widens it — and a project test that pins it to exactly `Bash`
+   then fails: assert the derived value instead. `python .claude/hooks/hooks.py registration
+   --check` proves the paste: exit 0 when `.claude/settings.json`'s hooks block equals what
+   `registration` prints, 1 with a short diff of the differing events, 2 when the settings file
+   is missing or does not parse; `hooks.py selftest` reports it as one WARN line.
 2. **Nothing changes until `config/delivery.json` exists.** Absent, the mode is `merge: direct` +
    `verification: session` — today's behaviour — and the `merge-steward` gate allows everything.
    A broken file fails OPEN the same way (the steward's own CLI refuses it with exit 2).
@@ -609,6 +615,14 @@ Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, i
    typically a deploy chain — must be re-admitted for the steward's dispatch before PR 2, or it never
    runs again (setup prompt Part 7.1 item 4 has the inventory). The deploy template's guard and verdict
    read the commit from the event file; a project that audits workflow `env:` maps has none to register.
+8. **(2026-10-31) GitLab and the steward's edges.** The `merge-steward` job moves from `.pre` to a real
+   `merge-steward` stage — add it to `stages:`, or no tick pipeline ever runs. Re-check every job that
+   received `.not-on-tick` through `extends`: a job with its own `rules:` lost it, so put
+   `- !reference [.not-on-tick, rules]` (or the `*not_on_tick` anchor) first in its list. The wrapper's
+   delivery verbs pass its token with `--token-stdin` (`steward_delegate`); a `config/gitlab.json` that git
+   tracks is no longer read for a token. Behind an authenticating proxy set `steward.cookie_file`. A
+   batch id is never reused within one process (a fast runner rebuilt a judged batch), and a deploy job
+   the jobs API reports as allowed to fail no longer returns issues as `needs-rework`.
 
 What is NOT weakened: every PR still needs its own green CI before the queue takes it, the train
 re-runs the full CI on the exact state that lands, an issue closes only after a green post-deploy

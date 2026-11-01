@@ -1,5 +1,5 @@
 Valid-until: 2026-12-15
-## FRAMEWORK REVISION 2026-09-30 IS IN FORCE (amended 2026-10-03, item 8; 2026-10-10, items 9 and 10; 2026-10-26, item 11; 2026-10-30, items 9 and 11) — it supersedes the phase text in your agent definition and command body
+## FRAMEWORK REVISION 2026-09-30 IS IN FORCE (amended 2026-10-03, item 8; 2026-10-10, items 9 and 10; 2026-10-26, item 11; 2026-10-30, items 9 and 11; 2026-10-31, item 11) — it supersedes the phase text in your agent definition and command body
 
 The rules, phase fragments, agents and hooks of this project were replaced. Apply this to
 the work in flight NOW, then continue:
@@ -60,4 +60,7 @@ the work in flight NOW, then continue:
     while independent work goes on. Overlap waits, never proofs: independent suites of one
     capture run together, and the next wave's TEST authors start while a green run is in flight.
     Arm the run watchdog ONCE per process (the `CronCreate` the session-start context prints);
-    `/close-session` archives on `CLOSE: YES` without asking.
+    `/close-session` archives on `CLOSE: YES` without asking. (2026-10-31) A lock directory holds its
+    owner record: release only THIS run's lock, by removing the directory with its record, never with
+    `rmdir`. A reference is `Refs #N` or the project's `steward.reference_keywords`; on GitLab "PR #n"
+    is the MR `!iid`; enqueue on the queue's host only (an archive host's delivery verbs refuse).

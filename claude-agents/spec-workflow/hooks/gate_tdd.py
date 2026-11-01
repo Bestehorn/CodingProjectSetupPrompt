@@ -49,8 +49,12 @@ GIT_NAMES = {"git", "git.exe"}
 GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 # `git commit` short options that take a value: in a cluster, the letters after one of these are its value; when
 # the cluster ENDS with one, the next word is its value (`-m --no-verify` is the message "--no-verify").
-COMMIT_VALUE_SHORT = set("mFCctS")
+COMMIT_VALUE_SHORT = set("mFCctU")
 PUSH_VALUE_SHORT = set("o")
+# Short options whose value is OPTIONAL (`-S[<keyid>]`, `-u[<mode>]`): git takes a value only when it is attached
+# (`-Sn` is the key id "n", `-uno` the mode "no"), so the rest of the cluster is the value and the NEXT word is
+# never one. Measured on git 2.53: `git commit -S -n` and `-u -n` skip the pre-commit hook; `-Sn` runs it.
+COMMIT_OPTIONAL_VALUE_SHORT = set("Su")
 # Long options that take their value as the next word when written without `=` (`--message --no-verify`).
 COMMIT_LONG_WITH_VALUE = {
     "--message",
@@ -65,6 +69,7 @@ COMMIT_LONG_WITH_VALUE = {
     "--trailer",
     "--template",
     "--pathspec-from-file",
+    "--unified",
 }
 PUSH_LONG_WITH_VALUE = {"--repo", "--push-option", "--receive-pack", "--exec"}
 NO_VERIFY = "--no-verify"
@@ -156,6 +161,7 @@ def _classify_simple(words: List[str]) -> Classification:  # noqa: C901 — git'
         found.bypass = "-c core.hooksPath=…"
         return found
     value_short = COMMIT_VALUE_SHORT if found.is_commit else PUSH_VALUE_SHORT
+    optional_short = COMMIT_OPTIONAL_VALUE_SHORT if found.is_commit else set()
     long_with_value = COMMIT_LONG_WITH_VALUE if found.is_commit else PUSH_LONG_WITH_VALUE
     skip_next = False
     for arg in args:
@@ -175,6 +181,8 @@ def _classify_simple(words: List[str]) -> Classification:  # noqa: C901 — git'
                 if found.is_commit and letter == "n":
                     found.bypass = "-n"
                     break
+                if letter in optional_short:
+                    break  # the rest of the cluster (possibly nothing) is its value; the next word never is
                 if letter in value_short:
                     skip_next = position == len(arg) - 1  # a value letter at the END takes the next word
                     break  # otherwise the rest of the cluster is this option's value
@@ -188,13 +196,18 @@ def classify(command: str) -> Classification:
     words = _words(command)
     total = Classification()
     if words is None:
-        stripped = lib.strip_quoted(command)
-        total.is_commit = lib.is_git_commit(stripped)
-        total.is_push = lib.is_git_push(stripped)
-        if total.is_commit and BYPASS_COMMIT_RE.search(stripped):
-            total.bypass = "-n/--no-verify"
-        elif total.is_push and NO_VERIFY in stripped:
-            total.bypass = NO_VERIFY
+        # One command at a time: across a separator (a newline included) `git status` and a later `commit`
+        # would read as one commit, and an `echo -n` after a commit as its bypass.
+        for segment in lib.command_segments(lib.strip_quoted(command)):
+            is_commit, is_push = lib.is_git_commit(segment), lib.is_git_push(segment)
+            total.is_commit = total.is_commit or is_commit
+            total.is_push = total.is_push or is_push
+            if total.bypass:
+                continue
+            if is_commit and BYPASS_COMMIT_RE.search(segment):
+                total.bypass = "-n/--no-verify"
+            elif is_push and NO_VERIFY in segment:
+                total.bypass = NO_VERIFY
         return total
     for simple in _simple_commands(words):
         part = _classify_simple(simple)

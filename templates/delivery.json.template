@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to config/delivery.json (TRACKED). How this project lands and verifies changes; read by scripts/merge_steward.py, the git wrapper, the merge-steward gate and the agents (.claude/docs/delivery.md). merge: 'steward' (workers ENQUEUE with the wrapper's enqueue-pr; only the merge steward writes the trunk) or 'direct' (approve-pr + merge-pr, today's path). verification: 'watcher' (the deploy pipeline's last job verifies by ancestry and closes the issue; the worker hands off), 'session' (the worker waits for the post-merge pipeline itself, today's path) or 'none' (no deploy: the landing is the final verdict). Delete a key under 'steward' to take its default; an unknown key is an error.",
+  "_comment": "Copy to config/delivery.json (TRACKED). How this project lands and verifies changes; read by scripts/merge_steward.py, the git wrapper, the merge-steward gate and the agents (.claude/docs/delivery.md). merge: 'steward' (workers ENQUEUE with the wrapper's enqueue-pr; only the merge steward writes the trunk) or 'direct' (approve-pr + merge-pr, today's path). verification: 'watcher' (the deploy pipeline's last job verifies by ancestry and closes the issue; the worker hands off), 'session' (the worker waits for the post-merge pipeline itself, today's path) or 'none' (no deploy: the landing is the final verdict). Delete a key under 'steward' to take its default; an unknown key is an error. reference_keywords: the words that make '<word> #N' a reference the steward acts on (never a closing keyword). cookie_file: a Netscape cookie file (gitignored) for an authenticating proxy in front of the host, sent with every API call and git push. github_api / gitlab_url / gitlab_project: empty = derived from the remote. host names the ONE host the queue lives on; a second host kept as a read-only archive gets no steward, and its wrapper's delivery verbs refuse.",
   "merge": "steward",
   "verification": "watcher",
   "trunk": "main",
@@ -15,6 +15,8 @@
     "deploy_workflow": "{{DEPLOY_WORKFLOW_FILE}}",
     "steward_workflow": "merge-steward.yml",
     "train_prefix": "steward/train-",
-    "in_progress_label": "in-progress"
+    "in_progress_label": "in-progress",
+    "reference_keywords": ["refs", "references"],
+    "cookie_file": ""
   }
 }

@@ -187,10 +187,8 @@ the deciding number).
       removed, and randomized `cdk.out<hash>` assemblies accumulate in the OS temp dir (one
       report reached 170 GB in two days). An aborted bundling also leaves `bundling-temp-*` /
       empty `asset.<hash>` that makes the NEXT deploy fail, so this is correctness, not just
-      disk. Run the reaper in the foreground in the BOUNDED form its header documents, within
-      the tool's timeout, re-running while it says its budget ran out — never as a background
-      task you then wait for. The framework's reaper (a project that keeps its own runs ITS
-      documented form instead — never a flag that reaper does not take):
+      disk. Run the reaper in the foreground, bounded within the tool's timeout, re-running
+      while it exits 3 — never as a background task you then wait for:
       ```bash
       python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply --budget-minutes 9
       ```
@@ -202,9 +200,9 @@ the deciding number).
       is checked before every file, so the run returns on time even on a host whose
       security agent scans each delete. Exit 0 is done; exit 1 names an entry that would
       not delete; exit 3 means the budget ran out with the rest quarantined or not yet
-      reached — run the same command again until it exits 0 or 1 (a project-owned reaper
-      documents its own run-again code in its header; each run is bounded and visibly
-      further along; a quarantine is deleted first by the next run, whichever session's). Its reclaimed total, summed over the runs, is row 5's Detail; anything it
+      reached — run the same command again until it exits 0 or 1 (each run is bounded and
+      visibly further along; a quarantine is deleted first by the next run, whichever
+      session's). Its reclaimed total, summed over the runs, is row 5's Detail; anything it
       reports as in use, skipped or failed is named in that same cell, never expanded, and
       a `SLOW HOST` line is quoted there as the reason the backlog outlives the session.
    3. If `tmp/os-temp` is not this tree's `TMPDIR`/`TEMP`/`TMP`, row 5's Detail says
@@ -216,8 +214,9 @@ the deciding number).
 **Step 6 — Your worktree, branch, lock AND claim markers are gone**
    Confirm the worktree and branch this session created were removed after merge (or after the
    hand-off — asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty).
-   A handed-off PR's REMOTE branch stays until the steward lands it, and so does the issue's
-   tracker claim — the steward or the watcher releases it when the issue comes back; release only
+   A handed-off PR's REMOTE branch stays until the steward lands it (deleting a PR's head branch
+   closes the GitHub PR and leaves a GitLab MR without its source; the host's delete-on-merge
+   setting removes it after the landing), and so does the issue's tracker claim — the steward or the watcher releases it when the issue comes back; release only
    this run's local lock. Tear down a
    per-worktree venv FIRST if one exists (locked DLLs otherwise block removal on Windows);
    `git worktree remove` plain, `--force` only after confirming no uncommitted work would be
@@ -231,7 +230,9 @@ the deciding number).
    and `issue assign --unassign`, never a whole-set `labels` write — and remove the marker
    BEFORE removing that issue's local lock — the lock is the ownership evidence the removal
    guard reads. Then release your lock under
-   `.kiro/agent-state/issue-work-orchestrator/.locks/` and update the registry entry.
+   `.kiro/agent-state/issue-work-orchestrator/.locks/` — read its owner record and, only when it
+   names this run, `rm -r` the directory with the record (`rmdir` refuses a non-empty one) — and
+   update the registry entry.
    Report only your own; say nothing about anyone else's.
 
 **Step 7 — Issues updated and closed with evidence**

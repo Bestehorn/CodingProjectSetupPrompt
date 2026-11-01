@@ -22,10 +22,11 @@ damage to an issue, ENFORCE one with a test, hook or rule line, fill in a lesson
 `Enforced-by`.
 
 **Step 1 — Measure.** Run `python scripts/memory_compile.py report` and read the whole
-output: every capped file with its size and cap — the always-loaded corpus (root instruction
-file plus every `inclusion: always` steering file), `docs/forLLMConsumption.md`,
-`docs/lessons-learned.md`, `docs/findings-ledger.md` — and every steering file carrying dated
-incident headings.
+output: every capped file with its size and cap — each host's corpus on its own: the
+always-on steering (`inclusion: always`) and the `fileMatch` steering, plus the Claude Code
+rows on a dual-host project — `docs/forLLMConsumption.md`, `docs/lessons-learned.md`,
+`docs/findings-ledger.md`, every steering file carrying dated incident headings, and the LIST
+of rows and lessons Steps 3 and 4 decide.
 
 **Step 2 — Rules carry rules, not incidents.** For every steering file flagged with dated
 headings or over 12,000 bytes: keep the normative statements, move each incident narrative
@@ -34,7 +35,9 @@ verbatim to `docs/archive/rule-incidents/<rule>.md`
 Where a narrative shows a mechanism is missing, add the mechanism (a test, a hook check)
 rather than the story.
 
-**Step 3 — Compile the ledger.** For every `docs/findings-ledger.md` row older than six weeks:
+**Step 3 — Compile the ledger.** For every UNRESOLVED `docs/findings-ledger.md` row older than
+six weeks (status not yet `promoted`/`enforced` — the report lists exactly these; a resolved row
+carries its decision and `reconcile` archives it when the cap needs the room):
 `promoted #N` (it recurred or caused measured damage — ONE issue via the issue-intake agent,
 `Origin: agent-sweep`), `enforced <path>` (a test, hook check or one-line rule now catches the
 class — write it), or `archived` (`python scripts/memory_compile.py archive-ledger --apply`
@@ -68,8 +71,8 @@ lifecycle calls for one.
 
 ```
 | File | Before | After | Cap |
-| always-loaded corpus | … | … | 100,000 |
-| paths:-scoped rules + fileMatch steering | … | … | 45,000 |
+| Kiro always-on steering | … | … | 100,000 |
+| fileMatch steering | … | … | 45,000 |
 | docs/forLLMConsumption.md | … | … | 40,000 |
 | docs/lessons-learned.md | … | … | 40,000 |
 | docs/findings-ledger.md | … | … | 60,000 |
@@ -78,3 +81,6 @@ Lessons: <n> archived, <m> enforced
 Rule incidents moved: <n> (from <files>)
 Corpus test: PASS | FAIL (<assertion>)
 ```
+
+On a dual-host project the table also carries the report's `CLAUDE.md + unscoped rules`
+(100,000) and `paths:-scoped rules` (45,000) rows — the same labels the report prints.

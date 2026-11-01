@@ -87,7 +87,8 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
    - Acquire the local cross-run lock FIRST: atomically `mkdir`
      `.claude/agent-state/issue-work-orchestrator/.locks/issue-<X>.lock` (atomic
      create-or-fail on NTFS too — never rename-over-existing) and write your `run_id` +
-     timestamp inside. If it exists and its owner is a LIVE run (in `registry.json` with a
+     timestamp inside. RELEASING it means reading that record and, only when it names this run,
+     `rm -r` of the directory with its record (`rmdir` refuses a non-empty directory). If it exists and its owner is a LIVE run (in `registry.json` with a
      fresh heartbeat), a sibling session in this clone already has X: stop with the
      Completion Block (X as a `skipped` row naming that run).
      Reclaim only a provably stale lock (owner heartbeat past the bound AND its worktree's
@@ -102,7 +103,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      replace and silently drops other labels (see `issue-tracking.md`). Use only the
      additive `issue label-add` / `label-remove` / `assign` primitives if you need more.
    - **If `issue start` exits non-zero** (X was closed or claimed in this window, or the
-     verification failed): release your local lock (`rmdir`) and STOP with the quoted
+     verification failed): release your local lock (below) and STOP with the quoted
      output. Unlike `/issues-work`, do NOT silently move to a different issue — the user
      named this one. If X is in progress under someone else, say who holds it and ask
      whether to take it over; take over only on an explicit go-ahead.
@@ -298,10 +299,11 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      (`git -C <worktree> status --porcelain` empty AND `git -C <worktree> log origin/<branch>..HEAD` empty —
      otherwise push, never discard); tear down the worktree venv FIRST if one was provisioned (locked DLLs
      otherwise block removal on Windows), `git worktree remove .claude/worktrees/issue-<X>`, `git branch -D
-     issue-<X>-<slug>` (the REMOTE branch stays while the steward still needs it: `delete-remote-branch` only
-     after a direct merge if the host did not auto-delete), verify with `git worktree list`; the reaper; under
-     `verification: session` remove the tracker's in-progress marker BEFORE releasing the local lock (`rmdir
-     .locks/issue-<X>.lock`); under hand-off keep the tracker claim and release only the lock; `CronDelete`
+     issue-<X>-<slug>` (the REMOTE branch stays until the PR lands — deleting a PR's head branch closes the
+     GitHub PR and leaves a GitLab MR without its source; the host's delete-on-merge setting removes it after
+     the landing, and `delete-remote-branch` only after a direct merge the host did not auto-delete), verify
+     with `git worktree list`; the reaper; under `verification: session` remove the tracker's in-progress
+     marker BEFORE releasing the local lock (`.locks/issue-<X>.lock`, as Step 2 says); under hand-off keep the tracker claim and release only the lock; `CronDelete`
      the run watchdog. On `CLOSE: YES` archive the session (`archive_session` with `session_id: "self"`)
      WITHOUT asking — the measured "Archive this session?" wait was 71 h in two weeks; on `CLOSE: NO` the
      close-out's own question rules apply.

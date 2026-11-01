@@ -10,7 +10,7 @@ allows, so the gate never wedges a session on infrastructure trouble.
 from __future__ import annotations
 
 import re
-import subprocess  # nosec B404 — the project's own wrapper with a fixed argv, no shell
+import subprocess  # nosec B404  # the project's own wrapper with a fixed argv, no shell
 
 import hooklib as lib
 
@@ -47,7 +47,7 @@ def run(ctx: lib.Context) -> lib.Decision:
         return lib.allow()
 
     try:
-        completed = subprocess.run(  # nosec B603 — the project's own wrapper, fixed argv, no shell
+        completed = subprocess.run(  # nosec B603  # the project's own wrapper, fixed argv, no shell
             [interpreter, str(wrapper), "issue", "claim-check", issue],
             cwd=str(project),
             capture_output=True,

@@ -183,7 +183,7 @@ state the Stop gates release: it records the terminal `Phase` the gate reads.
 
 Also ensure the git wrapper (`scripts/github_wrapper.py` or `scripts/gitlab_wrapper.py`)
 implements the PR/merge/CI subcommands the orchestrator needs (the setup prompt Part 6.2
-lists them: `get-pr`, `get-pr-checks`, the blocking `wait-run` (GitLab `pipeline wait`),
+lists them: `get-pr`, `get-pr-checks`, the blocking `wait-run` (GitLab `pipeline wait <id> --timeout-seconds 540`),
 `approve-pr`, `merge-pr`, `delete-remote-branch`, the merge-steward trio `enqueue-pr` /
 `dequeue-pr` / `queue-status` (delegating to `scripts/merge_steward.py`),
 and `list-issues` with state/assignee/label filters, plus the existing issue/run

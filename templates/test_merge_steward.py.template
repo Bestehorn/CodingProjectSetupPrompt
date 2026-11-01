@@ -51,7 +51,13 @@ IDENTITY = [
 
 def git(cwd: Path, *args: str) -> str:
     done = subprocess.run(
-        ["git", *IDENTITY, *args], cwd=str(cwd), capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL
+        ["git", *IDENTITY, *args],
+        cwd=str(cwd),
+        env=ms.isolated_git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
     )
     if done.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {done.stderr}")
@@ -132,6 +138,7 @@ class FakeHost:
         merged = subprocess.run(
             ["git", *IDENTITY, "merge-base", "--is-ancestor", head, "main"],
             cwd=str(self.origin),
+            env=ms.isolated_git_env(),
             capture_output=True,
             stdin=subprocess.DEVNULL,
         )
@@ -641,6 +648,26 @@ def test_a_dependency_closed_without_landing_refuses_its_dependent(world: World)
     assert any("closed without landing" in c for c in world.host.pr_comments[2])
 
 
+def test_a_retry_rebuilt_in_the_same_second_is_a_new_batch(make_world, monkeypatch) -> None:
+    """On a fast runner the tick that judges a red train rebuilds the retry within the SAME second the judged
+    batch was built: the judged id must still count as taken, or the retry is byte-identical and reads as
+    already judged — and a twice-red PR stays queued."""
+    world = make_world(steward_settings={"retry_culprit_once": True})
+    clock = [ms.utcnow()]
+    monkeypatch.setattr(ms, "utcnow", lambda: clock[0])
+    monkeypatch.setattr(ms.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + dt.timedelta(seconds=1)))
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    first = set(world.trains().values())
+    world.set_trains("failure")
+    world.tick()  # judges, re-queues once and rebuilds — all within the frozen second
+    assert "queue-retried" in world.host.labels_of(1)
+    assert set(world.trains().values()) != first, "the retry is a NEW batch, never the judged one rebuilt"
+    world.set_trains("failure")
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(1) and "queue" not in world.host.labels_of(1)
+
+
 def test_two_batches_in_one_second_get_distinct_ids(world: World, monkeypatch) -> None:
     """A culprit's retry rebuilt in the same second must not reuse the batch id: identical ids rebuild
     byte-identical train commits, and the first train's culprit mark would then read as already judged."""
@@ -650,6 +677,29 @@ def test_two_batches_in_one_second_get_distinct_ids(world: World, monkeypatch) -
     steward = ms.Steward(world.settings, world.git, world.host, ms.Report())
     first, second = steward._fresh_batch("a" * 40), steward._fresh_batch("a" * 40)
     assert first != second and second.startswith("20261030120001")
+
+
+def test_the_steward_ignores_a_parent_gits_repository(world: World, monkeypatch, tmp_path: Path) -> None:
+    """Run from a git hook, GIT_DIR points at the hook's repository; the steward must act on its own clone."""
+    other = tmp_path / "other"
+    git(tmp_path, "init", "-b", "main", other.as_posix())
+    monkeypatch.setenv("GIT_DIR", (other / ".git").as_posix())
+    monkeypatch.setenv("GIT_WORK_TREE", other.as_posix())
+    assert world.git.rev("HEAD") == git(world.ci, "rev-parse", "HEAD")
+
+
+def test_reference_keywords_are_the_projects(make_world, monkeypatch) -> None:
+    monkeypatch.setattr(ms, "REFS_RE", ms.REFS_RE)  # restored after the test
+    world = make_world(steward_settings={"reference_keywords": ["refs", "issue"]})
+    ms.Steward(world.settings, world.git, world.host, ms.Report())
+    assert ms.referenced_issues("Issue #4\nRefs #5\nPart of #6") == ([4, 5], [])
+
+
+def test_a_closing_keyword_is_never_a_reference_keyword(tmp_path: Path) -> None:
+    path = tmp_path / "delivery.json"
+    path.write_text(json.dumps({"steward": {"reference_keywords": ["refs", "fixes"]}}), encoding="utf-8")
+    with pytest.raises(ms.ConfigError, match="closing keywords"):
+        ms.load_settings(path)
 
 
 def test_the_deploy_guard_admits_only_a_trunk_commit(world: World, tmp_path: Path) -> None:
@@ -844,6 +894,67 @@ def test_the_deployed_commit_is_read_from_the_event_file() -> None:
     for bad in ({"inputs": {"sha": "main"}}, {"inputs": {"sha": sha + '"; rm -rf /'}}, {}):
         with pytest.raises(ms.ConfigError):
             ms.deployed_sha(bad)
+
+
+def test_a_sign_in_page_is_a_host_error_not_a_crash(monkeypatch) -> None:
+    class Page:
+        headers = {"Content-Type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self) -> bytes:
+            return b"<html><title>Sign in</title></html>"
+
+    monkeypatch.setattr(ms, "_OPENER", None)
+    monkeypatch.setattr(ms, "urlopen", lambda request, timeout=30: Page())
+    with pytest.raises(ms.HostError, match="cookie_file"):
+        ms.http_json("GET", "https://gitlab.example.invalid/api/v4/projects/1", {})
+
+
+def test_a_cookie_file_is_sent_with_every_request(monkeypatch, tmp_path: Path) -> None:
+    jar = tmp_path / "cookies.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n.example.invalid\tTRUE\t/\tTRUE\t0\tsession\tabc\n")
+    monkeypatch.setattr(ms, "_OPENER", None)
+    ms.use_cookie_file(jar)
+    assert ms._OPENER is not None
+    with pytest.raises(ms.ConfigError):
+        ms.use_cookie_file(tmp_path / "absent.txt")
+
+
+def test_a_failed_deploy_job_allowed_to_fail_is_not_a_failure() -> None:
+    api = ms.GitLabAPI.__new__(ms.GitLabAPI)
+    jobs = [
+        {"name": "deploy", "status": "success"},
+        {"name": "e2e", "status": "failed", "allow_failure": True, "failure_reason": "script_failure"},
+    ]
+    api._pages = lambda path, limit=30: jobs  # type: ignore[method-assign]
+    assert api.deploy_conclusion("7", ["deploy", "e2e"]) == "success"
+    jobs[1]["allow_failure"] = False
+    assert api.deploy_conclusion("7", ["deploy", "e2e"]) == "failure"
+
+
+def test_the_github_api_root_is_derived_from_the_remote() -> None:
+    assert ms.github_api_root("https://github.com") == "https://api.github.com"
+    assert ms.github_api_root("https://ghe.corp.example") == "https://ghe.corp.example/api/v3"
+
+
+def test_a_token_is_never_read_from_a_tracked_file(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    git(tmp_path, "init", "-b", "main", root.as_posix())
+    (root / "config").mkdir()
+    (root / "config" / "gitlab.json").write_text(json.dumps({"token": "glpat-x"}), encoding="utf-8")
+    monkeypatch.setattr(ms, "ROOT", root)
+    settings = ms.load_settings(tmp_path / "absent.json")
+    settings.host = "gitlab"
+    args = ms.parse_args(["status"])
+    with pytest.raises(ms.ConfigError, match="token-stdin"):
+        ms.read_token(args, settings)
+    (root / ".gitignore").write_text("config/gitlab.json\n", encoding="utf-8")
+    assert ms.read_token(args, settings) == "glpat-x"
 
 
 def test_checklist_counts_ignore_fenced_examples() -> None:

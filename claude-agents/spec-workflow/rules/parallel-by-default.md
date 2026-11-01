@@ -24,7 +24,7 @@ are not. A sequential dispatch of independent work is a defect, not a style choi
 Never `sleep`-poll in a tool call, and NEVER END A TURN TO WAIT: a background task dies
 with the session's process and never wakes it. Do every unblocked piece of work first, then
 wait in the FOREGROUND, bounded (Bash `timeout` 600000), re-issued while it exits 11: a run
-with the wrapper's `wait-run <id> --timeout-seconds 540` (GitLab: `pipeline wait`); a local
+with the wrapper's `wait-run <id> --timeout-seconds 540` (GitLab: `pipeline wait <id> --timeout-seconds 540`); a local
 process started as `<command> > <log> 2>&1; echo "exit=$?" >> <log>` with
 `python .claude/hooks/wait_for.py --file <log> --line '^exit=' --timeout-seconds 540`. A
 background task is for output you read LATER while you keep working. The

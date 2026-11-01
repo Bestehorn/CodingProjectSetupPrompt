@@ -34,7 +34,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess  # nosec B404 — fixed argv to git and the project's wrapper, never a shell (see _git)
+import subprocess  # nosec B404  # fixed argv to git and the project's wrapper, never a shell (see _git)
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -609,7 +609,7 @@ def revision_notice(hooks_dir: Path, today: Optional[str] = None) -> Optional[st
 
 def _git(args: List[str], cwd: Path, stdin: Optional[str] = None, timeout: float = 10.0) -> Optional[str]:
     try:
-        completed = subprocess.run(  # nosec B603 B607 — git, fixed argv, no shell
+        completed = subprocess.run(  # nosec B603 B607  # git, fixed argv, no shell
             ["git", *args],
             cwd=str(cwd),
             input=stdin,
@@ -1038,17 +1038,25 @@ def strip_quoted(command: str) -> str:
 
 # `\s`, not a space, in the separator class: a newline separates commands too (measured: a bypass on the
 # second line of a two-line command slipped past a space-only class).
-GIT_COMMIT_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?commit(\s|$)")
-GIT_PUSH_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?push(\s|$)")
+GIT_COMMIT_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|\n]*\s)?commit(\s|$)")
+GIT_PUSH_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|\n]*\s)?push(\s|$)")
 STASH_PUSH_RE = re.compile(r"stash\s+push")
+COMMAND_SEPARATOR_RE = re.compile(r"\|\||&&|[;&|\n]")
+
+
+def command_segments(stripped: str) -> List[str]:
+    """The quote-stripped command split into simple commands: `;`, `&`, `|`, `&&`, `||` AND a newline separate."""
+    return [segment for segment in COMMAND_SEPARATOR_RE.split(stripped) if segment.strip()]
 
 
 def is_git_commit(stripped: str) -> bool:
-    return bool(GIT_COMMIT_RE.search(stripped))
+    return any(GIT_COMMIT_RE.search(segment) for segment in command_segments(stripped))
 
 
 def is_git_push(stripped: str) -> bool:
-    return bool(GIT_PUSH_RE.search(stripped)) and not STASH_PUSH_RE.search(stripped)
+    return any(
+        GIT_PUSH_RE.search(segment) and not STASH_PUSH_RE.search(segment) for segment in command_segments(stripped)
+    )
 
 
 def python_interpreter(project_dir: Path) -> Optional[str]:

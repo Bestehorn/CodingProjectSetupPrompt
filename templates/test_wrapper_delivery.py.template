@@ -1,0 +1,90 @@
+"""Tests for the git wrapper's delivery verbs: `enqueue-pr`, `dequeue-pr`, `queue-status`.
+
+Installed from ``templates/test_wrapper_delivery.py.template`` to ``test/test_wrapper_delivery.py``, next to
+``scripts/github_wrapper.py`` and/or ``scripts/gitlab_wrapper.py``. The verbs DELEGATE to
+``scripts/merge_steward.py`` (``steward_delegate``); what is pinned is the contract the steward and the
+no-environment-vars rule rely on: the wrapper's token travels on stdin and never in argv, the steward's exit code
+passes through unchanged, and a host that is not the queue's (a read-only archive or mirror) refuses.
+
+Run: ``python scripts/run_tests.py test/test_wrapper_delivery.py`` (no network; the steward is not executed).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Dict, List
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+WRAPPERS = [p for p in (ROOT / "scripts" / "github_wrapper.py", ROOT / "scripts" / "gitlab_wrapper.py") if p.is_file()]
+TOKEN = "wrapper-token-for-the-test"  # pragma: allowlist secret
+
+
+def load(path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(f"wrapper_under_test_{path.stem}", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def host_of(path: Path) -> str:
+    return "github" if path.stem.startswith("github") else "gitlab"
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    return tmp_path
+
+
+def capture(monkeypatch: pytest.MonkeyPatch, code: int) -> Dict[str, Any]:
+    seen: Dict[str, Any] = {}
+
+    def fake_run(command: List[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        seen["command"] = list(command)
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, code)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+@pytest.mark.parametrize("path", WRAPPERS, ids=lambda p: p.stem)
+@pytest.mark.parametrize(
+    ("verb", "args", "steward_verb"),
+    [
+        ("enqueue-pr", ["77"], "enqueue"),
+        ("dequeue-pr", ["77", "--reason", "x"], "dequeue"),
+        ("queue-status", [], "status"),
+    ],
+)
+def test_a_delivery_verb_runs_the_steward_with_the_token_on_stdin(
+    path: Path, verb: str, args: List[str], steward_verb: str, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wrapper = load(path)
+    (project / "config" / "delivery.json").write_text(json.dumps({"merge": "steward", "host": host_of(path)}))
+    seen = capture(monkeypatch, 4)
+    assert wrapper.steward_delegate(verb, args, TOKEN, host_of(path)) == 4, "the steward's exit code passes through"
+    command = seen["command"]
+    assert command[1].replace("\\", "/").endswith("scripts/merge_steward.py")
+    assert command[2:] == ["--token-stdin", steward_verb, *args]
+    assert TOKEN not in " ".join(command), "the token never reaches argv"
+    assert str(seen.get("input", "")).startswith(TOKEN)
+    assert "env" not in seen, "nothing passes through the environment"
+
+
+@pytest.mark.parametrize("path", WRAPPERS, ids=lambda p: p.stem)
+def test_a_host_that_is_not_the_queues_refuses(path: Path, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wrapper = load(path)
+    other = "gitlab" if host_of(path) == "github" else "github"
+    (project / "config" / "delivery.json").write_text(json.dumps({"merge": "steward", "host": other}))
+    seen = capture(monkeypatch, 0)
+    assert wrapper.steward_delegate("enqueue-pr", ["77"], TOKEN, host_of(path)) == wrapper.EXIT_DELIVERY_ELSEWHERE
+    assert seen == {}, "a read-only archive host never runs the steward"

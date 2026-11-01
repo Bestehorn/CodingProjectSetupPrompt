@@ -71,7 +71,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — the self-test spawns the interpreter with a fixed argv, never a shell
+import subprocess  # nosec B404  # the self-test spawns the interpreter with a fixed argv, never a shell
 import sys
 import tempfile
 import traceback
@@ -154,6 +154,9 @@ def discover_gates(event: str, hooks_dir: Path) -> List[Gate]:
     framework's gates down with it (the Stop fail-closed policy applies to a gate that RUNS and raises)."""
     if str(hooks_dir) not in sys.path:
         sys.path.insert(0, str(hooks_dir))
+    # A gate file written after an earlier discovery in this process (a test, a project install mid-session) is
+    # invisible to the path finder's cached directory listing until the caches are dropped.
+    importlib.invalidate_caches()
     gates: List[Gate] = []
     for path in sorted(hooks_dir.glob("gate_*.py")):
         try:
@@ -280,10 +283,12 @@ def merge_stdout(parts: List[str]) -> str:  # noqa: C901 — two output grammars
 _QUOTED_RE = re.compile(r'"[^"]*"|\'[^\']*\'')
 # `\s` in the separator class, not a space: a newline separates commands too, and `cd x` followed by
 # `git push --no-verify` on the next line slipped past a space-only class (measured).
-_COMMIT_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?commit(\s|$)")
-_PUSH_RE = re.compile(r"(^|[;&|\s])git\s+([^;&|]*\s)?push(\s|$)")
+_COMMIT_RE = re.compile(r"(^|\s)git\s+([^;&|\n]*\s)?commit(\s|$)")
+_PUSH_RE = re.compile(r"(^|\s)git\s+([^;&|\n]*\s)?push(\s|$)")
 _STASH_RE = re.compile(r"stash\s+push")
 _BYPASS_RE = re.compile(r"(--no-verify|\s-n(\s|$))")
+# One simple command at a time: `git status` on one line and `commit` on the next are two commands.
+_SEPARATOR_RE = re.compile(r"\|\||&&|[;&|\n]")
 
 
 def _degraded_payload(payload_text: str) -> Dict[str, Any]:
@@ -340,13 +345,15 @@ def degraded(event: str, payload_text: str) -> Tuple[int, str, str]:
     if event in ("pre-tool-use", "post-tool-use"):
         command = (payload.get("tool_input") or {}).get("command", "")
         stripped = _QUOTED_RE.sub("", command if isinstance(command, str) else "")
-        is_commit = bool(_COMMIT_RE.search(stripped))
-        is_push = bool(_PUSH_RE.search(stripped)) and not _STASH_RE.search(stripped)
+        segments = [segment for segment in _SEPARATOR_RE.split(stripped) if segment.strip()]
+        commits = [segment for segment in segments if _COMMIT_RE.search(segment)]
+        pushes = [segment for segment in segments if _PUSH_RE.search(segment) and not _STASH_RE.search(segment)]
+        is_push = bool(pushes)
         if event == "post-tool-use":
             return 0, "", ""
-        if is_commit and _BYPASS_RE.search(stripped):
+        if any(_BYPASS_RE.search(segment) for segment in commits):
             return 2, "", "spec-tdd-gate: 'git commit --no-verify'/-n is forbidden. Fix the reported issue instead.\n"
-        if is_push and "--no-verify" in stripped:
+        if any("--no-verify" in segment for segment in pushes):
             return (
                 2,
                 "",
@@ -415,6 +422,93 @@ def registration_block(project_dir_placeholder: str = "${CLAUDE_PROJECT_DIR}") -
     return json.dumps(block, indent=2) + "\n"
 
 
+def installed_project_dir() -> Optional[Path]:
+    """The project these hooks serve: CLAUDE_PROJECT_DIR when set, else the directory above `.claude/hooks`.
+    None for a copy that is not installed in a project (the framework's own source tree)."""
+    env = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if env and Path(env).is_dir():
+        return Path(env)
+    return HERE.parent.parent if HERE.parent.name == ".claude" else None
+
+
+def _is_framework_entry(entry: Any) -> bool:
+    """A settings.json hook entry that launches THIS dispatcher (the launcher, or an older `hooks.py` form)."""
+    if not isinstance(entry, dict):
+        return False
+    for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
+        if not isinstance(hook, dict):
+            continue
+        args = hook.get("args") if isinstance(hook.get("args"), list) else []
+        text = " ".join([str(hook.get("command", "")), *[str(a) for a in args]])
+        if LAUNCHER in args or "hooks.py" in text:
+            return True
+    return False
+
+
+def _launch_fields(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields of one framework entry that --check compares: matcher, timeout, command, event, launch form."""
+    hook = next((h for h in entry.get("hooks", []) if isinstance(h, dict)), {})
+    args = hook.get("args") if isinstance(hook.get("args"), list) else []
+    return {
+        "matcher": entry.get("matcher"),
+        "timeout": hook.get("timeout"),
+        "command": hook.get("command"),
+        "event": args[-1] if args else None,
+        "launch": "the launcher" if LAUNCHER in args else "an older command form",
+        "args": args,
+    }
+
+
+def _field_drift(key: str, have: List[Dict[str, Any]], want: Dict[str, Any]) -> List[str]:
+    if not have:
+        return [f"  {key}: no framework entry (registration prints the launcher for `{_launch_fields(want)['event']}`)"]
+    if len(have) > 1:
+        return [f"  {key}: {len(have)} framework entries; registration prints exactly one"]
+    got, expected = _launch_fields(have[0]), _launch_fields(want)
+    lines = []
+    for field in ("matcher", "timeout", "command", "event", "launch"):
+        if got[field] != expected[field]:
+            lines.append(f"  {key}: {field} is {got[field]!r}; registration prints {expected[field]!r}")
+    if not lines and got["args"] != expected["args"]:
+        lines.append(f"  {key}: the launch arguments differ from the printed block (interpreter flags or launcher)")
+    return lines
+
+
+def registration_check(project_dir: Path) -> Tuple[int, str]:
+    """Compare `<project>/.claude/settings.json` with what `registration` prints, semantically (parsed JSON),
+    for the FRAMEWORK's entries only: every event `registration` prints must hold exactly one launcher entry
+    with the same matcher, timeout, command and event; a launcher entry for an event `registration` no longer
+    prints is drift too. A project's own hook entries (any other command, in any event) are the "union" the
+    setup prompt allows and are never reported. -> (0 equal | 1 differs | 2 missing or unparseable, report)."""
+    path = project_dir / ".claude" / "settings.json"
+    if not path.is_file():
+        return 2, f"{path}: missing — paste the block `python .claude/hooks/hooks.py registration` prints\n"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return 2, f"{path}: not readable JSON ({exc})\n"
+    if not isinstance(data, dict):
+        return 2, f"{path}: the top level is not an object\n"
+    actual = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    expected = json.loads(registration_block())["hooks"]
+    differences: List[str] = []
+    for key in sorted(set(expected) | set(actual)):
+        entries = actual.get(key) if isinstance(actual.get(key), list) else []
+        have = [entry for entry in entries if _is_framework_entry(entry)]
+        if key not in expected:
+            if have:
+                differences.append(f"  {key}: a framework entry `registration` no longer prints — remove it")
+            continue
+        differences += _field_drift(key, have, expected[key][0])
+    if not differences:
+        return 0, f"{path}: the framework's hook entries equal `hooks.py registration`\n"
+    return 1, (
+        f"{path}: the framework's hook entries differ from `hooks.py registration` — re-paste them:\n"
+        + "\n".join(differences)
+        + "\n"
+    )
+
+
 def _utf8_streams() -> None:
     # The harness reads and writes UTF-8. A piped Windows python defaults to the console code page (cp1252) on
     # every stream, which mis-decodes the payload and turns every em dash in a refusal into U+FFFD. `-X utf8`
@@ -438,6 +532,11 @@ def main(argv: List[str]) -> int:  # noqa: C901 — one subcommand dispatch, in 
         sys.stdout.write(VERSION + "\n")
         return 0
     if event == "registration":
+        if "--check" in argv[2:]:
+            project = installed_project_dir() or Path.cwd()
+            code, report = registration_check(project)
+            (sys.stdout if code == 0 else sys.stderr).write(report)
+            return code
         sys.stdout.write(registration_block())
         return 0
     if event not in EVENTS:
@@ -489,7 +588,7 @@ def _probe_interpreter(python: str) -> Tuple[bool, str]:
     try:
         # The SAME flags as the registration: `-I` ignores an inherited PYTHONHOME/PYTHONPATH (a uv venv exports
         # one), so a probe without them failed where the real launch passes.
-        probe = subprocess.run(  # nosec B603 — the interpreter the harness itself would spawn
+        probe = subprocess.run(  # nosec B603  # the interpreter the harness itself would spawn
             [python, *INTERPRETER_FLAGS, "-c", "import sys; print(sys.executable)"],
             capture_output=True,
             text=True,
@@ -518,9 +617,10 @@ def selftest() -> int:
     refuses a registered run that records unfinished work. Exit 1 on any FAIL — including a failure of the
     self-test's own machinery: an exception here becomes a FAIL line, never a traceback, because a traceback
     discards the PASS lines that locate the break (measured: a run-dir write raised before the Stop check)."""
-    results: List[Tuple[str, bool, str]] = []
+    results: List[Tuple[str, Optional[bool], str]] = []
     try:
-        _selftest_checks(results)
+        _selftest_checks(results)  # type: ignore[arg-type]
+        _registration_line(results)
     except Exception:  # noqa: BLE001 — the self-test must always end in a report
         detail = traceback.format_exc().strip().splitlines()[-1]
         results.append(("the self-test itself ran to completion", False, detail))
@@ -562,7 +662,7 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
 
         def spawn(event: str, payload: str, project_dir: Path) -> subprocess.CompletedProcess:
             env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project_dir))
-            return subprocess.run(  # nosec B603 — exactly the harness's own launch
+            return subprocess.run(  # nosec B603  # exactly the harness's own launch
                 [python, *INTERPRETER_FLAGS, "-c", LAUNCHER, event],
                 input=payload,
                 capture_output=True,
@@ -740,12 +840,28 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
             )
 
 
-def _report(results: List[Tuple[str, bool, str]]) -> int:
-    failed = 0
+def _registration_line(results: List[Tuple[str, Optional[bool], str]]) -> None:
+    """ONE line on the installed project's settings.json: PASS when its hooks block equals `registration`, WARN
+    (never FAIL: the launch checks above are what decide) when it differs or is missing. Nothing for a copy that
+    is not installed in a project — the framework's own tree has no settings.json to compare."""
+    project = installed_project_dir()
+    if project is None:
+        return
+    code, report = registration_check(project)
+    label = "settings.json registers exactly what `hooks.py registration` prints"
+    results.append((label, True if code == 0 else None, report.strip().replace("\n", "\n        ")))
+
+
+def _report(results: List[Tuple[str, Optional[bool], str]]) -> int:
+    failed = warned = 0
     for label, ok, detail in results:
-        failed += 0 if ok else 1
-        sys.stdout.write(f"  {'PASS' if ok else 'FAIL'}  {label}" + ("" if ok else f"\n        {detail}") + "\n")
-    sys.stdout.write(f"hooks selftest ({VERSION}): {len(results) - failed} passed, {failed} failed\n")
+        failed += 1 if ok is False else 0
+        warned += 1 if ok is None else 0
+        mark = "PASS" if ok else ("WARN" if ok is None else "FAIL")
+        sys.stdout.write(f"  {mark}  {label}" + ("" if ok else f"\n        {detail}") + "\n")
+    passed = len(results) - failed - warned
+    tail = f", {warned} warning(s)" if warned else ""
+    sys.stdout.write(f"hooks selftest ({VERSION}): {passed} passed, {failed} failed{tail}\n")
     return 1 if failed else 0
 
 

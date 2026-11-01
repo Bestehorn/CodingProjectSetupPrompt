@@ -28,9 +28,10 @@ final filename) and then extends or adapts it as the project evolves.
 | `delivery.json.template` | `config/delivery.json` | Projects with several agents merging to one trunk (selects `merge: steward` / `direct` and `verification: watcher` / `session` / `none`; absent = direct + session, today's behaviour) |
 | `merge_steward.py.template` | `scripts/merge_steward.py` | With `delivery.json` (the merge queue, the train builder and the post-deploy verdict; run by CI, never by an agent session except `enqueue` / `dequeue` / `status` / `check-pr`) |
 | `test_merge_steward.py.template` | `test/test_merge_steward.py` | With the steward (drives it against a real bare git origin and a fake host) |
+| `test_wrapper_delivery.py.template` | `test/test_wrapper_delivery.py` | With the steward (pins the wrapper's delivery verbs: the token on stdin, the exit code passed through, an archive host refusing) |
 | `ci/github-merge-steward.yml.template` | `.github/workflows/merge-steward.yml` | GitHub + steward (the scheduled tick; never cancelled) |
 | `ci/github-deploy.yml.template` | `.github/workflows/deploy.yml` (or merged into the existing deploy) | GitHub + steward or watcher (a `guard` job that admits only a trunk commit, read from the event file — no `env:` maps; one deploy per environment at a time, `cancel-in-progress: false`, the newest pending deploy supersedes; the verdict job last). Under the steward its ADMISSION must accept the steward's dispatch: a trunk push by `GITHUB_TOKEN` starts no workflow |
-| `ci/gitlab-delivery.gitlab-ci.yml.template` | merged into `.gitlab-ci.yml` | GitLab + steward or watcher (the tick job, train pipelines, deploy supersession, the verdict job) |
+| `ci/gitlab-delivery.gitlab-ci.yml.template` | merged into `.gitlab-ci.yml` | GitLab + steward or watcher (the tick job in a REAL stage — GitLab runs no pipeline made only of `.pre`/`.post` jobs; the `.not-on-tick` rule as `!reference` or anchor, since a job's own `rules:` replaces an `extends`ed list; train pipelines, deploy supersession, the verdict job) |
 
 Git hooks pattern: the hooks themselves are TRACKED files under the
 project's `.githooks/` directory (copied from `templates/githooks/`), so

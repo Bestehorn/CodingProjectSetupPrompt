@@ -23,7 +23,7 @@ THE CAP DRIVES RETENTION
     the issue. Recurrence is checked with ``search``, which spans the archive, never by loading the files.
 
 USAGE
-    python scripts/memory_compile.py report                          # sizes vs caps, aged rows, aged lessons
+    python scripts/memory_compile.py report                          # sizes vs caps; LISTS what /compile-memory decides
     python scripts/memory_compile.py reconcile [--weeks 6] [--apply]  # age pass, then oldest-first to the caps
     python scripts/memory_compile.py ledger add --subject S --finding F --evidence E --why W
                                                 [--status open] [--date YYYY-MM-DD]
@@ -1039,14 +1039,29 @@ def report(weeks: int) -> int:
         aged = _aged_rows(rows=ledger_rows, weeks=weeks)
         oversize = sum(1 for r in ledger_rows if _bytes(r.text()) > LEDGER_ROW_MAX_BYTES)
         print(
-            f"\nLedger: {len(ledger_rows)} active rows, {len(aged)} older than {weeks} weeks "
-            f"to promote/enforce/archive; rows over {LEDGER_ROW_MAX_BYTES} B: {oversize}"
+            f"\nLedger: {len(ledger_rows)} active rows; rows over {LEDGER_ROW_MAX_BYTES} B: {oversize}; "
+            f"{len(aged)} UNRESOLVED (status not {'/'.join(RESOLVED_STATUS_PREFIXES)}) and older than {weeks} "
+            "weeks — decide each: promote, enforce or archive"
         )
+        _print_decisions([f"{r.date}  {r.subject[:90]}" for r in aged])
     if LESSONS.exists():
         _, entries = _entries(text=_read(LESSONS), level_re=LESSON_HEADING_RE)
         aged_lessons = _aged_lessons(entries=entries, weeks=weeks)
-        print(f"Lessons: {len(entries)} entries, {len(aged_lessons)} older than {weeks} weeks without Enforced-by")
+        print(
+            f"Lessons: {len(entries)} entries; {len(aged_lessons)} with `Enforced-by: none` and older than {weeks} "
+            "weeks — decide each: enforce or archive"
+        )
+        _print_decisions([e.heading.lstrip("# ").strip()[:100] for e in aged_lessons])
     return 1 if over else 0
+
+
+def _print_decisions(items: list[str], limit: int = 40) -> None:
+    """The items /compile-memory must decide, one per line (resolved ones are not listed: reconcile archives
+    them mechanically when the cap needs the room)."""
+    for item in items[:limit]:
+        print(f"  - {item}")
+    if len(items) > limit:
+        print(f"  ... and {len(items) - limit} more (archive-ledger / archive-lessons without --apply lists all)")
 
 
 # ------------------------------------------------------------------------------------------------- main

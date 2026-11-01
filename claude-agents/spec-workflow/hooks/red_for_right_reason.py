@@ -27,7 +27,7 @@ import re
 import sys
 from pathlib import Path
 
-ANY_FAILURE_RE = re.compile(r"failed|FAILED|error|Falsifying example|AssertionError", re.IGNORECASE)
+ANY_FAILURE_RE = re.compile(r"failed|FAILED|error|Falsifying (?:explicit )?example|AssertionError", re.IGNORECASE)
 WRONG_REASON_RE = re.compile(
     r"ModuleNotFoundError|ImportError|cannot import name|SyntaxError|IndentationError|errors during collection|"
     r"ERROR collecting|fixture .* not found|NameError|no tests ran",
@@ -35,9 +35,10 @@ WRONG_REASON_RE = re.compile(
 )
 COLLECTION_RE = re.compile(r"errors during collection|ERROR collecting", re.IGNORECASE)
 RIGHT_REASON_RE = re.compile(
-    # (a) pytest / Hypothesis / unittest (Hypothesis prints `Falsifying example:`, or `Failing test case:` /
-    #     `Failing example:` for an explicit `@example` and in its explain phase)
-    r"AssertionError|assert |Falsifying example|Failing (?:test case|example)|FAILED .*::|"
+    # (a) pytest / Hypothesis / unittest (Hypothesis prints `Falsifying example:` for a generated case and
+    #     `Falsifying explicit example:` for a failing `@example`; `Failing test case:` / `Failing example:` are
+    #     kept for the forms other property-based runners print)
+    r"AssertionError|assert |Falsifying (?:explicit )?example|Failing (?:test case|example)|FAILED .*::|"
     r"hypothesis\.errors|self\.assert"
     # (b) Playwright web-first assertions
     r"|expect\([^)]*\)\.[A-Za-z_]+\([^)]*\) failed|Timed out .* waiting for expect\("

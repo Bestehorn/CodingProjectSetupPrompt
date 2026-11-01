@@ -47,7 +47,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess  # nosec B404 — the wrapped command's own argv, never a shell
+import subprocess  # nosec B404  # the wrapped command's own argv, never a shell
 import sys
 import tempfile
 import time
@@ -300,7 +300,7 @@ def cmd_run(lock_dir: Path, cap: int, label: str, timeout: float | None, command
         return 2
     try:
         with suite_slot(label or " ".join(command), lock_dir=lock_dir, cap=cap, timeout=timeout):
-            return subprocess.call(_resolve_command(command))  # nosec B603 — the caller's own command
+            return subprocess.call(_resolve_command(command))  # nosec B603  # the caller's own command
     except SuiteSlotTimeout as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_BUSY
@@ -319,7 +319,7 @@ def selftest() -> int:
         held = SuiteSlot(label="selftest holder", lock_dir=lock_dir, cap=1)
         held.acquire()
         results.append(("the first acquirer takes slot 0", held.index == 0, f"index {held.index}"))
-        busy = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)  # nosec B603 — own argv
+        busy = subprocess.run(probe, capture_output=True, text=True, timeout=60, check=False)  # nosec B603  # own argv
         results.append(
             (
                 f"a second process is refused while the slot is held (exit {EXIT_BUSY}, nothing run)",
@@ -327,7 +327,7 @@ def selftest() -> int:
                 f"exit {busy.returncode}: {busy.stderr.strip()[:160]}",
             )
         )
-        status = subprocess.run(  # nosec B603 — this script's own argv, no shell
+        status = subprocess.run(  # nosec B603  # this script's own argv, no shell
             [*cli, "status"], capture_output=True, text=True, timeout=60, check=False
         )
         results.append(("status names the holder", "selftest holder" in status.stdout, status.stdout.strip()[:160]))
@@ -345,7 +345,7 @@ def selftest() -> int:
             "import sys, os; sys.path.insert(0, sys.argv[1]); import suite_semaphore as s; from pathlib import Path; "
             "slot = s.SuiteSlot(label='dies', lock_dir=Path(sys.argv[2]), cap=1); slot.acquire(); os._exit(3)"
         )
-        died = subprocess.run(  # nosec B603 — this interpreter, a literal program, no shell
+        died = subprocess.run(  # nosec B603  # this interpreter, a literal program, no shell
             [sys.executable, "-c", dying, str(here.parent), str(lock_dir)],
             capture_output=True,
             text=True,

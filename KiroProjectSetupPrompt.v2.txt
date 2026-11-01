@@ -78,6 +78,13 @@
 #     input from the event file (no `env:` maps); steward batch ids are unique; the memory
 #     report caps scoped files per host; the steering's delivery text is cut to its norms.
 #     CONTRACT_VERSION 2026.10.30-delivery-6.
+#   - 2026-10-31: sixth round of project feedback (a GitLab project). The GitLab tick job runs in a
+#     real stage; `.not-on-tick` goes into each job's own `rules:`; a deploy job allowed to fail
+#     counts as passed; judged steward batch ids stay taken; a proxy sign-in page is a host error
+#     (`steward.cookie_file`); the wrapper passes its token to the steward on stdin and a tracked
+#     config is never read for one; the steward ignores an inherited `GIT_DIR`; reference keywords
+#     are configurable; merge-steward and TDD gate bypasses closed; lock release removes the owner
+#     record; MCP servers pinned and pre-warmed. CONTRACT_VERSION 2026.10.31-delivery-7.
 #   - Replaces deprecated awslabs.cdk-mcp-server with awslabs.aws-iac-mcp-server.
 #   - Aligns every MCP server config with the canonical install snippet from
 #     awslabs.github.io/mcp/servers/* (Linux/macOS uvx form on Linux/macOS,
@@ -514,6 +521,13 @@ confirm a non-error response. If any call fails:
 4. If the failure is `command not found` on Windows for the
    `awslabs.X.exe` console-script form, confirm uv version is recent
    enough; the `--from` form requires uv >= 0.4.
+5. If a server fails or shows as disconnected only at startup, `@latest`
+   is the usual cause: `uvx <pkg>@latest` resolves the package on every
+   start (an index lookup, and a download when a new version is out),
+   which can outlast the client's connect wait. Pin each server to the
+   version you verified (`<pkg>==x.y.z` in `args`, also inside the
+   `--from` form), and start it once by hand with that exact `uvx` line
+   so the cache is warm. Record the pinned versions in the report.
 
 The standard verification calls:
 
@@ -1079,7 +1093,7 @@ endpoints. The in-progress label name is read from
 
 The blocking CI wait and the delivery trio (REQUIRED; the template
 docstrings specify them). `wait-run <run_id> --timeout-seconds N`
-(GitLab `pipeline wait <id>`) blocks until the run is terminal and exits
+(GitLab `pipeline wait <id> --timeout-seconds N`) blocks until the run is terminal and exits
 0 success / 10 not success / 11 timeout — the ONE sanctioned way an
 agent waits on CI: in the foreground, after the unblocked work,
 re-issued on 11. Where `config/delivery.json` says `"merge": "steward"`
@@ -1476,6 +1490,15 @@ What each piece guarantees — keep all of them; each closes a measured failure:
   `--token-file`), never a shell variable (Rule 2); on GitLab it pushes with a project
   access token in a File-type CI variable (the job token cannot push). A GitLab instance
   that licenses merge trains may use them instead — the template says how.
+- **GitLab specifics:** the `merge-steward` job is in a REAL stage appended to `stages:` (GitLab runs
+  no pipeline made only of `.pre`/`.post` jobs); every other job's own `rules:` starts with
+  `- !reference [.not-on-tick, rules]` or the `*not_on_tick` anchor (`extends` is replaced by a job's own
+  `rules:`); a deploy job the jobs API reports as allowed to fail counts as passed, as the pipeline counts it.
+- **The token and the host:** the wrapper's delivery verbs (`steward_delegate`, pinned by
+  `test/test_wrapper_delivery.py`) pass the wrapper's token with `--token-stdin`; the steward never
+  reads a token from a tracked file, sends `steward.cookie_file` for an authenticating proxy, derives the
+  API root from the remote, and refuses delivery verbs on a host that is only a read-only archive.
+  `steward.reference_keywords` sets the words that make `<word> #N` a reference (never a closing keyword).
 - **Runners:** `{{STEWARD_RUNS_ON}}` / `{{DEPLOY_RUNS_ON}}` are the `runs-on` the project's CI
   jobs already use, never a hosted label a private repository cannot run (every tick would fail,
   every half hour); dispatch the steward workflow once and see its job start before the switch.
@@ -3008,8 +3031,8 @@ licence to skip this classification.
   terminal state (merged, handed off, abandoned, escalated), `git worktree remove
   <path>` and `git branch -d/-D`, and verify nothing is left behind — after asserting
   nothing is unpushed (`git log origin/<branch>..<branch>` empty); a handed-off PR's
-  REMOTE branch stays until it lands, and under the merge steward only the steward
-  writes the trunk. The clean end-state is **per run**.
+  REMOTE branch stays until it lands (deleting it would close the PR — `delivery.md`
+  §3), and under the merge steward only the steward writes the trunk. The clean end-state is **per run**.
 - **Do NOT move the shared local `main` branch.** When multiple runs may share one
   clone, a run NEVER `git checkout main`s or fast-forwards local `main`. Fetch and
   base new worktrees on `origin/<main>`, and verify merges with
@@ -3461,7 +3484,7 @@ A pipeline takes as long as it takes; what is yours to decide is what happens
 meanwhile. Do every piece of work that does not depend on the verdict FIRST —
 the docs, the issue note, the evidence report — then run the wrapper's blocking
 wait in the FOREGROUND, bounded (`wait-run <id> --timeout-seconds 540`; GitLab
-`pipeline wait`; exit 0 success, 10 not success, 11 timeout — re-issue), never
+`pipeline wait <id> --timeout-seconds 540`; exit 0 success, 10 not success, 11 timeout — re-issue), never
 as a background task and never as a `sleep` loop (`parallel-by-default.md`).
 The run you wait for is the PR's own: under the merge steward a green PR is
 enqueued and handed off, and a red train comes back as `needs-rework` — fixed
@@ -3592,7 +3615,7 @@ are not. A sequential dispatch of independent work is a defect, not a style choi
 Never `sleep`-poll in a shell call, and NEVER END A TURN TO WAIT: a background task dies
 with the session's process and never wakes it. Do every unblocked piece of work first, then
 wait in the FOREGROUND, bounded, re-issued while it exits 11: a run with the wrapper's
-`wait-run <id> --timeout-seconds 540` (GitLab: `pipeline wait`); a local process started as
+`wait-run <id> --timeout-seconds 540` (GitLab: `pipeline wait <id> --timeout-seconds 540`); a local process started as
 `<command> > <log> 2>&1; echo "exit=$?" >> <log>` with `python .kiro/hooks-bin/wait_for.py
 --file <log> --line '^exit=' --timeout-seconds 540`. A background task is for output you
 read LATER while you keep working. The `no-foreground-sleep` gate refuses a foreground

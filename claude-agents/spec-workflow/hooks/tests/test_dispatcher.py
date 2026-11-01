@@ -18,11 +18,19 @@ HOOKS_DIR = Path(__file__).resolve().parent.parent
 
 
 def _install(target: Path) -> Path:
+    """The FRAMEWORK's hooks in a scratch project. A project's own gates (ORDER outside 10..90) stay out, so these
+    tests judge the framework alone in a project that has gates of its own (one project measured this file
+    failing on the first project gate it added)."""
     hooks_dir = target / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True)
     for src in HOOKS_DIR.glob("*.py"):
-        shutil.copy(src, hooks_dir / src.name)
+        if not hooks._is_project_gate(src):
+            shutil.copy(src, hooks_dir / src.name)
     return hooks_dir
+
+
+def _framework(event: str, hooks_dir: Path = HOOKS_DIR) -> list:
+    return [g for g in hooks.discover_gates(event, hooks_dir) if 10 <= g[1] <= hooks.PROJECT_ORDER_FLOOR]
 
 
 def _spawn(event: str, payload: str, project: Path) -> subprocess.CompletedProcess:
@@ -113,8 +121,7 @@ def test_a_project_gate_joins_the_event_without_a_second_registration(tmp_path: 
         encoding="utf-8",
     )
     names = [g[0] for g in hooks.discover_gates("pre-tool-use", hooks_dir)]
-    framework = [g[0] for g in hooks.discover_gates("pre-tool-use", HOOKS_DIR) if g[1] <= hooks.PROJECT_ORDER_FLOOR]
-    assert names[-1] == "project-write-gate" and len(names) == len(framework) + 1
+    assert names[-1] == "project-write-gate" and len(names) == len(_framework("pre-tool-use")) + 1
     write_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "x.py", "content": "# TODO"}})
     decision = hooks.dispatch("pre-tool-use", write_payload, environ={}, cwd=tmp_path, hooks_dir=hooks_dir)
     assert decision.exit_code == 2 and "project-write-gate" in decision.stderr
@@ -160,7 +167,91 @@ def test_registration_block_is_the_launcher_in_exec_form() -> None:
         flags = len(hooks.INTERPRETER_FLAGS)
         assert entry["args"][:flags] == hooks.INTERPRETER_FLAGS and entry["args"][flags] == "-c"
         assert entry["args"][flags + 1] == hooks.LAUNCHER
-    matcher = block["hooks"]["PreToolUse"][0]["matcher"]
-    assert "Bash" in matcher.split("|"), f"the shell tool must be matched; matcher was {matcher!r}"
+    # A project gate without TOOLS judges every tool, and then the entry carries no matcher at all.
+    matcher = block["hooks"]["PreToolUse"][0].get("matcher")
+    assert matcher is None or "Bash" in matcher.split("|"), f"the shell tool must be matched; matcher was {matcher!r}"
     assert block["hooks"]["PreToolUse"][0]["hooks"][0]["args"][-1] == "pre-tool-use"
     assert "${" not in hooks.LAUNCHER and '"' not in hooks.LAUNCHER
+
+
+def test_a_gate_written_after_a_discovery_is_discovered(tmp_path: Path) -> None:
+    """The path finder caches a directory listing; discovery must drop that cache, or a gate written after the
+    first discovery in a process is missed (the matcher test was flaky without it)."""
+    hooks_dir = _install(tmp_path)
+    before = [g[0] for g in hooks.discover_gates("pre-tool-use", hooks_dir)]
+    (hooks_dir / "gate_late_arrival.py").write_text(
+        "import hooklib as lib\nHOOK = 'late-arrival'\nEVENT = 'pre-tool-use'\nORDER = 170\nTOOLS = {'Bash'}\n"
+        "def run(ctx):\n    return lib.allow()\n",
+        encoding="utf-8",
+    )
+    after = [g[0] for g in hooks.discover_gates("pre-tool-use", hooks_dir)]
+    assert "late-arrival" not in before and after[-1] == "late-arrival"
+
+
+def _settings(project: Path, block: dict) -> None:
+    (project / ".claude").mkdir(parents=True, exist_ok=True)
+    (project / ".claude" / "settings.json").write_text(json.dumps(block, indent=2), encoding="utf-8")
+
+
+def test_registration_check_compares_the_pasted_block(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert hooks.registration_check(project)[0] == 2, "no settings.json"
+    _settings(project, {"permissions": {}, **json.loads(hooks.registration_block())})
+    assert hooks.registration_check(project)[0] == 0, "the printed block, pasted"
+    pasted = json.loads(hooks.registration_block())
+    pasted["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+    pasted["hooks"].setdefault("PostToolUse", []).append(
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": "npx prettier --write"}]}
+    )
+    _settings(project, pasted)
+    code, report = hooks.registration_check(project)
+    assert code == 1 and "PreToolUse: matcher is 'Bash'" in report
+    assert "PostToolUse" not in report, "a project's own hook in the same file is not the framework's business"
+    del pasted["hooks"]["Stop"]
+    _settings(project, pasted)
+    assert "Stop: no framework entry" in hooks.registration_check(project)[1]
+    stale = json.loads(hooks.registration_block())
+    stale["hooks"]["Notification"] = [stale["hooks"]["Stop"][0]]
+    _settings(project, stale)
+    assert "Notification: a framework entry" in hooks.registration_check(project)[1]
+
+
+def test_registration_check_tolerates_the_projects_own_hooks(tmp_path: Path) -> None:
+    """The setup prompt lets a project keep its own hooks beside the framework's (the "union"): an extra entry in
+    a framework event and an event of its own are both fine, and the check passes."""
+    project = tmp_path / "project"
+    project.mkdir()
+    block = json.loads(hooks.registration_block())
+    own = {"type": "command", "command": "python", "args": ["scripts/project_guard.py"], "timeout": 10}
+    block["hooks"]["PreToolUse"].append({"matcher": "Write|Edit", "hooks": [own]})
+    block["hooks"]["Stop"].insert(0, {"hooks": [dict(own, args=["scripts/notify.py"])]})
+    block["hooks"]["PostToolUse"] = [{"matcher": "Edit", "hooks": [dict(own, args=["scripts/fmt.py"])]}]
+    _settings(project, block)
+    code, report = hooks.registration_check(project)
+    assert code == 0, report
+    (project / ".claude" / "settings.json").write_text("{not json", encoding="utf-8")
+    assert hooks.registration_check(project)[0] == 2
+
+
+def test_registration_check_runs_from_the_command_line(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _install(project)
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project))
+    env.pop("PYTHONPATH", None)
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(project / ".claude" / "hooks" / "hooks.py"), "registration", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=60,
+            check=False,
+        )
+
+    assert run("--check").returncode == 2, "nothing pasted yet"
+    _settings(project, json.loads(run().stdout))  # the block THIS installation prints, pasted
+    done = run("--check")
+    assert done.returncode == 0, done.stdout + done.stderr

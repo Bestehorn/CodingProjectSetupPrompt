@@ -77,7 +77,9 @@ WHY IT IS FAST, AND WHY IT STOPS ON TIME
          (bundling-temp-*, asset.*) is queued first, then the cloud assemblies (the bytes),
          then the kernels (the files).
       3. The quarantine is deleted by a thread pool — `unlink` releases the GIL — counting
-         files and bytes as it goes, so there is no separate census in --apply mode.
+         files and bytes as it goes, so there is no separate census in --apply mode. Only
+         bytes actually FREED count: a file that still has another hard link frees nothing at
+         its unlink, so it is counted once, at its last link, and reported apart.
       4. A TIME BUDGET (default 28 minutes, just under the 30-minute cap of Claude Code's
          background shell and similar harnesses) is checked before EVERY unlink, not merely
          between entries: at the deadline each worker stops at its next file, the partly
@@ -219,6 +221,7 @@ class Candidate:
     files: int = 0
     size: int = 0
     error: str = ""
+    linked: int = 0  # files unlinked while another hard link kept their data: no bytes freed
 
 
 @dataclass
@@ -252,10 +255,15 @@ class Report:
 
     @property
     def reclaimed(self) -> int:
-        """Bytes an --apply run actually removed: finished entries AND the partly emptied ones. The sum of
-        the unlinked files' sizes: a file with several hard links counts at each link, so on a tree that
-        shares blocks the figure is an upper bound on the space the volume gets back."""
+        """Bytes an --apply run actually FREED: finished entries AND the partly emptied ones. A file is
+        counted only when its unlink removes its LAST link (`st_nlink == 1` just before the unlink), so a
+        hard-linked pair deleted in one run counts its bytes once, and a file whose other link lives
+        outside the quarantine counts nothing — it is reported in `linked` instead."""
         return self.reclaimable if self.applied else 0
+
+    @property
+    def linked(self) -> int:
+        return sum(entry.linked for entry in self.entries)
 
     @property
     def remaining(self) -> list[Candidate]:
@@ -327,6 +335,19 @@ def is_reparse(st: os.stat_result) -> bool:
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
+def _link_count(path: str, st: os.stat_result) -> int:
+    """The entry's hard-link count just before its unlink. POSIX `scandir` stats it at the call; on Windows
+    `DirEntry.stat()` leaves `st_nlink` at 0, so a non-empty file there is asked once more (`lstat`). An
+    unreadable count is taken as 1: the figure then errs toward the old, per-link one, never below zero."""
+    count = st.st_nlink
+    if count == 0 and st.st_size:
+        try:
+            count = os.lstat(path).st_nlink
+        except OSError:
+            count = 1
+    return max(1, count)
+
+
 def _remove_entry(path: str, st: os.stat_result) -> str:
     """Remove one non-directory entry: a file, a symlink, a junction. A read-only attribute is
     cleared and the removal retried once; a directory-shaped link falls back to rmdir."""
@@ -371,71 +392,81 @@ def _remove_dir(path: str) -> str:
 
 def _delete_listing(
     current: str, stack: list[tuple[str, bool]], clock: Clock, progress: Optional[Progress]
-) -> tuple[int, int, list[str], bool]:
+) -> tuple[int, int, list[str], bool, int]:
     """Remove the non-directory entries of one directory and push its subdirectories onto the stack.
-    The budget is checked before EVERY unlink. Returns (files, bytes, errors, stopped)."""
+    The budget is checked before EVERY unlink. Returns (files, freed bytes, errors, stopped, linked)."""
     files = 0
     size = 0
+    linked = 0
     errors: list[str] = []
     try:
         with os.scandir(current) as it:
             for entry in it:
                 if clock.expired():
-                    return files, size, errors, True
+                    return files, size, errors, True, linked
                 try:
                     st = entry.stat(follow_symlinks=False)
                     if stat.S_ISDIR(st.st_mode) and not is_reparse(st):
                         stack.append((entry.path, False))
                         continue
+                    links = _link_count(entry.path, st)
                     error = _remove_entry(entry.path, st)
                     if error:
                         errors.append(f"{entry.path}: {error}")
                     else:
+                        freed = st.st_size if links == 1 else 0
                         files += 1
-                        size += st.st_size
+                        size += freed
+                        linked += 0 if links == 1 else 1
                         if progress is not None:
-                            progress.tick(st.st_size)
+                            progress.tick(freed)
                 except OSError as exc:
                     errors.append(f"{entry.path}: {type(exc).__name__}: {exc}")
     except FileNotFoundError:
         pass
     except OSError as exc:
         errors.append(f"{current}: {type(exc).__name__}: {exc}")
-    return files, size, errors, False
+    return files, size, errors, False, linked
 
 
-def _outcome(files: int, size: int, errors: list[str]) -> tuple[int, int, str, bool]:
+def _outcome(files: int, size: int, errors: list[str], linked: int) -> tuple[int, int, str, bool, int]:
     """The entry's result: the first error names the failure and how many there were. No robocopy
     fallback: `/MIR` was measured deleting through a junction, exactly in the tree a walk could not empty."""
     if not errors:
-        return files, size, "", False
+        return files, size, "", False, linked
     more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
-    return files, size, errors[0] + more, False
+    return files, size, errors[0] + more, False, linked
 
 
-def delete_tree(path: Path, clock: Clock, progress: Optional[Progress] = None) -> tuple[int, int, str, bool]:
+def delete_tree(path: Path, clock: Clock, progress: Optional[Progress] = None) -> tuple[int, int, str, bool, int]:
     """Delete one quarantined entry, counting files and bytes as it goes, WITHIN the budget.
 
     Iterative post-order over scandir entries, whose stat data comes with the listing. A symlink
     or junction is removed as one entry and never followed. The budget is checked before every
     unlink: at the deadline the walk stops and the partly emptied tree stays in quarantine for the
     next run, so one slow entry can never run past the budget by more than one unlink.
-    Returns (files, bytes, error, stopped); the error names the first failure and how many there were."""
+    Returns (files, freed bytes, error, stopped, linked): the error names the first failure and how many there
+    were; `linked` counts the files whose data another hard link kept, so they freed no bytes."""
     raw = long_path(str(path))
     try:
         top = os.lstat(raw)
     except FileNotFoundError:
-        return 0, 0, "", False
+        return 0, 0, "", False, 0
     except OSError as exc:
-        return 0, 0, f"{type(exc).__name__}: {exc}", False
+        return 0, 0, f"{type(exc).__name__}: {exc}", False, 0
     if not stat.S_ISDIR(top.st_mode) or is_reparse(top):
+        links = _link_count(raw, top)
         error = _remove_entry(raw, top)
-        if not error and progress is not None:
-            progress.tick(top.st_size)
-        return (0, 0, error, False) if error else (1, top.st_size, "", False)
+        if error:
+            return 0, 0, error, False, 0
+        freed = top.st_size if links == 1 else 0
+        if progress is not None:
+            progress.tick(freed)
+        return 1, freed, "", False, 0 if links == 1 else 1
 
     files = 0
     size = 0
+    linked = 0
     errors: list[str] = []
     stack: list[tuple[str, bool]] = [(raw, False)]
     while stack:
@@ -446,18 +477,21 @@ def delete_tree(path: Path, clock: Clock, progress: Optional[Progress] = None) -
                 errors.append(f"{current}: {error}")
             continue
         stack.append((current, True))
-        more_files, more_size, more_errors, stopped = _delete_listing(current, stack, clock, progress)
+        more_files, more_size, more_errors, stopped, more_linked = _delete_listing(current, stack, clock, progress)
         files += more_files
         size += more_size
+        linked += more_linked
         errors += more_errors
         if stopped:
-            return files, size, "", True
-    return _outcome(files, size, errors)
+            return files, size, "", True, linked
+    return _outcome(files, size, errors, linked)
 
 
 def census(path: Path, clock: Clock) -> tuple[int, int, bool]:
     """Files and bytes under one entry, from scandir's own stat data (report mode only; --apply
-    counts while deleting). Stops at the budget: the third value says whether it finished."""
+    counts while deleting). Stops at the budget: the third value says whether it finished. Bytes are
+    counted per link here, so for hard-linked residue the report's figure is an upper bound; --apply
+    reports what it actually freed."""
     files = 0
     size = 0
     stack = [long_path(str(path))]
@@ -490,19 +524,49 @@ def census(path: Path, clock: Clock) -> tuple[int, int, bool]:
     return files, size, True
 
 
+def _windows_local_app_data() -> Optional[Path]:
+    """The user's Local AppData folder from the shell's known-folder API (FOLDERID_LocalAppData), which
+    honours a redirected profile — with no environment variable read. None off Windows or on failure."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Guid(ctypes.Structure):
+            _fields_ = [
+                ("data1", wintypes.DWORD),
+                ("data2", wintypes.WORD),
+                ("data3", wintypes.WORD),
+                ("data4", ctypes.c_ubyte * 8),
+            ]
+
+        folder = _Guid(0xF1B32785, 0x6FBA, 0x4FCF, (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
+        pointer = ctypes.c_wchar_p()
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        if shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(pointer)) != 0:
+            return None
+        try:
+            return Path(pointer.value) if pointer.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(pointer)  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 def os_default_temp_roots() -> list[Path]:
     """The shared temp roots of this OS, independent of TMPDIR/TEMP/TMP."""
     roots: list[Path] = []
     if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            roots.append(Path(local) / "Temp")
+        local = _windows_local_app_data()
+        if local is not None:
+            roots.append(local / "Temp")
         try:
-            roots.append(Path.home() / "AppData" / "Local" / "Temp")  # needs no variable of its own
+            roots.append(Path.home() / "AppData" / "Local" / "Temp")  # the default profile layout
         except RuntimeError:
             pass
     else:
-        roots += [Path("/tmp"), Path("/var/tmp")]  # nosec B108 — these ARE the temp roots under inspection
+        roots += [Path("/tmp"), Path("/var/tmp")]  # nosec B108  # these ARE the temp roots under inspection
     return _resolved_dirs(roots)
 
 
@@ -773,9 +837,10 @@ class Progress:
 
 
 def _delete_candidate(candidate: Candidate, clock: Clock, progress: Progress) -> Candidate:
-    files, size, error, stopped = delete_tree(candidate.path, clock, progress)
+    files, size, error, stopped, linked = delete_tree(candidate.path, clock, progress)
     candidate.files = files
     candidate.size = size
+    candidate.linked = linked
     candidate.error = error
     if error:
         candidate.state = "failed"
@@ -961,6 +1026,11 @@ def _emit_apply_summary(report: Report, args: argparse.Namespace) -> None:
     )
     for key, count, size in _groups(deleted):
         print(f"  {count}x {key}  ({human(size)})")
+    if report.linked:
+        print(
+            f"  {report.linked:,} hard-linked file(s) removed with another link still holding their data:"
+            " no bytes counted for them"
+        )
     if _slow_host(report, args.workers):
         print(
             f"  SLOW HOST: {report.rate:,.0f} files/s across {args.workers} workers with the CPU idle means a"
@@ -1050,6 +1120,7 @@ def emit_json(report: Report, args: argparse.Namespace, code: int) -> None:
                 "reclaimed_bytes": report.reclaimed,
                 "deleted_entries": len(deleted),
                 "deleted_files": report.files,
+                "hard_linked_files": report.linked,
                 "remaining_entries": len(report.remaining),
                 "in_use": len(report.in_state("in_use")),
                 "taken_by_sibling": len(report.in_state("taken")),

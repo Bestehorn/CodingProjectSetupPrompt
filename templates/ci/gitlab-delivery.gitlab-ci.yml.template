@@ -18,17 +18,30 @@
 # every train pipeline's last job (`steward-wake`) starts one when the train's CI is done — exactly when a landing
 # becomes possible. A pipeline schedule (CI/CD > Schedules, every 30 minutes, variable MERGE_STEWARD=tick) is
 # only the safety net. Every tick pipeline runs the default branch, so no MR can change the steward that merges
-# it. While MERGE_STEWARD is "tick", NO other job may run: add the `.not-on-tick` rule to every other job (or to
-# `workflow:rules`). On gitlab.com shared runners every job counts against the compute quota (the safety net alone
-# is about 1,440 jobs a month): run the steward jobs on the project's own runner (`tags:`).
+# it. While MERGE_STEWARD is "tick", NO other job may run: every other job's `rules:` STARTS with the
+# `.not-on-tick` rule. `extends: .not-on-tick` is not enough — a job's own `rules:` replaces the extended list
+# entirely — so put the rule INTO each job's list, in one of two forms:
+#     rules:
+#       - !reference [.not-on-tick, rules]   # works across `include:` files (GitLab 14.3+)
+#       - ... the job's own rules ...
+#     rules:
+#       - *not_on_tick                       # the YAML anchor below; works only inside this same file
+#       - ... the job's own rules ...
+# A job with no `rules:` of its own may use `extends: .not-on-tick`. On gitlab.com shared runners every job counts
+# against the compute quota (the safety net alone is about 1,440 jobs a month): run the steward jobs on the
+# project's own runner (`tags:`).
 
 .not-on-tick:
   rules:
-    - if: '$MERGE_STEWARD == "tick"'
+    - &not_on_tick
+      if: '$MERGE_STEWARD == "tick"'
       when: never
 
+# A REAL stage, never `.pre`/`.post`: GitLab does not run a pipeline whose only jobs are in `.pre` or `.post`, and
+# a tick pipeline holds this one job. Append `merge-steward` to the project's `stages:` list (its position does
+# not matter — nothing else runs in a tick pipeline).
 merge-steward:
-  stage: .pre
+  stage: merge-steward
   image: {{PYTHON_IMAGE}}
   resource_group: merge-steward # one tick at a time; a tick is never cancelled
   interruptible: false

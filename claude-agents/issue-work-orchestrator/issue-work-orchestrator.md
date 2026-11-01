@@ -34,6 +34,7 @@ runs AFTER the unblocked work, in the FOREGROUND and bounded (`parallel-by-defau
 through `scripts/run_tests.py`, which holds a host-wide suite slot
 (`.claude/rules/native-tools-over-shell.md`, always loaded). How a green PR lands, deploys and is verified is
 `.claude/docs/delivery.md` — read it at the PR phase; `config/delivery.json` selects the mode.
+"PR" means a GitLab merge request on GitLab, and `#n` its `!iid` (the steward's machine lines keep the literal `PR #<n>` form on both hosts).
 
 ## Per-run state (CRITICAL — never share state files between runs)
 
@@ -179,7 +180,7 @@ comment-issue, update-issue (title/description only for the claim — see below)
 `issue release`, `issue claim-check`, and the additive `issue label-add`/`issue
 label-remove`/`issue assign`** (GitHub `start-issue`/`release-issue`/`claim-check`),
 plus best-effort start/end date, time-spent, parent/epic link, and checklist-item
-toggle, create-pr, get-pr / get-pr-checks, the blocking `wait-run` (GitLab `pipeline wait`), and — by the
+toggle, create-pr, get-pr / get-pr-checks, the blocking `wait-run` (GitLab `pipeline wait <id> --timeout-seconds 540`), and — by the
 delivery mode — `enqueue-pr` / `dequeue-pr` / `queue-status` (merge steward) or approve-pr / merge-pr /
 delete-remote-branch (direct merge), plus list-runs/get-run/get-logs. NEVER set the in-progress label via a whole-set
 `update-issue --labels` replace (it drops other labels) — always claim via `issue start`
@@ -388,8 +389,8 @@ iteration's list (discipline A).
    with `issue update --labels` — a full-set replace silently drops other labels
    (**issue-tracking** rule).
    - **If `issue start` exits non-zero** (closed/claimed in this window, or the claim
-     verification failed): RELEASE your local lock (`rmdir`/remove
-     `.locks/issue-<X>.lock`) and return to step 1 for the next candidate. Never proceed
+     verification failed): RELEASE your local lock (`.locks/issue-<X>.lock`, as "Run registry &
+     locks" says) and return to step 1 for the next candidate. Never proceed
      on an unverified claim.
    - **On success:** the in-progress label + assignee are set and verified. Then set the
      remaining metadata the claim command does not own, best-effort per the
@@ -488,7 +489,7 @@ large tangled merge at PR time, and it avoids overwriting work that landed meanw
    issue), move issue X to the back of this run's `issue_queue.md`, RELEASE the claim
    with the wrapper's `issue release <X>` (removes the in-progress label and unassigns so
    others/you can pick it up once answered) AND release the local lock
-   (`rmdir .locks/issue-<X>.lock`), tear down the worktree
+   ("Run registry & locks"), tear down the worktree
    venv if any, remove the worktree (per keep-git-clean — no stale worktree), and SELECT
    the next issue rather than idling (do not guess). You do NOT need to set
    `AWAITING_USER` for this — you
@@ -613,9 +614,9 @@ The queue, the deploy and the post-deploy check are not this run's to wait for
    `merge-steward: queued PR #<n>` and `merge-steward: claim-started <ISO>` lines verbatim). Append
    `Phase: DONE` + `Status: COMPLETED` to `workflow_state.md`.
 3. Clean up exactly as MERGE_CLEANUP step 2 (nothing unpushed — asserted; venv first; worktree; local
-   branch) but KEEP the remote branch and the tracker claim: the issue is in flight until the watcher
-   verifies it, and the steward or the watcher releases the claim if it comes back. Release the local lock
-   (`rmdir .locks/issue-<X>.lock`) and refresh the registry heartbeat.
+   branch) but KEEP the remote branch (deleting a PR's head branch closes the GitHub PR and leaves a GitLab MR
+   without its source; the host's delete-on-merge setting removes it after the landing) and the tracker claim: the issue is in flight until the watcher
+   verifies it, and the steward or the watcher releases the claim if it comes back. Release the local lock ("Run registry & locks") and refresh the registry heartbeat.
 4. Mark it `handed off` in `issue_queue.md`, append a `DL-NNN`, append `Phase: LOAD_ISSUES` (never a
    terminal value: this loop goes on) and continue at refresh → LOAD_ISSUES at once.
 
@@ -637,8 +638,8 @@ host didn't auto-delete):
    `--force` ONLY after confirming no uncommitted work would be lost), then
    `git branch -D issue-<X>-<slug>`. Verify NO leftover files: `git worktree list` no
    longer shows it and the directory is gone.
-3. **Release the local lock and update the registry.** Remove `.locks/issue-<X>.lock`
-   (`rmdir`), clear `CURRENT_ISSUE` in `resume_state.md` (APPEND a new block), and refresh
+3. **Release the local lock and update the registry.** Release `.locks/issue-<X>.lock` ("Run
+   registry & locks"), clear `CURRENT_ISSUE` in `resume_state.md` (APPEND a new block), and refresh
    this run's registry `status`/`last_heartbeat` (the registry entry has no
    `current_issue` key — `run-identity.md` §1).
 4. **Post-merge CI on the trunk (`verification: session` only) — this is where the end-to-end check
@@ -776,7 +777,10 @@ your heartbeat at every checkpoint.
 
 Per-issue locks live in `.locks/issue-<N>.lock` (a DIRECTORY created with `mkdir` —
 atomic create-or-fail on every filesystem including NTFS; never rename-over-existing).
-The owning `run_id` + a timestamp are written inside. SELECT acquires the lock before
+The owning `run_id` + a timestamp are written inside, so the directory is never empty: RELEASE it
+by reading that owner record and, only when it names THIS run's `run_id`, removing the directory with
+its record (`rm -r .locks/issue-<X>.lock` — `rmdir` refuses a non-empty directory); a lock another run
+owns is never removed (stale reclaim below). SELECT acquires the lock before
 claiming on the remote; RESOLVE / MERGE_CLEANUP / the ambiguous-issue release remove it.
 
 Stale reclaim — a lock or run is reclaimable ONLY when ALL of `run-identity.md` §1's

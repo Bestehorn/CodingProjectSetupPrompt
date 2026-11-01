@@ -22,7 +22,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "reap_agent_temp.py"
-TWO_HOURS = 2 * 3600
 FILE_BYTES = 100
 
 
@@ -37,6 +36,10 @@ def _load():
 
 reaper = _load()
 
+#: Old enough for every age test the reaper applies — derived from its own constants, so a project that tunes
+#: the quiet window or the adoption grace keeps a test suite that still means what it says.
+OLD_ENOUGH = int(4 * 60 * max(reaper.DEFAULT_QUIET_MINUTES, reaper.ADOPT_GRACE_MINUTES))
+
 
 def make_tree(base: Path, name: str, files: int = 5, depth: int = 2) -> Path:
     """A residue-shaped directory holding `files` files of FILE_BYTES bytes, `depth` levels down."""
@@ -50,7 +53,7 @@ def make_tree(base: Path, name: str, files: int = 5, depth: int = 2) -> Path:
     return target
 
 
-def age(path: Path, seconds: int = TWO_HOURS) -> None:
+def age(path: Path, seconds: int = OLD_ENOUGH) -> None:
     """Make a top-level entry look untouched for `seconds`. Call it LAST: adding a child resets mtime."""
     stamp = time.time() - seconds
     os.utime(path, (stamp, stamp))
@@ -90,6 +93,27 @@ def test_patterns_are_anchored_and_case_insensitive():
     assert not reaper.matches_residue("not-jsii-kernel-abc")
     assert not reaper.matches_residue("my-cdk.out")
     assert not reaper.matches_residue("_cacache")
+
+
+def test_a_hard_linked_file_is_counted_once_where_its_last_link_goes(temp_root, project, tmp_path, capsys):
+    """Bytes count only when an unlink frees them: a pair of links inside the quarantine counts once, and a
+    file whose other link lives OUTSIDE it counts nothing (reported as hard-linked instead)."""
+    entry = make_tree(temp_root, "jsii-kernel-links", files=0)
+    folder = entry / "d0" / "d1"
+    (folder / "pair-a.bin").write_bytes(b"p" * 300)
+    os.link(folder / "pair-a.bin", folder / "pair-b.bin")
+    (folder / "kept-elsewhere.bin").write_bytes(b"k" * 50)
+    outside = tmp_path / "kept.bin"
+    os.link(folder / "kept-elsewhere.bin", outside)
+    age(entry)
+
+    code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))
+
+    assert code == 0 and not entry.exists()
+    assert data["deleted_files"] == 3
+    assert data["reclaimed_bytes"] == 300, "the pair's 300 bytes once; the externally linked file's 50 never"
+    assert data["hard_linked_files"] == 2, "the pair's first link and the externally linked file"
+    assert outside.read_bytes() == b"k" * 50, "a file outside the temp root is never touched"
 
 
 def test_report_mode_counts_matched_only_and_deletes_nothing(temp_root, project, capsys):
@@ -151,7 +175,7 @@ def test_a_name_ending_in_a_space_never_resolves_to_its_twin(temp_root, project,
     os.makedirs(reaper.long_path(str(spaced / "d0")))
     with open(reaper.long_path(str(spaced / "d0" / "f.txt")), "wb") as handle:
         handle.write(b"s" * 5)
-    stamp = time.time() - TWO_HOURS
+    stamp = time.time() - OLD_ENOUGH
     os.utime(reaper.long_path(str(spaced)), (stamp, stamp))
 
     code, data = run_json(capsys, *reap("--temp-root", str(temp_root), "--project-dir", str(project)))

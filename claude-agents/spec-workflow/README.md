@@ -321,7 +321,7 @@ through `CLAUDE_PROJECT_DIR`, and a missing dispatcher failing OPEN instead of p
 | Event | Dispatcher event | Gates it runs (discovered from `gate_*.py`, in `ORDER`) |
 |---|---|---|
 | SessionStart (no matcher) | `session-start` | `session-register` (seeds the state the gates read), `scoped-temp-init` (creates `tmp/os-temp` AND self-writes the `settings.local.json` env block when missing) and, for sources compact/resume/startup, `continuous-work-reinject` |
-| PreToolUse (`Bash`; widen to `Bash\|Write\|Edit` when a project gate declares those `TOOLS`) | `pre-tool-use` | `no-env-vars`, `no-foreground-sleep`, `spec-tdd-gate`, `claim-before-worktree`, `merge-steward`, `issue-filing-gate`, then any project gate with `ORDER` above 100; the first block wins |
+| PreToolUse (the matcher `registration` derives: the union of the gates' `TOOLS` — never edited by hand) | `pre-tool-use` | `no-env-vars`, `no-foreground-sleep`, `spec-tdd-gate`, `claim-before-worktree`, `merge-steward`, `issue-filing-gate`, then any project gate with `ORDER` above 100; the first block wins |
 | Stop | `stop` | `spec-stop-gate` (the evidence gate), `no-idle-wait` and `issue-loop-gate` (the primary brake); any refusal blocks |
 | StopFailure | `stop-failure` | `stop-failure-recorder` (records an API-error turn end; the event cannot block) |
 
@@ -331,18 +331,9 @@ registration.
 
 Registering the Stop gates without `session-register` is the configuration that produced
 the measured failure: with nothing seeding `runs/<run-id>/`, both gates resolved no state and
-exited 0 on every turn-end for 189 sessions. Add to root `CLAUDE.md`:
-"All agents follow `.claude/rules/agent-state-convention.md` for state and decision
-logging, `.claude/rules/no-ai-attribution.md` for descriptive names with no
-Claude/AI attribution in commits, PRs, issues, branches, or worktrees,
-`.claude/rules/issue-filing-discipline.md` for when an issue may be filed at all
-(observed defects only, fix-first, zero filings is a valid outcome), and
-`.claude/rules/ci-owns-the-test-suite.md` for where tests run (affected tests locally,
-full suite in CI; commit often, push once; fix every failure a CI run reports in one
-pass), and `.claude/rules/native-tools-over-shell.md` for how files are touched (Read/
-Grep/Glob/Write/Edit, never `cat`/`grep`/`ls`/heredocs through Bash; one shell call per
-step; no foreground sleep; suites through the runner's host-wide slot)."
-`ClaudeCodeSetupPrompt.txt` (Part 12) does all of this for you.
+exited 0 on every turn-end for 189 sessions. Root `CLAUDE.md` names the fleet rules in the
+one-line-per-rule "Fleet conventions" section of `ClaudeCodeSetupPrompt.txt` Part 8.1 / 12.3
+(the rules themselves load into every session); Part 12 does all of this for you.
 
 ## Durable state (preserved for later agents)
 

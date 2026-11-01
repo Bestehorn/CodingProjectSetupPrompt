@@ -97,6 +97,10 @@ def main(argv: Optional[list] = None) -> int:  # noqa: C901 — argument checks 
     )
     parser.add_argument("--timeout-seconds", type=float, required=True)
     args = parser.parse_args(argv)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass  # a replaced stream (a test's capture) keeps its own encoding
     if not args.file and not args.pid:
         parser.error("give --file and/or --pid")
     if args.line and not args.file:

@@ -58,7 +58,12 @@ reason, not delegated to a person.
    false for it — a worker bound, a script it deliberately does not install — and a verbatim
    copy silently reverts that. Record each such kept correction in the update PR. The same
    holds for a line a clean merge carries into a project-specific command: a project that
-   keeps its own reaper keeps its own close-out reaper command, not the framework's flags. The
+   keeps its own reaper replaces the reaper command block of `/close-session` step 5 and the
+   exit-code sentence after it with its own reaper's bounded form and run-again code — never
+   the framework's flags on a reaper that does not take them. A project document or test that
+   cites a framework phase fragment or command cites its section HEADING, never a line number:
+   an update shifts lines (2026-10-26 moved every line after `spec-phase-implement.md`'s
+   batch-boundary section). The
    first commit of the update carries the pre-commit config, `scripts/memory_compile.py` and
    the compiled memory files TOGETHER: the `memory-reconcile` hook that config installs runs
    the tool against the ledger at commit time.
@@ -81,7 +86,12 @@ reason, not delegated to a person.
    checkout holds work, record that as the single post-merge step in the PR and say so in
    your final message. Then run `python .claude/hooks/hooks.py selftest` in the main
    checkout and confirm `.claude/agent-state/issue-work-orchestrator/.hook-decisions/`
-   gains lines from sessions you did not run.
+   gains lines from sessions you did not run. When no other session works this clone, there
+   are none to wait for, and the proof is a probe from the main checkout instead:
+   `printf '{"session_id":"update-probe","cwd":"%s","hook_event_name":"Stop"}' "$PWD" | python
+   .claude/hooks/hooks.py stop` exits 0 and today's `.hook-decisions/<date>.log` gains a line
+   stamped after the merge; say in the final message that lines from live sessions are still
+   to come.
 
 ## The memory compile (mandatory on every existing project)
 
@@ -124,7 +134,12 @@ of this in the same PR, in this order, and record the before/after sizes:
    ledger only — the archived copy carries the same status. Add `docs/findings-ledger.md
    merge=union`, `docs/lessons-learned.md merge=union` and `docs/archive/*.md merge=union` to
    `.gitattributes` in the same commit: parallel PRs that each append a row no longer conflict,
-   and `reconcile` drops the exact duplicate row a union merge can carry. Rows are committed in
+   and `reconcile` drops the exact duplicate row a union merge can carry. A project with a
+   RECORDED refusal of `merge=union` (a decision-log entry, a test that guards it) keeps the
+   refusal and skips the attribute — its recorded decision wins — and accepts the consequence:
+   two PRs that each append a ledger row conflict when the second is merged onto the new trunk,
+   come back as `queue-conflict`, and are integrated by `code-merge-reviewer` (both rows kept)
+   and re-enqueued. Rows are committed in
    the change they came from, before its push — never a ledger-only PR after it.
 4. **The map is a map.** Rewrite `docs/forLLMConsumption.md` to ≤ 40,000 bytes: purpose,
    architecture in brief, where things are, the invariants a change must respect, how to
@@ -160,7 +175,13 @@ of this in the same PR, in this order, and record the before/after sizes:
    delta table and MERGED (framework change applied on top, project change kept, conflicts
    flagged in the PR), never replaced blind; `tests/` modules the project added stay. Re-run
    `hooks.py registration` whenever a gate is added or removed: the matcher of a tool event
-   is the union of the gates' declared tools. Three seams a project's own tests and guards
+   is the union of the gates' declared tools, so a re-paste can CHANGE it (a project gate on
+   `Write`/`Edit` widens the PreToolUse matcher) — a project test that pins the matcher to
+   exactly `Bash` must assert the value `registration` derives instead. `python
+   .claude/hooks/hooks.py registration --check` compares the pasted block with what
+   `registration` prints: exit 0 equal, 1 with a short diff of the differing events, 2 when
+   `.claude/settings.json` is missing or does not parse; `hooks.py selftest` reports it as one
+   WARN line. Three seams a project's own tests and guards
    may feel are listed in `MIGRATION.md` §8 — the launcher spells the dispatcher path as
    joined parts (grep `settings.json` for `hooks.py`, never for `.claude/hooks/`), a missing
    dispatcher is a fail-open by design, and the env-var gate reads quotes with its own
@@ -201,8 +222,8 @@ of this in the same PR, in this order, and record the before/after sizes:
    `python scripts/memory_compile.py report` exits 0; the hook suites pass
    (`python -m pytest .claude/hooks/tests -q -o addopts= -p no:cacheprovider` — the override
    keeps the project's xdist/coverage settings out of a suite that must print its own totals)
-   and `python .claude/hooks/hooks.py selftest` passes — it spawns the launcher exactly as the
-   harness does, so a hook that cannot start on this host is caught here and not in a
+   and `python .claude/hooks/hooks.py selftest` passes and `python .claude/hooks/hooks.py
+   registration --check` exits 0 — the selftest spawns the launcher exactly as the harness does, so a hook that cannot start on this host is caught here and not in a
    transcript; a project that extends the hooks runs its own tests too — parity is the
    framework suite AND the project's own `tests/` modules passing in that same invocation;
    `python scripts/suite_semaphore.py selftest` passes;
@@ -230,7 +251,8 @@ it is the order `.claude/hooks/MIGRATION.md` §9 gives:
    recorder never runs. The wrapper gains `enqueue-pr`, `dequeue-pr` and `queue-status`,
    delegating to `scripts/merge_steward.py` (setup prompt Part 5.3). Nothing changes behaviour
    until `config/delivery.json` says so.
-2. **PR 1 — this update.** Install `scripts/merge_steward.py`, `test/test_merge_steward.py`, the
+2. **PR 1 — this update.** Install `scripts/merge_steward.py`, `test/test_merge_steward.py`,
+   `test/test_wrapper_delivery.py` (the wrapper's delivery verbs: `steward_delegate`, token on stdin), the
    steward workflow (`{{CI_WORKFLOW_NAME}}` = the `name:` of the CI workflow; GitLab: the
    `merge-steward` and `steward-wake` jobs and the 30-minute schedule; `{{STEWARD_RUNS_ON}}` /
    `{{DEPLOY_RUNS_ON}}` = the `runs-on` the CI jobs already use, never a hosted label the repository
@@ -281,7 +303,7 @@ registered run's next turn-end and at every compaction, and the freshness check 
 registered run once per later revision with the fast-forward instruction. Leave both
 channels intact: install `REVISION_NOTICE.md` and `CONTRACT_VERSION` as-is, and do not
 delete the notice before its `Valid-until` date. The 2026-10-26 revision
-(`CONTRACT_VERSION` `2026.10.30-delivery-6`, REVISION_NOTICE items 9 and 11) reaches a live session
+(`CONTRACT_VERSION` `2026.10.31-delivery-7`, REVISION_NOTICE items 9 and 11) reaches a live session
 the same way; a process that started before it has no run watchdog until the brake's refusal
 names the `CronCreate` that arms one.
 

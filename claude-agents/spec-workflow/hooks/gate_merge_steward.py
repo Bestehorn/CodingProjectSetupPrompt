@@ -14,8 +14,10 @@ trust boundary is the default branch's copy in CI. Allowed: everything else, inc
 and `enqueue-pr` / `dequeue-pr` / `queue-status`.
 
 Fail-open, each deliberate: no or unreadable delivery config (the defaults are today's direct-merge path); a
-command that does not parse. Quoted text is stripped before matching, so a commit message or a PR body that
-MENTIONS a merge is not one.
+command that does not parse. Commands are read by TOKENS on the quote-masked text: a quoted commit message or PR
+body that MENTIONS a merge is one token of data, never a command — while a quoted script PATH (`python
+"scripts/merge_steward.py" tick`) is restored and read like an unquoted one, and options before the subcommand
+(`--config x`, `--token-file f`, `--verbose`) are skipped, so neither hides a `tick` or a `merge-pr`.
 """
 
 from __future__ import annotations
@@ -32,19 +34,20 @@ ORDER = 35  # framework gates 10..90: after claim-before-worktree (30), before i
 SHELL_TOOLS = {"Bash", "shell", "execute_bash", "execute_cmd", "executeBash"}
 TOOLS = SHELL_TOOLS  # PreToolUse only: the tool names this gate judges
 
-# The script name must start a path component (`scripts/github_wrapper.py`, not `test_github_wrapper.py`) and the
-# subcommand must be its first argument, so `pytest test/test_github_wrapper.py -k merge-pr` is not a merge.
-WRAPPER_MERGE_RE = re.compile(r"(?<![\w-])(?:github|gitlab)_wrapper\.py['\"]?\s+(?:merge-pr\b|mr\s+merge\b)")
+# The scripts whose subcommands this gate judges, by their file name (`test_github_wrapper.py` is not one), and the
+# options of theirs (or of a wrapped command) that take the NEXT token as their value; `--x=y` is one token.
+SCRIPT_KINDS = {"github_wrapper.py": "wrapper", "gitlab_wrapper.py": "wrapper", "merge_steward.py": "steward"}
+SCRIPT_VALUE_OPTIONS = {"--config", "--token-file", "-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+STEWARD_CI_COMMANDS = {"tick", "verdict"}
+PYTHON_RE = re.compile(r"^(?:python[\d.]*|py)(?:\.exe)?$", re.IGNORECASE)
 CLI_MERGE_RE = re.compile(r"(?:^|[;&|\s(])(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
 API_MERGE_RE = re.compile(r"/pulls/\d+/merge\b|/merge_requests/\d+/merge\b")
-STEWARD_CI_RE = re.compile(
-    r"(?<![\w-])merge_steward\.py['\"]?(?:\s+--token-(?:stdin|file(?:=\S+|\s+\S+)))*\s+(?:tick|verdict)\b"
-)
 SEGMENT_RE = re.compile(r"\|\||&&|[;|&\n]")
 QUOTED_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'')
-# git options that take a VALUE in the next token (between `git` and its subcommand, or after `push`).
+# git options that take a VALUE in the next token (between `git` and its subcommand, or after `push`). NOT
+# `--signed`: its value is optional and only ever attached (`--signed=yes`), so it never swallows the refspec.
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
-PUSH_VALUE_OPTIONS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec", "--signed"}
+PUSH_VALUE_OPTIONS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 PUSH_EVERYTHING = {"--all", "--mirror", "--branches"}
 
 
@@ -65,6 +68,47 @@ def mask_quotes(command: str) -> Tuple[str, Dict[str, str]]:
 
 def _tokens(segment: str) -> List[str]:
     return segment.split()
+
+
+def _basename(token: str) -> str:
+    return token.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+
+
+def _positionals(args: List[str]) -> List[str]:
+    """The non-option arguments, in order: an option is skipped, and a value option takes the next token too."""
+    found: List[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg.startswith("-") and len(arg) > 1:
+            skip = "=" not in arg and arg in SCRIPT_VALUE_OPTIONS
+            continue
+        found.append(arg)
+    return found
+
+
+def script_call(segment: str, quoted: Dict[str, str]) -> Optional[str]:
+    """The offending text when this (masked) command segment runs the wrapper's merge or the steward's CI-only
+    subcommand. A QUOTED token is a script only when it is a path (no whitespace) or follows an interpreter in
+    the same segment — so a quoted path with spaces after `python` counts, and a commit message does not."""
+    masked = _tokens(segment)
+    tokens = [quoted.get(token, token) if token.startswith("QUOTED") else token for token in masked]
+    for index, token in enumerate(tokens):
+        kind = SCRIPT_KINDS.get(_basename(token))
+        if kind is None:
+            continue
+        if masked[index].startswith("QUOTED") and any(ch.isspace() for ch in token):
+            if not any(PYTHON_RE.match(_basename(earlier)) for earlier in tokens[:index]):
+                continue
+        rest = _positionals(tokens[index + 1 :])
+        called = f"{_basename(token)} {' '.join(tokens[index + 1 :])}".strip()
+        if kind == "steward" and rest[:1] and rest[0] in STEWARD_CI_COMMANDS:
+            return called
+        if kind == "wrapper" and (rest[:1] == ["merge-pr"] or rest[:2] == ["mr", "merge"]):
+            return called
+    return None
 
 
 def _current_branch(directory: Path) -> str:
@@ -135,17 +179,15 @@ def run(ctx: lib.Context) -> lib.Decision:
     trunk = settings["trunk"]
     active = lib.strip_quoted(command)
     offending = None
-    for pattern in (WRAPPER_MERGE_RE, CLI_MERGE_RE, STEWARD_CI_RE):
-        match = pattern.search(active)
-        if match:
-            offending = match.group(0).strip()
-            break
+    match = CLI_MERGE_RE.search(active)
+    if match:
+        offending = match.group(0).strip()
     if offending is None and API_MERGE_RE.search(command) and re.search(r"\b(curl|wget|Invoke-RestMethod)\b", active):
         offending = API_MERGE_RE.search(command).group(0)  # type: ignore[union-attr]
     if offending is None:
         masked, quoted = mask_quotes(command)
         for segment in SEGMENT_RE.split(masked):
-            found = trunk_push(segment, trunk, ctx.project_dir, quoted)
+            found = script_call(segment, quoted) or trunk_push(segment, trunk, ctx.project_dir, quoted)
             if found:
                 offending = found
                 break

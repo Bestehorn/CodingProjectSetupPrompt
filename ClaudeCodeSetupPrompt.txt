@@ -138,6 +138,18 @@
 #     steering copies are three-way merged (front matter from the export); the memory report caps
 #     each host's scoped rules on its own; the kernel's delivery text is cut to its norms (its
 #     growth 6.5 KB -> 2.0 KB). `CONTRACT_VERSION` 2026.10.30-delivery-6.
+#   - 2026-10-31: SIXTH ROUND OF PROJECT FEEDBACK (a GitLab project on the delivery redesign, 30
+#     items). GitLab: the tick job leaves `.pre` for a real stage (a pipeline of only `.pre`/`.post`
+#     jobs never runs); `.not-on-tick` goes into each job's own `rules:` (`!reference` or anchor); a
+#     deploy job allowed to fail counts as passed. Steward: judged batch ids stay taken (a fast runner
+#     rebuilt one); a sign-in page is a host error and `steward.cookie_file` serves an authenticating
+#     proxy; no token from a tracked file — the wrapper's `steward_delegate` passes it on stdin
+#     (`test_wrapper_delivery.py`); git runs without inherited `GIT_DIR`; the API root is derived;
+#     `steward.reference_keywords`; wrapper waits default to 540 s; archive hosts refuse delivery
+#     verbs. Gates: merge-steward bypasses (global options, quoted paths, `--signed`) and `commit -S
+#     -n` / `-u -n` closed; `hooks.py registration --check`; discovery invalidates import caches.
+#     Docs: lock release removes the owner record; the CLAUDE.md framework text is about 3 KB; MCP
+#     servers pinned and pre-warmed. `CONTRACT_VERSION` 2026.10.31-delivery-7.
 
 ---
 
@@ -318,6 +330,14 @@ Notes carried over from the Kiro standard (still true here):
   console-script form is required for Claude Code's stdio launch). If a server
   fails to start on Windows, fall back to
   `["--from", "<pkg>@latest", "<pkg>.exe"]` and record it in the report.
+- `uvx <pkg>@latest` RESOLVES the package on every start (an index lookup, and a download
+  when a new version is out), which can take far longer than the client's connect timeout:
+  the server then shows as failed although nothing is wrong with it. Pin each server to the
+  version you verified (`<pkg>==x.y.z` in `args`, also inside the `--from` form), start it
+  once by hand with that exact `uvx` line so the cache is warm, and — for a server that still
+  starts slowly — raise Claude Code's startup timeout with `"MCP_TIMEOUT": "60000"`
+  (milliseconds) in the `env` block of `.claude/settings.json`, never as a shell variable
+  (`no-environment-vars.md`). Record the pinned versions in the report; bump them on purpose.
 
 ### Part 0.2 — Auto-approve the MCP tools (permissions, not autoApprove)
 
@@ -1247,8 +1267,9 @@ A project extends the dispatcher without a second registration: a `gate_<name>.p
 `hooks.py` that declares `HOOK`, `EVENT` (`session-start` | `pre-tool-use` | `stop` |
 `stop-failure`),
 `ORDER` (above 100; the framework's gates use 10..90), optionally `TOOLS` (the tool names it
-judges — a `Write`/`Edit` gate declares `{"Write", "Edit"}` and the project widens the
-PreToolUse `matcher` to `Bash|Write|Edit`), and `run(ctx) -> Decision`. A project that must
+judges — a `Write`/`Edit` gate declares `{"Write", "Edit"}`, and the next `hooks.py
+registration` DERIVES the PreToolUse `matcher` from every gate's `TOOLS`; never edit the
+matcher by hand), and `run(ctx) -> Decision`. A project that must
 switch a framework gate off writes `.claude/hooks/hooks.config.json` with
 `{"disabled_gates": ["<HOOK name>"]}`; the self-test honours it. A project gate that fails to
 import is skipped with a note and never takes the framework's gates down with it.
@@ -1392,7 +1413,21 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    (`batch_size` 4; `parallel_trains` true for elastic runners such as CodeBuild-hosted ones —
    false tests one PR per round, the fewest runner minutes).
    An unknown key is an error, never a silent default; a label name is changed through its
-   `*_label` key.
+   `*_label` key. `reference_keywords` (default `refs`, `references`) are the words that make
+   `<word> #N` a reference the steward acts on — never a closing keyword; `cookie_file` names a
+   gitignored Netscape cookie file for an authenticating proxy in front of the host (sent with every
+   API call and git push; a sign-in page in place of JSON is a host error that names this key);
+   `github_api`, `gitlab_url` and `gitlab_project` are empty by default and derived from the remote
+   (GitHub Enterprise: `<host>/api/v3`), so the file names no API host. `host` is the ONE host the
+   queue lives on: a second host kept as a read-only archive or mirror gets no steward, no labels and
+   no delivery workflow, and its wrapper's delivery verbs refuse.
+   **The token.** The wrapper's delivery verbs (`steward_delegate` in the wrapper template, pinned by
+   `templates/test_wrapper_delivery.py.template` → `test/test_wrapper_delivery.py`) hand the
+   wrapper's own token to the steward with `--token-stdin`; CI passes its token on stdin (GitHub) or
+   as a FILE variable (`--token-file`, GitLab). Without a token option the steward reads
+   `credentials/github-pat.txt`, or the `token` of `config/gitlab.json` only while git ignores that
+   file — never a tracked file. It runs git without any inherited `GIT_DIR`-style variable, so a
+   steward started from a git hook acts on its own clone.
 2. **The steward's CI, event-driven.** GitHub: `templates/ci/github-merge-steward.yml.template`
    → `.github/workflows/merge-steward.yml`, with `{{CI_WORKFLOW_NAME}}` set to the `name:` of the
    project's CI workflow. A tick runs when `enqueue-pr` dispatches one (`workflow_dispatch`), when
@@ -1418,7 +1453,13 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    read with `--token-file`), the `steward-wake` bridge job that ends every train pipeline by
    starting a tick, a 30-minute safety-net schedule with `MERGE_STEWARD=tick`, the
    `.not-on-tick` rule on every other job, and train branch pipelines admitted and never
-   auto-cancelled; on gitlab.com shared runners, put the steward jobs on the project's own
+   auto-cancelled. The `merge-steward` job is in a REAL stage (`merge-steward`, appended to
+   `stages:`): GitLab runs no pipeline whose only jobs are in `.pre`/`.post`, and a tick pipeline
+   holds that one job. The `.not-on-tick` rule goes INTO each job's own `rules:` list —
+   `- !reference [.not-on-tick, rules]` (across includes) or the `*not_on_tick` anchor (same file);
+   `extends: .not-on-tick` only works for a job without rules of its own, because a job's `rules:`
+   replaces an extended list. `delivery-verdict` counts a deploy job that failed but that the jobs
+   API reports as allowed to fail (`allow_failure: true`) as passed, as the pipeline counts it; on gitlab.com shared runners, put the steward jobs on the project's own
    runner (compute quota). A Premium/Ultimate instance may use GitLab's own merge trains
    instead of the steward job; `"merge": "steward"` then still keeps agents off the trunk.
 3. **One writer of the trunk; trunk CI is never cancelled.** Branch protection lets the
@@ -1504,105 +1545,47 @@ Template:
 ```markdown
 # Project Engineering Standards (Claude Code)
 
-This project is configured for both Kiro and Claude Code. Detailed rules live
-in `.claude/rules/`. The non-negotiable essentials:
+The rule files in `.claude/rules/` without `paths:` load into every session and every agent;
+this file names each one with its core norm, and the rule file is the full text. Project
+facts the rules cannot know go under "This project".
 
-## Environment
-- ALWAYS work inside the project venv. Recreate it if missing/broken; never
-  `pip install` without it. See `.claude/rules/use-venv.md`.
-- NEVER set shell environment variables (AWS_PROFILE, GITHUB_TOKEN, …). Pass
-  profile/region explicitly; read credentials from config/ and credentials/.
-  See `.claude/rules/no-environment-vars.md`.
+## Always
+- The project venv for everything, recreated when broken (`use-venv.md`); never a shell
+  environment variable — profile and region passed explicitly, credentials read from
+  config/ and credentials/ (`no-environment-vars.md`).
+- JSON fields via constants, absolute imports, logging not print, named parameters,
+  exceptions with `details=None`, `pathlib`, 120 columns (`coding-standards.md`).
+- Every claim backed by output, a file, a test or a documentation lookup, no hedge words
+  (`no-guessing.md`); complete command output, never `tail`/`head` (`no-output-shortening.md`).
+- Tests pass; never skip, xfail or delete one to go green (`tests-must-not-fail.md`).
+- Pre-work: the `docs/forLLMConsumption.md` map, then grep the lessons and the ledger for the
+  component, never read whole (`pre-work.md`); post-work: affected tests, the map under its
+  cap, tmp/ empty — and the next step, not a stop (`post-activity.md`).
+- Documentation MCP servers before AWS/CDK/Strands/AgentCore APIs (`use-doc-mcp-servers.md`);
+  the end-to-end check is a script the pipeline runs after deploy (`always-test-e2e.md`).
 
-## Coding standards (no exceptions)
-- JSON field access via constants, not string literals.
-- Absolute imports only; logging not print; named parameters at all call sites.
-- Errors are exceptions (custom exceptions take a `details=None` kwarg).
-- `pathlib.Path`, never `os.path`. Line length 120.
-- Full detail: `.claude/rules/coding-standards.md`.
+## Fleet conventions (all agents and the main session)
+- `continuous-work.md`: work until finished; only the four Proven Exceptions end a turn early;
+  a question is five lines, recommended option first, asked at the START in one batch.
+- `proportionality.md`: the ASK fixes the tier S/M/L and its byte caps; scope frozen at review.
+- `parallel-by-default.md`: independent work in ONE message; a wait runs in the foreground,
+  bounded, never by ending the turn; under the merge steward a green PR is handed off
+  (`.claude/docs/delivery.md`).
+- `native-tools-over-shell.md`: Read/Grep/Glob/Write/Edit for files, one shell call per step,
+  suites through `scripts/run_tests.py`.
+- `ci-owns-the-test-suite.md`: affected tests locally, the full suite in CI; commit often,
+  push once; every failure of a red run fixed in one pass.
+- `agent-state-convention.md` + `.claude/docs/run-identity.md`: the registry's run id, plain
+  `Name: value` fields corrected by appending, the `DL-NNN` decision log.
+- `issue-tracking.md`: the issue is the live record; it closes only with every item ticked.
+- `issue-filing-discipline.md`: fix small observed defects; file only through issue-intake;
+  zero filings is normal; the rest is a findings-ledger row.
+- `keep-git-clean.md` and `no-ai-attribution.md`: no stale worktrees, branches or temp
+  files; descriptive names and messages, never an AI trailer.
+- Memory is compiled (`/compile-memory`): `test/test_instruction_corpus_budget.py` caps it.
 
-## Evidence and honesty
-- Every claim to the user is backed by command output, file contents, test
-  results, or a documentation lookup. No hedge words for actual behavior.
-  See `.claude/rules/no-guessing.md`.
-
-## Tests
-- Tests must pass. Never skip/xfail/delete a test to go green; fix the root
-  cause. See `.claude/rules/tests-must-not-fail.md`.
-
-## Before / after any task
-- Pre-work: read `docs/forLLMConsumption.md` — the ≤ 40 KB map of the project — and
-  follow its pointers only for the areas you touch. Grep `docs/lessons-learned.md`
-  and `docs/findings-ledger.md` for the component you touch; never read them whole.
-  See `.claude/rules/pre-work.md`.
-- Post-activity: run the affected tests + `run_checks.py`; keep
-  `docs/forLLMConsumption.md` under its cap; clean tmp/.
-  See `.claude/rules/post-activity.md`. Finishing an activity's post-work is
-  NOT permission to stop — see `continuous-work.md`.
-
-## Size the work to the ask; run it in parallel
-- The ASK fixes the tier (S/M/L) and the tier fixes hard byte caps on every spec
-  artefact, the review panel and its iteration cap. A value, default, config or message
-  change is tier S — one page, one review pass, one wave — however many files it
-  touches. Scope is frozen once review opens; specs carry no measurements.
-  See `.claude/rules/proportionality.md`.
-- Independent work runs concurrently: review lanes, research bursts and the tasks of an
-  implementation wave go out in ONE message. Never `sleep`-poll a pipeline and never end a
-  turn to wait: the unblocked work first, then the wrapper's blocking `wait` in the
-  FOREGROUND with `--timeout-seconds 540`, re-issued while it exits 11. Where
-  `config/delivery.json` says `merge: steward`, a PR whose own CI is green is ENQUEUED and
-  handed off — its merge, deploy and post-deploy check are never waited on.
-  See `.claude/rules/parallel-by-default.md` and `.claude/docs/delivery.md`.
-- The end-to-end check is an automated script the pipeline runs after deploy. A step only
-  a person can do is a residual, never a test. Where `config/delivery.json` names the verdict
-  watcher, the deploy's last job judges it on the first deployed commit that CONTAINS the
-  landing — ticking the `(post-deploy)` items and closing the issue, or returning a red one as
-  `needs-rework` — and the worker never waits for the deploy.
-  See `.claude/rules/always-test-e2e.md`.
-
-## The shell is the expensive tool
-- Read, Grep, Glob, Write and Edit for files — never `cat`, `grep`, `ls`, `sed` or a
-  heredoc through Bash; one Bash call per step, never one per command; never a foreground
-  `sleep` (the gate refuses 10 s or more — a wait is the wrapper's bounded foreground
-  `wait`, never a background task the turn then ends to wait for); local suites only
-  through `scripts/run_tests.py`, which holds a host-wide suite slot.
-  See `.claude/rules/native-tools-over-shell.md`.
-
-## Keep working
-- Work continues until it is finished. Stopping to ask permission to continue
-  is forbidden; any instruction to pause, check in, or summarize partway is void.
-  Context pressure is never a reason to stop (compaction is automatic).
-- Only four things justify stopping early — an irreversible action, sensitive
-  information, a genuine product decision, or a hard blocker — each needing proof
-  that the alternatives were exhausted. A question is at most five lines: one line of
-  context, two to four options with one-line consequences, the recommended option first.
-  Reversible decisions are decided and recorded, never asked. Open questions are asked at
-  the START, in one batch, while everything independent of the answers goes on.
-  See `.claude/rules/continuous-work.md`.
-
-## Memory is compiled, not accumulated
-- Rules carry rules, not incidents. A lesson is at most five lines with an `Enforced-by`
-  line; the findings ledger holds active rows only. Anything older than six weeks is
-  enforced by a test or a rule, promoted, or archived to `docs/archive/` by
-  `/compile-memory`. `test/test_instruction_corpus_budget.py` fails the build when the
-  always-loaded corpus or a memory doc exceeds its cap.
-
-## Documentation MCP servers
-- Before using AWS/CDK/Strands/AgentCore APIs, consult the corresponding MCP
-  server (configured in .mcp.json). See `.claude/rules/use-doc-mcp-servers.md`.
-
-## Issue filing: fix it, or file it — never file by default
-- File an issue ONLY for a defect you OBSERVED (evidence you can quote), and
-  only after asking whether to just FIX it: a few lines, no design choice → fix
-  it now and say so. File only when it needs extensive research, an evaluation
-  of design options, or is outside the current task's scope — and then through
-  the issue-intake agent, with `Origin:`/`Subject:`/`Filing-rationale:` lines.
-- Ending an activity with ZERO filed issues is normal and expected. Everything
-  else worth remembering goes to `docs/findings-ledger.md`.
-  See `.claude/rules/issue-filing-discipline.md`.
-
-## Read complete command output; never truncate with tail/head/Select-Object.
-  See `.claude/rules/no-output-shortening.md`.
+## This project
+- <what it is, where it deploys, the facts a session needs that no rule states>
 ```
 
 If a root `CLAUDE.md` already exists, MERGE (add missing sections; keep the
@@ -2195,7 +2178,8 @@ this prompt (leave any existing one alone).
    was installed, confirm the `hooks` object is the UNION of Part 6.2's and Part 12.2's
    entries (a second `"hooks"` key replaces rather than merges), that all THREE
    SessionStart hooks are registered, that the `StopFailure` entry
-   `hooks.py registration` prints is present, and that `hooklib.py` /
+   `hooks.py registration` prints is present (`python .claude/hooks/hooks.py registration
+   --check` exits 0; 1 prints the differing events), and that `hooklib.py` /
    `red_for_right_reason.py` / `CONTRACT_VERSION` are present on disk but registered as
    hooks NOWHERE.
 7a. Gate reachability — do not assume it, observe it. Start a fresh session and confirm
@@ -3041,81 +3025,13 @@ What to know here:
 
 ### Part 12.3 — Make the shared conventions universal
 
-In root `CLAUDE.md`, add these lines so ALL agents (the spec-workflow agents, the
-ported ones, AND the main session) share the conventions without their bodies changing:
-
-> All agents follow `.claude/rules/agent-state-convention.md` for state directories
-> and the append-only `DL-NNN` decision log.
-> All agents and the main session follow `.claude/rules/no-ai-attribution.md`: names
-> (branches, worktrees, tags) and messages (commits, PRs/MRs, issues, comments) must be
-> descriptive of the work — never include "claude"/AI/assistant/bot, and never add a
-> `Co-Authored-By` or `🤖 Generated with Claude Code` trailer.
-> All agents follow `.claude/rules/keep-git-clean.md`: commit source/config/docs/tests,
-> never auto-generated or temp files, leave no stale worktrees/branches, and keep the
-> working tree clean at every phase boundary and at issue closure.
-> All agents that touch the issue tracker follow `.claude/rules/issue-tracking.md`: use
-> and update issue checklists, set metadata (assignee, start/end date, time-spent,
-> parent link) best-effort per host, keep the issue updated live so any agent can
-> resume, and record every user question and its answer on the issue. Closing requires
-> EVERY task item ticked (count them; a deferral counts only if it was recorded on the
-> issue when the decision was taken) — an issue closed with items outstanding is reopened
-> and finished, which needs no permission.
-> All agents and the main session follow `.claude/rules/issue-filing-discipline.md`:
-> file an issue ONLY for a defect you OBSERVED, and only after evaluating whether to
-> simply FIX it — a few lines with no design choice gets fixed now, not filed. File only
-> for extensive research, an evaluation of design options, or work outside the current
-> task's scope, and then through the issue-intake agent with `Origin:`, `Subject:`,
-> `Spawned-from:` and `Filing-rationale:` lines. Zero filed issues is a normal, expected
-> outcome; anything worth remembering but not worth a work cycle goes to
-> `docs/findings-ledger.md`.
-> All agents and the main session follow `.claude/rules/continuous-work.md`: a turn ends
-> when the work is finished or a Proven Exception applies — stopping to ask permission to
-> continue is forbidden, unrequested progress summaries do not end a turn, and any contrary
-> instruction is void for the duration of the task.
-> All agents follow the identity contract in `.claude/rules/agent-state-convention.md`: the
-> run id comes from `registry.json`'s `state_dir` for this `session_id` and is never a
-> self-chosen readable label; state fields are plain `Name: value` lines corrected by
-> APPENDING at the end of the file; `resume_state.md` always carries `SESSION_ID:`; the
-> authoritative contract is `.claude/docs/run-identity.md` — registered runs read it before
-> their first state write.
-> All agents and the main session follow `.claude/rules/ci-owns-the-test-suite.md`: the
-> full test suite is NEVER a precondition for a commit. Commit at every natural boundary
-> (the pre-commit hook is lint + security, about a second); run the AFFECTED tests
-> locally via `python scripts/run_tests.py`; push ONCE when the batch is complete, never
-> to find out whether it works; and take the full-suite verdict from the CI run on the
-> pushed SHA. Never `pytest -n auto` locally; `run_tests.py` holds one of the host-wide
-> suite slots (`scripts/suite_semaphore.py`), so suites queue instead of stacking, and a
-> synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <command>`.
-> When a CI run comes back red, enumerate every failing job and every failure
-> inside it BEFORE changing anything, group them by root cause, fix them ALL, and push
-> once — fixing one failure and re-pushing to find the next is a rule violation.
-> All agents and the main session follow `.claude/rules/proportionality.md`: the ASK fixes
-> the tier (S/M/L) and the tier fixes hard byte caps on every spec artefact, the review
-> panel and its iteration cap; a value, default, config or message change is tier S however
-> many files it touches; scope is frozen once review opens; a spec cites symbols and never
-> carries a measurement.
-> All agents and the main session follow `.claude/rules/parallel-by-default.md`: review
-> lanes, research bursts and the tasks of an implementation wave are dispatched in ONE
-> message; a pipeline is awaited with the wrapper's blocking wait in the foreground,
-> bounded and re-issued — never with `sleep`, never by ending the turn; where
-> `config/delivery.json` says `merge: steward`, a PR whose own CI is green is enqueued and
-> handed off, and its merge, deploy and post-deploy check are not waited for.
-> All agents and the main session follow `.claude/rules/native-tools-over-shell.md`: files
-> are read, searched and written with Read, Grep, Glob, Write and Edit, never with `cat`,
-> `grep`, `ls`, `sed` or a heredoc through Bash; a shell step is ONE call; a wait you need
-> runs after the unblocked work, in the foreground and bounded (the `no-foreground-sleep`
-> gate refuses a foreground `sleep` of 10 s or more and any sleep in a loop); local suites go
-> through `scripts/run_tests.py`, which holds a host-wide suite slot.
-> Every question to the operator has the five-line shape of `continuous-work.md` — one line
-> of context, two to four options with one-line consequences, the recommended option first
-> — is asked at the START in one batch while independent work goes on, and reversible
-> decisions are decided and recorded, never asked.
-
-Because those rule files have no `paths:` frontmatter, they load every session and every
-agent observes them. The decision-log rule preserves decisions across agents and
-sessions (the user's state-driven requirement); the no-ai-attribution rule keeps the
-repository's history, branches, and tracker free of AI attribution and tool-generated
-names — applied to all agents, not only the new ones.
+The Part 8.1 template's "Fleet conventions" section is this part: one line per fleet rule with
+its core norm. An existing `CLAUDE.md` gains that section, merged per Rule 1 — never a second,
+longer copy of the rules. The norms themselves live in the rule files: they carry no `paths:`
+frontmatter, so they load into every session and every agent (the spec-workflow agents, the
+ported ones and the main session) whatever the root file says. Keep the framework's share of
+`CLAUDE.md` near 3,000 bytes so a real project stays well under the 8,000-byte target with its
+own facts; a paragraph that restates a rule's detail belongs in the rule, not here.
 
 ### Part 12.4 — .gitignore
 
