@@ -62,8 +62,8 @@ and has recorded no release: an idle `Status` (`NOT_STARTED` and its synonyms), 
 `Phase` or `Status` (`DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CLOSED`, `ABANDONED`,
 `ESCALATED`, whole-value), or a SUBSTANTIVE `AWAITING_USER` (a placeholder, an
 angle-bracketed token or a one-word answer is rejected). `Phase: HANDED_OFF` releases a
-SINGLE-issue run only — in this loop, handing one issue to the merge steward is a checkpoint
-and you go on to LOAD_ISSUES. Its polarity is inverted: a `Status`
+SINGLE-issue run only, after its PR LANDED and `check-handoff` passed — in this loop, a queued PR is
+a checkpoint recorded in `QUEUED_PRS`, and you go on to LOAD_ISSUES. Its polarity is inverted: a `Status`
 it does not recognise as idle is work in flight. `WORKABLE_ISSUES_REMAIN` gates NOTHING — it
 selects the refusal's wording — so set it to `no` at DONE for the reader's sake, never as a
 way to be allowed to stop. Record `Phase:` at every transition: it is one of the two fields
@@ -155,7 +155,7 @@ side.
 - **Non-Interruption.** You operate autonomously. Do NOT ask the user for permission to
   continue, to scope-reduce, or to acknowledge cost. The user authorized the full
   backlog by launching you. The ONLY permitted user interaction is a single batched
-  escalation when you are genuinely blocked (see Escalation), and the Completion Block
+  escalation when you are genuinely blocked (see Escalation), and the SESSION verdict
   when the run ends.
 - **Never ask which issue to do next (CRITICAL).** Issue selection and the decision to
   keep going are YOURS, never the user's. After finishing one issue you MUST immediately
@@ -246,7 +246,7 @@ D1. **Topology + venv + one-time git prerequisites.** Identify source/test layou
 D2. **ISSUE_MECHANISM.** Detect the wrapper script first (`scripts/*github*wrapper*`,
     `scripts/*gitlab*wrapper*`), else the mandated CLI if the project allows it. Record
     the exact invocation. If none is available, this is fatal — record `Phase: ABANDONED`
-    and stop with the Completion Block, verdict FAILED.
+    and stop with the SESSION verdict, `SESSION: NOT DONE — no git wrapper script; …`.
 D3. **Conventions.** Record the "in progress" convention (default: an issue is in
     progress if it has any assignee OR a label matching `in-progress`/`in progress`/
     `wip`/`doing`; the setup prompt may override this). Record the DELIVERY MODE from
@@ -269,10 +269,12 @@ Persist `Phase:` to `resume_state.md` after every transition.
 
 ```
 LOAD_ISSUES → SELECT → PREPARE → CLASSIFY → FIX → PROOF_GATE → DOCUMENT → PR
-            → HAND_OFF                         (merge: steward, or direct + verification: watcher)
-            → MERGE_CLEANUP → RESOLVE          (merge: direct + verification: session)
+            → QUEUE → (single issue) wait until LANDED → HAND_OFF     (merge: steward)
+                    → (loop) QUEUED_PRS, refresh → LOAD_ISSUES
+            → merge → HAND_OFF                                       (merge: direct + verification: watcher)
+            → MERGE_CLEANUP → RESOLVE                                (merge: direct + verification: session)
             → (refresh) LOAD_ISSUES
-SELECT with no workable issue → DONE
+SELECT with no workable issue → every QUEUED_PRS PR landed → DONE
 ```
 
 ## Two standing disciplines (apply throughout the loop)
@@ -621,26 +623,44 @@ descriptive message.
    K root causes` as a `DL-NNN` entry; fix EVERY group at root cause in the worktree
    (researched, no workarounds), committing as you go; then push ONCE and re-monitor —
    fixing one failure per push is forbidden. Loop until CI is green and record how many runs it took;
-   then HAND_OFF, or (`merge: direct` + `verification: session`) merge and go to MERGE_CLEANUP.
+   then QUEUE (`merge: steward`), merge and HAND_OFF (`merge: direct` + `verification: watcher`), or merge
+   and go to MERGE_CLEANUP (`merge: direct` + `verification: session`).
 
-## HAND_OFF (`merge: steward`, or `merge: direct` + `verification: watcher`)
-The queue, the deploy and the post-deploy check are not this run's to wait for
-(`.kiro/docs/delivery.md` §3–§4):
-1. `merge: steward`: `python scripts/<wrapper>.py enqueue-pr <PR>` — exit 4 prints why the queue refuses it;
-   fix that and re-run, never work around it. `merge: direct`: merge per step 5, confirm it landed
-   (`git merge-base --is-ancestor <merge-sha> origin/<main>`), then `python scripts/merge_steward.py
-   record-landing <PR>`.
-2. Post the hand-off note on the issue (§3: PR, evidence path, what the post-deploy check must show, the
-   `merge-steward: queued PR #<n>` and `merge-steward: claim-started <ISO>` lines verbatim). Append
-   `Phase: DONE` + `Status: COMPLETED` to `workflow_state.md`.
-3. Clean up exactly as MERGE_CLEANUP step 2 (nothing unpushed — asserted with `git log
-   origin/<branch>..<branch>` empty; venv first; worktree; local branch) but KEEP the remote branch (deleting a PR's head branch closes the GitHub PR and leaves a GitLab MR
-   without its source; the host's delete-on-merge setting removes it after the landing) and
-   the tracker claim: the issue is in flight until the watcher verifies it, and the steward or the watcher
-   releases the claim if it comes back. Release the local
-   lock ("Run registry & locks") and refresh the registry heartbeat.
-4. Mark it `handed off` in `issue_queue.md`, append a `DL-NNN`, append `Phase: LOAD_ISSUES` (never a
-   terminal value: this loop goes on) and continue at refresh → LOAD_ISSUES at once.
+## QUEUE (`merge: steward`) — the run owns the PR until it LANDS
+`.kiro/docs/delivery.md` §3:
+1. `python scripts/<wrapper>.py enqueue-pr <PR>` — exit 4 prints why the queue refuses it; fix that and
+   re-run, never work around it.
+2. Post the queued note on the issue with `merge-steward: queued PR #<n>` and `merge-steward: claim-started
+   <ISO>` verbatim, and APPEND `Phase: QUEUED` — not a release.
+3. **A single-issue run waits for the landing now:** `python scripts/<wrapper>.py wait-landed <PR>
+   --timeout-seconds 540` in the foreground, re-issued while it exits 11; it nudges a due steward tick itself
+   — never dispatch the steward or a deploy yourself. Exit 0 (`landed <sha>`) → HAND_OFF. Exit 10 (returned —
+   the reason is printed): re-claim the issue (`issue start <X>` / `start-issue <X>`; the steward released it),
+   fix every cause in ONE pass in the worktree (a conflict goes to `code-merge-reviewer`), push once, PR CI
+   green, enqueue again, wait again. After 3 returns, or 3 hours without a landing, APPEND `AWAITING_USER:
+   PR #<n> has not landed after 3 h — <queue state>` (or the return reason) and end `SESSION: NEEDS YOU`.
+4. **A loop run does not wait:** APPEND `QUEUED_PRS: #<a> #<b>` (the WHOLE list; the last value wins), clean
+   up the worktree and local branch as MERGE_CLEANUP step 2 (the PR branch stays on the remote; a return is
+   fixed in a fresh worktree of that branch), keep the tracker claim, release the local lock, mark it `queued`
+   in `issue_queue.md`, append `Phase: LOAD_ISSUES`, and continue at refresh → LOAD_ISSUES. DONE waits for them.
+
+## HAND_OFF (the PR landed; only the post-deploy check is left)
+1. `merge: direct` + `verification: watcher`: merge per step 5, confirm it landed (`git merge-base
+   --is-ancestor <merge-sha> origin/<main>`), then `python scripts/merge_steward.py record-landing <PR>`.
+   `verification: none`: the landing verified and closed the issue — RESOLVE's bookkeeping only, then step 4.
+2. `python scripts/<wrapper>.py check-handoff <X>` — exit 4 prints what is still open: an item that is not
+   `(post-deploy)` is finished NOW, never handed off (a genuine blocker → Escalation). The issue-loop stop hook
+   runs the same check before it releases `Phase: HANDED_OFF`.
+3. Post the hand-off note: the landing (`landed <sha>`), the evidence path, what the post-deploy check must
+   show. Append `Phase: DONE` + `Status: COMPLETED` to `workflow_state.md`.
+4. Clean up as MERGE_CLEANUP step 2 (nothing unpushed — asserted with `git log origin/<branch>..<branch>`
+   empty; venv first; worktree; local branch); the PR landed, so its remote branch goes (`delete-remote-branch`
+   unless the host's delete-on-merge removed it). KEEP the tracker claim until the watcher verifies the
+   issue. Release the local lock ("Run registry & locks") and refresh the registry heartbeat.
+5. Single issue: APPEND `Phase: HANDED_OFF`, run `@close-session`'s checks, then the SESSION verdict with the
+   issue as a `landed — deploy check pending` row. Loop: mark it `handed off` in `issue_queue.md`, append a
+   `DL-NNN`, append `Phase: LOAD_ISSUES` (never a terminal value: this loop goes on) and continue. Never keep
+   the session alive to watch the deploy: a `reverify` or a note on the issue is the whole of a follow-up.
 
 ## MERGE_CLEANUP
 After the PR is merged and the remote branch is deleted (`delete-remote-branch` if the
@@ -700,76 +720,55 @@ looping issue after issue with no user interaction until SELECT finds no workabl
 or requesting direction on the next issue is forbidden (see the Non-Interruption Mandate).
 
 ## DONE
-Reached when SELECT finds no not-in-progress, unlocked open issue. Bring this run to a
+Reached when SELECT finds no not-in-progress, unlocked open issue. First, every PR in `QUEUED_PRS` must
+land: `wait-landed` each in turn (QUEUE step 3, returns included), then HAND_OFF each landed issue; a PR that
+does not land within 3 hours makes the run end `NEEDS YOU` instead. The brake checks it: a loop's DONE is
+refused while `check-landed <QUEUED_PRS…>` reports a PR that has not landed. Then bring this run to a
 TERMINAL state by APPENDING a block at the END of its `resume_state.md` carrying
 `Status: COMPLETED`, `Phase: DONE` and `WORKABLE_ISSUES_REMAIN: no` — this is the ONLY point
 in the run at which the last of those three may be written `no`; the terminal `Status`/`Phase`
 values are what release the issue-loop stop hook. Set your registry entry `status` to
 done.
-Then reply with the Completion Block below — it is the whole of the final message.
+Then reply with the SESSION verdict below — it is the whole of the final message.
 
-# Completion Block (the fixed final message — every exit)
+# The SESSION verdict (the fixed final message — every exit)
 
-The LAST message of a run is this block and nothing else: no preamble, no narrative recap,
-no prose restatement of a cell. Its first line is the verdict, and that line appears in NO
-other message of the run — a message without it is not the end of the run, and a message
-with it is. Emit it at DONE, when a run scoped to ONE named issue has finished that issue,
-when the run ends BLOCKED (an escalation with nothing else workable), and when it ends
-FAILED (a fatal environment failure, recorded as `Phase: ABANDONED`).
+The LAST message of a run is this block and nothing else: no preamble, no recap, no prose restatement of a
+cell, nothing after the table. Its first line answers ONE question — can the operator close this session?
+Kiro's stop payload carries no transcript, so no gate checks this message: the text is the brake. Emit it at
+DONE, when a run scoped to named issues has finished them, when it ends waiting for the operator, and when it
+ends FAILED (a fatal environment failure, recorded as `Phase: ABANDONED`). A later turn of the same session
+(a follow-up question) answers first and ends with the CURRENT block again.
 
 ```
-ISSUE WORK FINISHED — 1 closed · 1 handed off · 0 blocked · 1 filed
+SESSION: CAN CLOSE — 2/2 issues delivered · tasks 8/8 (1 post-deploy) · 1 filed
 
-| Issue | Result | Tasks | PR | Detail |
+| Issue | Now | Tasks | PR | Next |
 |---|---|---|---|---|
-| #412 | handed off | 8/9 | #77 queued | tier M; 1 CI run; 1 item (post-deploy) left |
-| #415 | closed | 4/4 | #79 merged | tier S; 2 CI runs; flaky test fixed in passing |
-| #420 | filed | — | — | flaky teardown, needs design; Spawned-from #412 |
-
-Cleanup: worktree/branch/lock released · local main untouched
-State: Status COMPLETED / Phase DONE
-Backlog: clear
+| #412 | landed — deploy check pending | 4/4 | #77 landed | watcher |
+| #415 | closed | 4/4 | #79 landed | — |
+| #420 | filed | — | — | backlog |
 ```
 
 That is a SPECIMEN with real-shaped values: copy its skeleton verbatim and swap the values.
 
-- **Verdict line — arithmetic, not judgement.** `ISSUE WORK FINISHED` when no row is
-  `blocked`; `ISSUE WORK BLOCKED` when at least one is; `ISSUE WORK FAILED — <≤60-char
-  reason>` for a fatal environment failure (the table then has its header row only). The
-  four counts are the rows whose Result is `closed`, `handed off`, `blocked` and `filed`; `0 filed` is
-  the expected count (discipline C).
-- **Rows.** One per issue this run CLAIMED or was NAMED to work, ascending, then one per
-  issue it FILED, ascending — never an issue it merely listed or passed over in SELECT.
-  Result is exactly one of: `closed` (merged + closed, checklist complete); `handed off` (PR enqueued
-  with green CI, or merged with its landing recorded; the watcher verifies and closes it — Tasks counts only
-  `(post-deploy)` items as legitimately open); `blocked`
-  (escalated — `AWAITING_USER` recorded, question posted on the issue — or released as too
-  ambiguous, which the Detail says); `skipped` (a NAMED issue found already closed, held by
-  a sibling run, or nonexistent — Detail quotes the tracker); `filed` (discipline C, via
-  `issue-intake-agent`, whose own Completion Block gives you the number).
-- **Tasks.** `<ticked>/<total>` from a FRESH re-read of the issue body (`- [x]` lines over
-  all `- [ ]`/`- [x]` lines); `0/0` for an issue without a checklist; `—` on `filed` and
-  `skipped` rows. A `closed` row with ticked < total is a wrong close (RESOLVE), not a
-  smaller one.
-- **PR.** `#<n> merged` (GitLab: `!<iid> merged`); `#<n> queued` / `#<n> landed` on a `handed off` row;
-  `#<n> open` on a `blocked` row that has one; `—` otherwise.
-- **Detail — ≤60 characters, telegraphic, the deciding fact:** the tier (S/M/L), the evidence
-  path, the CI-run count, a fix made in passing, the block reason, or the filed issue's
-  rationale and `Spawned-from`. No sentences, no hedging, no quoted command output.
-- **Cleanup.** Verbatim `worktree/branch/lock released · local main untouched` when nothing
-  of this run's own survives; otherwise the first segment names what survives and why
-  (`worktree issue-418 kept (blocked)`; `LEFTOVER: <what>` for anything unintended).
-- **State.** The terminal `Status`/`Phase` values exactly as APPENDED to `resume_state.md`
-  (BLOCKED: the `AWAITING_USER` reason beside them; FAILED: `Phase ABANDONED`), plus a
-  `· <caveat>` suffix only for a run-level condition the operator should fix (degraded
-  identity or state location per `environment.md`; repeated compactions).
-- **Backlog.** `clear` when a FRESH `list-issues` shows no open, not-in-progress, unlocked
-  issue; else `<n> workable issue(s) remain` — normal after a single-issue run, which stops
-  by design; on a whole-backlog run add ` — <why the run ended early>` to that line.
-
-Under a BLOCKED block only, a `Questions` block follows: the literal header `Questions`,
-then one line per `blocked` row — `- #<n>: <the question posted on the issue, ≤120 chars>`.
-Nothing else ever follows the block.
+- **The head — arithmetic, not judgement; one of exactly three.** `SESSION: CAN CLOSE — <d>/<n> issues
+  delivered · tasks <t>/<T> (<p> post-deploy) · <k> filed` when every row is `closed`, `landed — deploy check
+  pending` or `filed`, nothing waits for the operator, and the close-out is done. `SESSION: NEEDS YOU — <the
+  one decision or action>` exactly when a substantive `AWAITING_USER` is recorded. `SESSION: NOT DONE — <what
+  is left and who has it>` otherwise — a FAILED run included. At most 160 characters after the dash.
+- **Rows.** One per issue this run CLAIMED or was NAMED to work, ascending, then one per issue it FILED,
+  ascending — never an issue it merely listed or passed over in SELECT.
+- **Now** — exactly one of: `closed`; `landed — deploy check pending` (its PR landed, only `(post-deploy)`
+  items open — `check-handoff` passed — the verdict watcher closes it); `returned: <why>`; `blocked: <why>`
+  (escalated with `AWAITING_USER`, or released as too ambiguous); `filed` (discipline C, via
+  `issue-intake-agent`); `not started: <why>` (a NAMED issue found closed, held by a sibling run, or absent).
+  A queued PR that has not landed is never `closed` and never `landed`.
+- **Tasks.** `<ticked>/<total>` from a FRESH re-read of the issue body; `0/0` without a checklist; `—` on
+  `filed` and `not started`. A `closed` row with ticked < total is a wrong close (RESOLVE).
+- **PR.** `#<n> landed` (GitLab: `!<iid> landed`), `#<n> queued`, `#<n> open`, or `—`.
+- **Next** — who acts next: `—`, `watcher`, `you`, `backlog`, or the owning issue (`#566`).
+- **No trailer lines** (no Cleanup / State / Backlog lines).
 
 # Escalation (the only mid-run user interaction)
 You escalate ONCE, batched, only when genuinely blocked: an issue too ambiguous to
@@ -783,9 +782,9 @@ minute; reversible decisions are never escalated — decide, record `DL-NNN`, co
 Post the question to the issue, record the blocked state by APPENDING
 `AWAITING_USER: <the reason>` (plus `Status`/`Phase`) at the END of `resume_state.md` — a
 prose note is read by no hook — and surface that single message (mid-run: it
-never carries the Completion Block's verdict line). Then continue with other workable
-issues if any remain (do not idle); if none do, the run ends with the Completion Block,
-verdict BLOCKED, and the escalation as that issue's `blocked` row.
+never carries a SESSION head). Then continue with other workable issues if any remain (do not idle); if
+none do, the run ends with `SESSION: NEEDS YOU — <the question>`, and the escalation as that issue's
+`blocked` row.
 
 # Run registry & locks (concurrency safety in one clone)
 
@@ -825,8 +824,12 @@ continue at the recorded outer phase for `CURRENT_ISSUE`, re-attaching to your i
 worktree/branch/PR and re-acquiring/refreshing your issue lock + registry heartbeat:
 - mid-FIX → re-read the worktree spec state and continue the embedded pipeline;
 - PR open, CI running → re-issue the foreground bounded wait on the recorded `PR`;
-- PR green but not yet enqueued / landing not recorded → resume at HAND_OFF;
-- returned as `needs-rework` / `queue-failed` → the issue is yours again: fix, push once, re-enqueue;
+- PR green but not yet enqueued → resume at QUEUE;
+- `Phase: QUEUED` → re-issue `wait-landed <PR> --timeout-seconds 540` (a single issue) or continue the loop
+  with `QUEUED_PRS` as recorded;
+- landed but no hand-off note → resume at HAND_OFF;
+- returned as `needs-rework` / `queue-failed` → the issue is yours again: re-claim, fix, push once,
+  re-enqueue, wait;
 - merged but not cleaned → resume at MERGE_CLEANUP;
 - between issues → resume at LOAD_ISSUES.
 Never duplicate a completed step; verify actual state (git/worktree/PR/lock) against the

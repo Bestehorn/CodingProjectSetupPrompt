@@ -105,7 +105,7 @@ flight.** Only an affirmative statement releases the brake.
 |---|---|---|
 | `Status` | `NOT_STARTED`, `NOT_YET_STARTED`, `UNSTARTED`, `NOT_IN_PROGRESS`, `NOT_WORKING`, `IDLE`, `PENDING`, `NEW`, `NONE`, `UNSET` (whole value, any case) | work in flight |
 | `Phase` or `Status` | `DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CLOSED`, `ABANDONED`, `ESCALATED`, `CANCELLED`, `CANCELED` (whole value, any case) | not finished |
-| `Phase` | `HANDED_OFF` (also `HANDEDOFF`, `HANDED-OFF`; whole value, any case) — ONLY when `MODE` starts with `SINGLE_ISSUE` | not finished |
+| `Phase` | `HANDED_OFF` (also `HANDEDOFF`, `HANDED-OFF`; whole value, any case) — ONLY when `MODE` starts with `SINGLE_ISSUE` AND `check-handoff <CURRENT_ISSUE>` exits 0 | not finished (`QUEUED` included: a queued PR is waited for) |
 | `AWAITING_USER` | a SUBSTANTIVE reason — see below | no escalation recorded |
 | `CURRENT_ISSUE`, `CURRENT_SPEC`, `BRANCH`, `WORKTREE`, `PR`, `MODE` | EMPTY, anything from `<` to `>`, or `none`, `-`, `--`, `n/a`, `na`, `unset`, `unknown`, `empty`, `null`, `nil`, `tbd`, `todo`, `pending`, `placeholder`, `xxx` (whole value, any case) = NOTHING RECORDED | a real recorded value |
 
@@ -149,13 +149,17 @@ Six consequences worth internalising:
   uppercase WORD, so `NOT_IMPLEMENTED` is outside it and `Phase: implement` is inside
   it — and inside those phases it has the OPPOSITE rule, deliberately: an absent
   `CURRENT_SPEC` or `tasks.md` is unfinished work to block on, not nothing to check.)
-- **`HANDED_OFF` releases a single-issue run and nothing else.** It records that the merge steward
-  owns the PR (enqueued with its own CI green, or merged with the landing recorded) and the verdict
-  watcher will close the issue (`.claude/docs/delivery.md`). It releases only a run whose `MODE`
-  starts with `SINGLE_ISSUE` (prefix match, hyphens normalised): in a loop (`ISSUE_LOOP`, `BACKLOG`,
-  `AUTO`) handing one issue off is a checkpoint, and the loop records `Phase: LOAD_ISSUES` and goes
-  on; a run whose `MODE` was lost — a resume that did not carry it forward — keeps its brake too. It is
-  a separate set from the terminal values on purpose, so no loop can end itself by handing off.
+- **`HANDED_OFF` releases a single-issue run, after its PR LANDED, and nothing else.** It records that
+  the PR is on the trunk and only the verdict watcher's post-deploy check is left
+  (`.claude/docs/delivery.md` §3). While the PR is queued the phase is `QUEUED`, which holds the turn:
+  the run waits with `wait-landed`. The brake releases `HANDED_OFF` only when `MODE` starts with
+  `SINGLE_ISSUE` (prefix match, hyphens normalised) AND the wrapper's `check-handoff <CURRENT_ISSUE>`
+  exits 0 — every PR the issue queued has landed and every open checklist item is `(post-deploy)`;
+  exit 4 blocks with the reasons it prints, and a check that cannot run (no wrapper, an API error) is
+  logged and allowed. In a loop (`ISSUE_LOOP`, `BACKLOG`, `AUTO`) a hand-off releases nothing: the
+  loop records `QUEUED_PRS: #<a> #<b>` (the whole list, last value wins) and `Phase: LOAD_ISSUES`, and
+  waits for every queued PR before DONE; a run whose `MODE` was lost keeps its brake too. It is a
+  separate set from the terminal values on purpose, so no loop can end itself by handing off.
 - **`WORKABLE_ISSUES_REMAIN` gates NOTHING.** It once WAS the block condition — which is
   how `/work-issue` runs, which set it to `no`, came to be ungated. Today it selects the
   refusal's wording and feeds the progress fingerprint; it can neither hold a turn nor
@@ -201,6 +205,13 @@ Two bounds keep refusal from wedging a session, and neither weakens the verdict:
 - The gates do not read `stop_hook_active` — honouring it made a policy gate block at
   most once per continuation chain.
 
+A released registered work run (`MODE` `SINGLE_ISSUE`, `ISSUE_LOOP`, `BACKLOG` or `AUTO`) must end its turn
+with the SESSION verdict (`.claude/docs/delivery.md` §7): the `session-verdict` Stop gate refuses a final text
+without a valid `SESSION: CAN CLOSE|NEEDS YOU|NOT DONE — …` head and table, or with a head the state
+contradicts (`NEEDS YOU` iff a substantive `AWAITING_USER`). A `[run-watchdog]` tick is exempt, and so is
+a turn that printed `SESSION: CAN CLOSE` and then archived the session — which the `archive-after-verdict`
+gate allows only after such a block in the same turn.
+
 Every invocation appends one line to `.hook-decisions/<date>.log` (allow or block, and
 why) — the log is what makes an inert gate visible. If you want to know whether the gates
 are working in a clone, read it.
@@ -211,4 +222,5 @@ A turn an API error ends runs NO Stop hook, so the log is silent about it. The
 run with claimed, unreleased work and a resumable error, `.resume-requests/<run-id>.json` for the
 host supervisor (`/supervise`). The run's own watchdog — a session-only `CronCreate` with the
 `[run-watchdog]` prompt, armed once per process (`continuous-work.md`) — normally resumes it
-first; the issue-loop brake reminds a run that has none (`session_crons` in the Stop payload).
+first; the issue-loop brake reminds a run that has none (`session_crons` in the Stop payload). A released run is
+never re-armed: the watchdog is deleted at the hand-off and at close-out.

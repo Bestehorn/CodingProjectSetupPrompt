@@ -58,6 +58,9 @@ USAGE
   python scripts/merge_steward.py [...] enqueue <pr> [--allow-pending]      # what `enqueue-pr` runs
   python scripts/merge_steward.py [...] dequeue <pr> [--reason TEXT]
   python scripts/merge_steward.py [...] check-pr <pr>                       # would the queue take it now?
+  python scripts/merge_steward.py [...] wait-landed <pr> [--timeout-seconds 540]  # the session waits for its landing
+  python scripts/merge_steward.py [...] check-handoff <issue>               # may this issue be handed off?
+  python scripts/merge_steward.py [...] check-landed <pr> [<pr> ...]        # have these PRs all landed?
   python scripts/merge_steward.py [...] record-landing <pr>                 # merge "direct": the landing line
   python scripts/merge_steward.py [...] status [--json]
 The git wrapper's delivery verbs pass the wrapper's own token with ``--token-stdin``, so an agent session needs
@@ -65,8 +68,9 @@ no extra secret. Without a token option the steward reads ``credentials/github-p
 of ``config/gitlab.json`` — and the latter only while git ignores that file: a token is never read from a
 tracked file. ``steward.cookie_file`` adds an authenticating proxy's cookies to every API call and git push.
 
-EXIT CODES  0 ran (check-pr / enqueue: accepted) · 1 host or git error · 2 usage or configuration error ·
-            4 refused (check-pr / enqueue: the PR is not acceptable; the reason is printed)
+EXIT CODES  0 ran (check-pr / enqueue: accepted; wait-landed: landed; check-handoff: ready) · 1 host or git error ·
+            2 usage or configuration error · 4 refused (check-pr / enqueue / check-handoff: the reason is printed) ·
+            10 wait-landed: the PR came back to its author (the reason is printed) · 11 wait-landed: timeout, re-issue
 
 SECURITY  The tick runs the DEFAULT BRANCH's copy of this file (schedule / dispatch triggers only, never
           ``pull_request``), merges PR content as data and executes none of it (git runs with
@@ -139,6 +143,8 @@ STEWARD_DEFAULTS: Dict[str, Any] = {
     "gitlab_url": "",
     "gitlab_project": "",
     "cookie_file": "",  # a Netscape cookie file for an authenticating proxy in front of the host (API and git)
+    "status_label": "delivery-status",  # the one CLOSED issue whose body records each environment's red streak
+    "landing_grace_minutes": 3,  # wait-landed nudges a tick once a landing decision has been due this long
     "reference_keywords": ["refs", "references"],  # the words that make `<word> #N` a reference
 }
 
@@ -190,6 +196,22 @@ NUMBER_RE = re.compile(r"#(\d+)")
 LANDED_RE = re.compile(r"^merge-steward: landed ([0-9a-f]{7,40})\b", re.MULTILINE)
 QUEUED_LINE = "merge-steward: queued PR #{pr}"
 QUEUED_RE = re.compile(r"^merge-steward: queued PR #(\d+)", re.MULTILINE)
+LANDED_PR_RE = re.compile(r"^merge-steward: landed ([0-9a-f]{7,40}) \(PR #(\d+)", re.MULTILINE)
+#: The delivery-status issue's machine lines, one per environment and kind. The last green deploy and the first red
+#: deploy since it (a red streak); an issue that landed AFTER the streak began is not blamed for it.
+STATUS_LINE_RE = re.compile(
+    r"^merge-steward: (?P<env>\S+) (?P<kind>last-green|red-since) (?P<sha>[0-9a-f]{7,40}) (?P<at>\S+)$", re.MULTILINE
+)
+STATUS_TITLE = "merge-steward: delivery status"
+STATUS_PREAMBLE = (
+    "The merge steward's record of each deploy environment: its last green deploy and, while it is red, the first red "
+    "deploy since (a red streak). An issue that lands while an environment is already red is not blamed for that red; "
+    "the first green deploy that contains it verifies it. This issue is kept CLOSED on purpose, so no worker selects "
+    "it; the steward rewrites this body — never edit it by hand."
+)
+STREAK_MARK = "<!-- merge-steward-red-streak:{env}:{sha} -->"
+EXIT_WAIT_NOT_SUCCESS = 10
+EXIT_WAIT_TIMEOUT = 11
 CULPRIT_MARK = "<!-- merge-steward-culprit:{sha} -->"
 CLAIM_STARTED_RE = re.compile(r"^merge-steward: claim-started (\S+)", re.MULTILINE)
 CHECKBOX_RE = re.compile(r"^(\s*[-*]\s*)\[( |x|X)\](.*)$")
@@ -581,6 +603,8 @@ class HostAPI(Protocol):  # pragma: no cover — the interface the two adapters 
     def pr_close(self, number: int) -> None: ...
     def issue(self, number: int) -> Issue: ...
     def issues_with_label(self, label: str) -> List[int]: ...
+    def issues_with_label_any_state(self, label: str) -> List[int]: ...
+    def issue_create(self, title: str, body: str, labels: Sequence[str]) -> int: ...
     def issue_add_labels(self, number: int, labels: Sequence[str]) -> None: ...
     def issue_remove_label(self, number: int, label: str) -> None: ...
     def issue_comment(self, number: int, text: str) -> None: ...
@@ -827,6 +851,13 @@ class GitHubAPI:
         items = self._pages(f"/issues?state=open&labels={urllib.parse.quote(label)}")
         return sorted(int(item["number"]) for item in items if "pull_request" not in item)
 
+    def issues_with_label_any_state(self, label: str) -> List[int]:
+        items = self._pages(f"/issues?state=all&labels={urllib.parse.quote(label)}")
+        return sorted(int(item["number"]) for item in items if "pull_request" not in item)
+
+    def issue_create(self, title: str, body: str, labels: Sequence[str]) -> int:
+        return int(self._call("POST", "/issues", {"title": title, "body": body, "labels": list(labels)})["number"])
+
     issue_add_labels = pr_add_labels
     issue_remove_label = pr_remove_label
     issue_comment = pr_comment
@@ -1012,6 +1043,15 @@ class GitLabAPI:
     def issues_with_label(self, label: str) -> List[int]:
         items = self._pages(f"/issues?state=opened&labels={urllib.parse.quote(label)}")
         return sorted(int(item["iid"]) for item in items)
+
+    def issues_with_label_any_state(self, label: str) -> List[int]:
+        items = self._pages(f"/issues?state=all&labels={urllib.parse.quote(label)}")
+        return sorted(int(item["iid"]) for item in items)
+
+    def issue_create(self, title: str, body: str, labels: Sequence[str]) -> int:
+        return int(
+            self._call("POST", "/issues", {"title": title, "description": body, "labels": ",".join(labels)})["iid"]
+        )
 
     def issue_add_labels(self, number: int, labels: Sequence[str]) -> None:
         self._call("PUT", f"/issues/{number}", {"add_labels": ",".join(labels)})
@@ -1714,11 +1754,17 @@ class Steward:
         if not self.git.has_commit(sha):
             self.report.say(f"the deployed commit {sha} is not in this clone — no verdict")
             return EXIT_ERROR
+        status = self._status_issue(create=True)
+        lines = self._status_lines(status.body if status else "")
+        green = lines.get((environment, "last-green"))
+        red = lines.get((environment, "red-since"))
+        red_before = red[0] if red and self.git.has_commit(red[0]) else None
+        if red_before:
+            self.report.say(f"deploy {environment} has been red since {red_before[:12]} ({red[1]})")
         candidates = set(self.host.issues_with_label(self.s.label("awaiting_label")))
         candidates |= set(self.host.issues_with_label(self.s.label("verification_failed_label")))
         if not candidates:
             self.report.say("no issue awaits verification")
-            return EXIT_OK
         self._queued_refs = None
         for number in sorted(candidates):
             issue = self.host.issue(number)
@@ -1735,8 +1781,80 @@ class Steward:
                     f"issue #{number}: landed {landing[:12]}, not contained in {sha[:12]} — not covered yet"
                 )
                 continue
+            if conclusion != "success" and red_before and not self.git.is_ancestor(landing, red_before):
+                self._note_red_streak(number, issue, environment, red_before, red[1] if red else "")
+                continue
             self.verify_issue(number, sha, conclusion, run_url, environment, issue)
+        if status is not None:
+            if conclusion == "success":
+                if red_before is None or self.git.is_ancestor(red_before, sha):
+                    red = None
+                if green is None or not self.git.has_commit(green[0]) or self.git.is_ancestor(green[0], sha):
+                    green = (sha, iso(utcnow()))
+            elif red is None and (
+                green is None or not self.git.has_commit(green[0]) or not self.git.is_ancestor(sha, green[0])
+            ):
+                red = (sha, iso(utcnow()))  # a red verdict for a deploy OLDER than the last green starts no streak
+            self._write_status(status, environment, green, red)
         return EXIT_OK
+
+    # -- the delivery-status issue (B2: a red deploy blames only the issues that could have caused it) --------
+    def _status_issue(self, create: bool) -> Optional[Issue]:
+        label = self.s.label("status_label")
+        numbers = self.host.issues_with_label_any_state(label)
+        if numbers:
+            return self.host.issue(numbers[0])
+        if not create or self.dry:
+            return None
+        number = self.host.issue_create(STATUS_TITLE, STATUS_PREAMBLE, [label])
+        self.host.issue_close(number)  # closed on purpose: no worker ever selects it as work
+        self.report.say(f"created the delivery-status issue #{number}")
+        numbers = self.host.issues_with_label_any_state(label)  # two verdicts at once: the LOWEST number is the one
+        return self.host.issue(min(numbers) if numbers else number)
+
+    @staticmethod
+    def _status_lines(body: str) -> Dict[Tuple[str, str], Tuple[str, str]]:
+        text = (body or "").replace("\r\n", "\n").replace("\r", "\n")  # the web editor saves CRLF
+        return {
+            (m.group("env"), m.group("kind")): (m.group("sha"), m.group("at")) for m in STATUS_LINE_RE.finditer(text)
+        }
+
+    def _write_status(
+        self,
+        issue: Issue,
+        environment: str,
+        green: Optional[Tuple[str, str]],
+        red: Optional[Tuple[str, str]],
+    ) -> None:
+        """Rewrite only THIS environment's lines, on the body as it is NOW: another environment's verdict job may
+        have written since this one read it."""
+        issue = self.host.issue(issue.number)
+        merged = {key: value for key, value in self._status_lines(issue.body).items() if key[0] != environment}
+        if green:
+            merged[(environment, "last-green")] = green
+        if red:
+            merged[(environment, "red-since")] = red
+        body = (
+            STATUS_PREAMBLE
+            + "\n\n"
+            + "\n".join(f"merge-steward: {env} {kind} {sha} {at}" for (env, kind), (sha, at) in sorted(merged.items()))
+        )
+        if body.strip() != (issue.body or "").strip():
+            self._do(f"delivery status: deploy {environment} recorded", self.host.issue_set_body, issue.number, body)
+
+    def _note_red_streak(self, number: int, issue: Issue, environment: str, red_sha: str, red_at: str) -> None:
+        mark = STREAK_MARK.format(env=environment, sha=red_sha)
+        self.report.say(f"issue #{number}: landed after deploy {environment} went red ({red_sha[:12]}) — waits")
+        if any(mark in comment for comment in issue.comments):
+            return
+        self._do(
+            f"issue #{number}: comment (red streak)",
+            self.host.issue_comment,
+            number,
+            f"merge-steward: deploy `{environment}` has been red since `{red_sha[:12]}` ({red_at or 'time not recorded'})"
+            " — before this issue landed, so that red is not attributed to it. It stays awaiting verification; the "
+            f"first green deploy that contains its landing verifies it. {mark}",
+        )
 
     def _prs_in_flight(self, issue: Issue, exclude: Iterable[int] = ()) -> str:
         """The PRs of this issue that have NOT landed yet, as text ("" when none): every PR its hand-off note
@@ -1849,6 +1967,143 @@ class Steward:
         self.report.say(f"REFUSED: {sha} is not a commit on {self.s.trunk} — nothing is deployed, no verdict follows")
         return EXIT_REFUSED
 
+    # -- the session waits for its landing (A2), and asks whether its issue may be handed off (B3) ------
+    def landing_of(self, number: int) -> Optional[str]:
+        """The commit PR `number` landed as, from the steward's `merge-steward: landed` line on it."""
+        for text in reversed(self.host.pr_comment_texts(number)):
+            for match in LANDED_PR_RE.finditer(text or ""):
+                if int(match.group(2)) == number:
+                    return match.group(1)
+        return None
+
+    def _landing_due(self, number: int) -> bool:
+        """True when a tick has a landing decision to take for this PR: every train of its batch has finished CI,
+        or the PR is queued and no batch at all is in flight."""
+        self.fetch()
+        batches = self.trains_in_flight()
+        for trains in batches.values():
+            if any(number in train.prs for train in trains):
+                states = [self.host.ci_state(train.branch, train.sha)[0] for train in trains]
+                return all(state not in ("pending", "missing") for state in states)
+        # Nothing in flight: a plan is due only for a PR the queue would take now — one on hold, waiting for its
+        # own CI or for a dependency gains nothing from a tick.
+        return not batches and self.check(number)[0]
+
+    def _returned(self, number: int, state: str) -> Optional[str]:
+        pr = self.host.pr(number)
+        labels = set(pr.labels)
+        if state != "open":
+            return f"PR #{number} is {state} without a landing line"
+        if self.s.label("queue_label") in labels:
+            return None  # queued again: a return label left from an earlier round does not make it a return
+        for key in ("failed_label", "conflict_label"):
+            if self.s.label(key) in labels:
+                return f"PR #{number} carries {self.s.label(key)}"
+        if self.s.label("queue_label") not in labels:
+            return f"PR #{number} left the queue"
+        return None
+
+    def wait_landed(
+        self, number: int, timeout_seconds: float, poll_seconds: float = 30.0, eval_seconds: float = 120.0
+    ) -> int:
+        """Block until PR `number` lands (0), comes back to its author (10) or the timeout passes (11). Polls the
+        tracker; nudges ONE steward tick per call when a landing decision has been due for landing_grace_minutes."""
+        deadline = time.monotonic() + timeout_seconds
+        grace = float(self.s.steward["landing_grace_minutes"]) * 60.0
+        due_since: Optional[float] = None
+        evaluated: Optional[float] = None
+        nudged = False
+        while True:
+            sha = self.landing_of(number)
+            state = "open"
+            if not sha:
+                state = self.host.pr_state(number)
+                if state == "merged":
+                    # The trunk push comes first and the landing line seconds later: a PR the host already reports
+                    # merged HAS landed, whatever the order the two arrive in.
+                    sha = self.host.merge_commit(number) or self.host.pr(number).head_sha
+            if sha:
+                print(f"landed {sha}", flush=True)
+                return EXIT_OK
+            why = self._returned(number, state)
+            if why:
+                said = [t for t in self.host.pr_comment_texts(number) if t.startswith("merge-steward:")]
+                print(f"returned: {why}", flush=True)
+                if said:
+                    print(said[-1][:600], flush=True)
+                return EXIT_WAIT_NOT_SUCCESS
+            now = time.monotonic()
+            if not nudged and (evaluated is None or now - evaluated >= eval_seconds):
+                evaluated = now
+                try:
+                    due = self._landing_due(number)
+                except (GitError, HostError) as exc:  # a probe that fails costs the nudge, never the wait
+                    print(f"wait-landed: could not judge the queue ({str(exc)[:200]}) — still waiting", flush=True)
+                    due = False
+                if due:
+                    due_since = now if due_since is None else due_since
+                    if now - due_since >= grace:
+                        nudged = True
+                        try:
+                            self._do(
+                                "dispatch a steward tick: a landing decision is due and no tick took it",
+                                self.host.trigger_tick,
+                            )
+                        except HostError as exc:
+                            print(
+                                f"wait-landed: the tick dispatch failed ({str(exc)[:200]}) — still waiting", flush=True
+                            )
+                else:
+                    due_since = None
+            if time.monotonic() + poll_seconds > deadline:
+                print(
+                    f"timeout: PR #{number} is still queued after {timeout_seconds:g}s"
+                    + (" (a tick was dispatched)" if nudged else "")
+                    + " — re-issue the same command",
+                    flush=True,
+                )
+                return EXIT_WAIT_TIMEOUT
+            time.sleep(poll_seconds)
+
+    def check_handoff(self, number: int) -> int:
+        """May issue `number` be handed off? Every PR it queued has landed, and every open item is (post-deploy)."""
+        issue = self.host.issue(number)
+        queued = sorted({int(n) for text in issue.comments for n in QUEUED_RE.findall(text or "")})
+        landed = {int(m.group(2)) for text in issue.comments for m in LANDED_PR_RE.finditer(text or "")}
+        reasons: List[str] = []
+        if not queued and not landed and issue.state != "closed":
+            # A CLOSED issue with no PR (fixed elsewhere, a duplicate, obsolete) is finished, not handed off.
+            reasons.append("no landing is recorded on the issue (no `merge-steward: landed` line)")
+        reasons += [f"PR #{pr} has not landed" for pr in queued if pr not in landed]
+        ticked, total, open_items = checklist_counts(issue.body)
+        reasons += [
+            f"open item not post-deploy: {item[:120]}" for item in open_items if POST_DEPLOY_MARK not in item.lower()
+        ]
+        if reasons:
+            for reason in reasons:
+                print(f"NOT ready for hand-off: {reason}", flush=True)
+            return EXIT_REFUSED
+        print(f"ready for hand-off: {ticked}/{total} ticked, every open item is (post-deploy), every PR landed")
+        return EXIT_OK
+
+    def check_landed(self, numbers: Sequence[int]) -> int:
+        """Have ALL these PRs landed? (A loop's QUEUED_PRS before its DONE.) One line per PR that has not."""
+        pending: List[str] = []
+        for number in numbers:
+            if self.landing_of(number):
+                continue
+            state = self.host.pr_state(number)
+            if state == "merged":
+                continue
+            why = self._returned(number, state)
+            pending.append(f"PR #{number}: returned — {why}" if why else f"PR #{number}: still queued")
+        if pending:
+            for line in pending:
+                print(f"NOT landed: {line}", flush=True)
+            return EXIT_REFUSED
+        print(f"landed: all {len(numbers)} PR(s)", flush=True)
+        return EXIT_OK
+
     # -- agent-facing ---------------------------------------------------------------------------------
     def check(self, number: int, allow_pending: bool = False) -> Tuple[bool, str]:
         pr = self.host.pr(number)
@@ -1863,6 +2118,12 @@ class Steward:
         if not ok:
             self.report.say(f"PR #{number} NOT queued: {why}")
             return EXIT_REFUSED
+        pr = self.host.pr(number)
+        for key in ("failed_label", "conflict_label"):  # a fixed PR re-enters clean: the old return is over
+            if self.s.label(key) in pr.labels:
+                self._do(
+                    f"PR #{number}: -label {self.s.label(key)}", self.host.pr_remove_label, number, self.s.label(key)
+                )
         self._do(
             f"PR #{number}: +label {self.s.label('queue_label')}",
             self.host.pr_add_labels,
@@ -2008,6 +2269,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     record.add_argument("--dry-run", action="store_true")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
+    landed = sub.add_parser("wait-landed")
+    landed.add_argument("pr", type=int)
+    landed.add_argument("--timeout-seconds", type=float, default=540.0)
+    handoff = sub.add_parser("check-handoff")
+    handoff.add_argument("issue", type=int)
+    landed_all = sub.add_parser("check-landed")
+    landed_all.add_argument("prs", type=int, nargs="+")
     guard = sub.add_parser("deploy-guard")
     guard.add_argument("--event-file", required=True)
     return parser.parse_args(list(argv))
@@ -2061,6 +2329,15 @@ def main(argv: Sequence[str]) -> int:  # noqa: C901 — one dispatch per subcomm
             return steward.dequeue(args.pr, args.reason)
         if args.command == "record-landing":
             return steward.record_landing(args.pr)
+        if args.command == "wait-landed":
+            if not 0 < args.timeout_seconds <= 590:
+                print("merge_steward: --timeout-seconds must be in (0, 590] (the Bash tool's ceiling is 600 s)")
+                return EXIT_USAGE
+            return steward.wait_landed(args.pr, args.timeout_seconds)
+        if args.command == "check-handoff":
+            return steward.check_handoff(args.issue)
+        if args.command == "check-landed":
+            return steward.check_landed(args.prs)
         return steward.status(args.json)
     except ConfigError as exc:
         print(f"merge_steward: {exc}", file=sys.stderr)

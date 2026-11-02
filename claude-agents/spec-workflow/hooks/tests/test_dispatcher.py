@@ -69,9 +69,10 @@ def test_framework_gates_are_discovered_in_order() -> None:
             "claim-before-worktree",
             "merge-steward",
             "issue-filing-gate",
+            "archive-after-verdict",
         ],
     )
-    _present_in_order("stop", ["spec-stop-gate", "no-idle-wait", "issue-loop-gate"])
+    _present_in_order("stop", ["spec-stop-gate", "no-idle-wait", "issue-loop-gate", "session-verdict"])
     _present_in_order("stop-failure", ["stop-failure-recorder"])
     _present_in_order("session-start", ["session-register", "scoped-temp-init", "continuous-work-reinject"])
 
@@ -86,7 +87,8 @@ def test_registration_matcher_is_the_union_of_the_gates_tools(tmp_path: Path) ->
         "execute_bash",
         "execute_cmd",
         "executeBash",
-    }, "the shell tools of both hosts, which the same gates serve"
+        "mcp__ccd_session_mgmt__archive_session",
+    }, "the shell tools of both hosts, which the same gates serve, and the desktop app's archive tool"
     # Module names unique to this test: discover_gates imports by module name, and sys.modules keeps the first
     # module of a name for the whole pytest process, so two tests must not write different gates under one name.
     (hooks_dir / "gate_union_write.py").write_text(

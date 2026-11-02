@@ -5,14 +5,18 @@
 # fast-forward, drop the culprit), then build and start the next batch from the PRs labelled `queue`. The tick is
 # stateless (git branches and tracker labels hold the state), so a cancelled or lost run loses nothing.
 #
-# Why the triggers are exactly these: `workflow_dispatch`, `workflow_run` and `schedule` all run the DEFAULT
-# BRANCH's copy of this file and of scripts/merge_steward.py, so no pull request can change the steward that
-# merges it. Never add a `pull_request`, `pull_request_target` or `push` trigger here. The ticks are EVENT-driven:
-# `enqueue-pr` (the wrapper) dispatches one when a PR joins the queue, and a train's CI run completing starts one
-# (`workflow_run`, filtered to the train branches), which is exactly when a landing becomes possible. The
-# schedule is only the safety net — for a lost dispatch, and for a `workflow_run` event GitHub does not deliver
-# (it stops chaining `workflow_run` beyond three levels). A tick that is already running is never cancelled; a newer
-# pending tick replaces an older pending one, which is harmless because every tick reads the whole queue.
+# Why the triggers are exactly these: `workflow_dispatch` and `schedule` run the DEFAULT BRANCH's copy of this file
+# and of scripts/merge_steward.py, so no pull request can change the steward that merges it. Never add a
+# `pull_request`, `pull_request_target` or `push` trigger here. The ticks are EVENT-driven, and every event is a
+# DISPATCH: `enqueue-pr` (the wrapper) dispatches one when a PR joins the queue; the `steward-wake` job at the end of
+# every train's CI run (templates/ci/github-steward-wake.yml.template, added to the project's CI workflow) dispatches
+# one when the train's verdict is in — exactly when a landing becomes possible; and `wait-landed` dispatches one when
+# a landing decision has been due for a few minutes and no tick took it. There is deliberately NO `workflow_run`
+# trigger: the steward starts every train's CI with GITHUB_TOKEN, and GitHub starts no workflow from an event that
+# token caused except `workflow_dispatch` — measured on a project: 39 ticks, 0 from `workflow_run`. The schedule is
+# only the safety net, and a weak one: GitHub delays and drops scheduled runs (8 of about 86 in 43 hours, same
+# project). A tick that is already running is never cancelled; a newer pending tick replaces an older pending one,
+# which is harmless because every tick reads the whole queue.
 #
 # Runners: the tick is a few git and API calls. Use the `runs-on` the project's CI jobs already use — a private
 # repository whose GitHub-hosted runners start no job would fail this tick every half hour; on a CodeBuild-hosted
@@ -24,10 +28,6 @@ name: Merge steward
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["{{CI_WORKFLOW_NAME}}"] # the `name:` of the CI workflow the steward dispatches on each train
-    types: [completed]
-    branches: ["steward/train-**"] # the steward's train_prefix; PR and trunk runs do not tick
   schedule:
     - cron: "7,37 * * * *" # the safety net, off the hour
 

@@ -50,8 +50,9 @@ with every part of the task that does not depend on the answer.
 Independent work runs in PARALLEL (review lanes, research, the tasks of a wave: one message). A pipeline you
 need is awaited AFTER the unblocked work, in the FOREGROUND with the wrapper's bounded wait (`--timeout-seconds
 540`, re-issued while it exits 11) — never with sleep, never by ending the turn. Where the merge steward lands
-the trunk, an issue whose PR is enqueued with green CI is HANDED OFF: the queue, the deploy and the post-deploy
-check are not the session's to wait for (.claude/docs/delivery.md).
+the trunk, a PR whose own CI is green is ENQUEUED and the session waits with `wait-landed` until it LANDS; only the
+post-deploy check is handed off (.claude/docs/delivery.md). A run that is done for now ends with the SESSION verdict
+(`SESSION: CAN CLOSE | NEEDS YOU | NOT DONE — …`, its table, nothing after it).
 """
 
 
@@ -125,9 +126,18 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — one block per verdi
             value = ctx.field(state, name) or "(unrecorded)"
             lines.append(f"- {name + ':':<24} {value}")
         out.append("\n".join(lines) + "\n")
-        if ctx.host.name == lib.CLAUDE.name and source in ("startup", "resume", "unknown"):
+        phase, status = ctx.field(state, "Phase"), ctx.field(state, "Status")
+        finished = (
+            lib.phase_is_terminal(phase)
+            or lib.phase_is_terminal(status)
+            or lib.phase_is_handoff(phase)
+            or lib.is_substantive_escalation(ctx.field(state, "AWAITING_USER"))
+        )
+        if ctx.host.name == lib.CLAUDE.name and source in ("startup", "resume", "unknown") and not finished:
             # A session-only cron dies with its process: every new process arms its own watchdog once. Kiro has no
-            # session cron (its agentSpawn arrives as source "unknown"), so it is never told to arm one.
+            # session cron (its agentSpawn arrives as source "unknown"), so it is never told to arm one. A FINISHED
+            # run (terminal, handed off, or waiting on its operator) has nothing to resume: no watchdog (E1). The
+            # freshly seeded run (Status NOT_STARTED) and work in flight get it — the commands arm it from here.
             out.append(
                 "Arm this process's run watchdog ONCE, before other work (continuous-work.md): CronCreate with\n"
                 f"cron {lib.WATCHDOG_CRON!r}, recurring true, durable false, and exactly this prompt:\n"

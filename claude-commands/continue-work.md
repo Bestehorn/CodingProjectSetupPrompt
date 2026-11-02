@@ -56,9 +56,9 @@ longer resolves AND the run's status is terminal — archive, never delete).
 
 **Arm the run watchdog if this process has none** (`continuous-work.md`): `CronList`; with no
 `[run-watchdog]` entry, `CronCreate` it with the cron, flags and prompt the session-start context
-printed. A `[run-watchdog]` tick that finds the work finished, handed off or waiting on a recorded
-`AWAITING_USER` answers `idle` and ends the turn; one that finds claimed, unfinished work runs this
-command's steps from here on.
+printed — unless the run is already released (finished, handed off, or waiting on a recorded
+`AWAITING_USER`): a released run is never re-armed, and a tick that finds it so `CronDelete`s the watchdog and
+answers `idle`. A tick that finds claimed, unfinished work runs this command's steps from here on.
 
 **Then re-establish your place from disk, not from memory.** Your conversational context may
 have been compacted since you started, so do not trust recall. The recorded state is a claim,
@@ -81,10 +81,12 @@ not the truth — **reality wins; reconcile the file to it**, never the reverse:
 5. Resume the recorded outer phase, re-acquiring or refreshing this run's issue lock and
    registry heartbeat: mid-FIX → re-read the worktree spec state and continue the embedded
    pipeline; PR open with CI running → re-issue the foreground bounded wait (`wait-run <id>
-   --timeout-seconds 540`); PR green but not yet enqueued, or merged with no landing line →
-   HAND_OFF (`.claude/docs/delivery.md` §3); handed off → that issue is done for this session:
-   close-out (single issue) or LOAD_ISSUES (a loop); returned as `needs-rework` /
-   `queue-failed` → the issue is yours again, fix and re-enqueue; merged but not cleaned →
+   --timeout-seconds 540`); PR green but not yet enqueued → QUEUE; `Phase: QUEUED` → re-issue
+   `wait-landed <PR> --timeout-seconds 540` (a loop: carry `QUEUED_PRS` forward and continue); landed, or
+   merged with no landing line → HAND_OFF (`check-handoff` first, `.claude/docs/delivery.md` §3); handed off →
+   that issue is done for this session: close-out and the SESSION verdict (single issue) or LOAD_ISSUES (a
+   loop); returned as `needs-rework` / `queue-failed` → the issue is yours again: re-claim, fix, re-enqueue,
+   wait; merged but not cleaned →
    resume at MERGE_CLEANUP; issue closed → RESOLVE then the next iteration; between issues →
    LOAD_ISSUES.
 
@@ -110,9 +112,9 @@ under `.stop-gate-counters/`.
 **Then continue the recorded phase to a terminal state.** Never restart completed work and
 never redo a step the evidence shows is done. If an issue is in flight, drive it to its
 definition of done — merged and closed, or, under `config/delivery.json`'s steward or watcher
-mode, handed off (claim still held, spec artifacts committed, tests green with captured
-evidence, the PR's CI green, worktree and local branch torn down, then the issue closed or its
-hand-off note posted). Honor the agent definition's mandates
+mode, LANDED with only its post-deploy check handed off (claim still held, spec artifacts committed,
+tests green with captured evidence, the PR landed, `check-handoff` passed, worktree and local branch torn
+down, the hand-off note posted), then the SESSION verdict. Honor the agent definition's mandates
 throughout: complete command output (`no-output-shortening.md`), evidence for every claim and
 never assertion (`no-guessing.md`; the implementer never certifies its own work), no
 workarounds, wrapper-only remote operations, delegate EVERY conflict to `code-merge-reviewer`,
@@ -132,8 +134,9 @@ that does not depend on the answer.
 
 Otherwise: the work is not finished, so do not stop. Take the next step.
 
-**If you are forced to stop anyway and hand control back**, close with ONE line naming the
-strongest available fix — a `/goal` completion condition, e.g.
-`/goal issue 77 is merged and closed with green CI` (steward mode: `/goal PR 77 is enqueued with
-green CI and issue 77 carries the hand-off note`; `.claude/rules/continuous-work.md`) —
-and only when you are genuinely ending the turn, never as a substitute for continuing.
+**If you are forced to stop anyway and hand control back**, end with the SESSION verdict
+(`SESSION: NOT DONE — <what is left and who has it>`, or `NEEDS YOU` when an `AWAITING_USER` is
+recorded) and let its head name the strongest available fix — a `/goal` completion condition, e.g.
+`/goal issue 77 is merged and closed with green CI` (steward mode: `/goal PR 77 has landed and issue 77
+carries the hand-off note`; `.claude/rules/continuous-work.md`) — and only when you are genuinely ending
+the turn, never as a substitute for continuing.

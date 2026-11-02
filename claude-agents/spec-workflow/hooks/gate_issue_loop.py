@@ -13,13 +13,25 @@ was a duty cycle and the handshake could spend it.
 
 from __future__ import annotations
 
+import re
+import subprocess  # nosec B404  # the project's own wrapper with a fixed argv, no shell
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import hooklib as lib
 
 HOOK = "issue-loop-gate"
 EVENT = "stop"  # the dispatcher runs this gate on this event
 ORDER = 20  # framework gates 10..90; a project gate takes >100 (or <10 to run first)
+#: `check-handoff <issue>` (the wrapper's delivery verb, run by the merge steward): 0 = may be handed off,
+#: 4 = not yet (the reasons are printed); anything else is no verdict and fails open, logged.
+HANDOFF_REFUSED = 4
+HANDOFF_TIMEOUT_SECONDS = 25
+QUEUED_PHASES = frozenset({"QUEUED"})
+#: The terminal values that claim the work is DONE. Under steward or watcher delivery a single-issue run recording one
+#: of these instead of HANDED_OFF goes through the same check-handoff; ABANDONED / ESCALATED / CANCELLED are honest
+#: non-completions and are not checked. A closed, fully ticked issue passes check-handoff anyway.
+COMPLETION_VALUES = frozenset({"DONE", "COMPLETE", "COMPLETED", "FINISHED", "CLOSED"})
 
 CONTRACT_TEXT = """THE CONTRACT, in force from now on for this run:
 
@@ -45,7 +57,9 @@ CONTRACT_TEXT = """THE CONTRACT, in force from now on for this run:
     message. A pipeline you need is awaited AFTER the unblocked work, in the FOREGROUND with the wrapper's
     bounded wait (`--timeout-seconds 540`, re-issued while it exits 11) — never with sleep, never by ending the
     turn. Where the project lands through the merge steward, the PR is ENQUEUED once its own CI is green and the
-    session hands off: the queue, the deploy and the post-deploy check are not yours to wait for.
+    session waits with `wait-landed` until it LANDS; only the post-deploy check is handed off.
+  * A run that is done for now ENDS with the SESSION verdict: `SESSION: CAN CLOSE | NEEDS YOU | NOT DONE — …`,
+    then its table, and nothing after it.
 """
 
 
@@ -130,6 +144,87 @@ Do not end the turn to report having read this.
 """
 
 
+def _first_number(value: str) -> str:
+    """The first number of a field (`#1540 (queued)` -> `1540`), "" when it names none."""
+    match = re.search(r"\d+", value or "")
+    return match.group(0) if match else ""
+
+
+def _wrapper_verdict(ctx: lib.Context, verb: str, calls: List[List[str]]) -> Tuple[Optional[bool], str]:
+    """Run `<wrapper> <verb> <args>` once per call: (True, "") when every call exits 0, (False, what they printed)
+    when one exits 4, (None, detail) when there is no verdict — no wrapper, an error, a timeout."""
+    project = ctx.project_dir
+    wrapper = lib.project_wrapper(project)
+    interpreter = lib.python_interpreter(project)
+    if wrapper is None or not interpreter:
+        return None, f"no git wrapper under scripts/ to run {verb}"
+    refused: List[str] = []
+    for args in calls:
+        try:
+            completed = subprocess.run(  # nosec B603  # the project's own wrapper, fixed argv, no shell
+                [interpreter, str(wrapper), verb, *args],
+                cwd=str(project),
+                capture_output=True,
+                text=True,
+                timeout=HANDOFF_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"{verb} {' '.join(args)} could not run ({exc.__class__.__name__}: {exc})"
+        said = (completed.stdout + completed.stderr).strip()
+        if completed.returncode == HANDOFF_REFUSED:
+            refused.append(said[:600] or f"{' '.join(args)}: refused")
+        elif completed.returncode != 0:
+            return None, f"{verb} {' '.join(args)} exited {completed.returncode}: {said[:200]}"
+    return (False, "\n".join(refused)) if refused else (True, "")
+
+
+def _handoff_verdict(ctx: lib.Context, issue: str) -> Tuple[Optional[bool], str]:
+    """check-handoff for every issue number the run records (one call each, so each reason names its issue)."""
+    numbers = re.findall(r"\d+", issue or "")
+    if not numbers:
+        return None, f"CURRENT_ISSUE '{issue}' names no issue"
+    refused: List[str] = []
+    for number in numbers:
+        ok, said = _wrapper_verdict(ctx, "check-handoff", [[number]])
+        if ok is None:
+            return None, said
+        if not ok:
+            refused.append(f"#{number}: {said}")
+    return (False, "\n".join(refused)) if refused else (True, "")
+
+
+def _landed_message(state: Path, recorded: str, numbers: List[str], said: str, wrapper: str) -> str:
+    waits = "\n".join(f"        python {wrapper} wait-landed {n} --timeout-seconds 540" for n in numbers)
+    return (
+        f"{HOOK}: REFUSING the stop — Phase {recorded}, but this loop's queued PRs have not all landed. check-landed "
+        "said:\n"
+        + "\n".join(f"    {line}" for line in said.splitlines())
+        + "\n\nBefore DONE, wait for each in the FOREGROUND (Bash timeout 600000), re-issued while it exits 11:\n"
+        f"{waits}\n"
+        "A return (exit 10) is yours again: fix it in one pass, push once, get the PR's own CI green, enqueue it\n"
+        "again. Then append the PRs still queued as `QUEUED_PRS:` (or `QUEUED_PRS: none`) to\n"
+        f"    {state}\n"
+        "and end with the SESSION verdict.\n"
+    )
+
+
+def _handoff_message(state: Path, issue: str, pr: str, reasons: str, wrapper: str, recorded: str = "HANDED_OFF") -> str:
+    return (
+        f"{HOOK}: REFUSING the stop — Phase {recorded}, but issue {issue} may not be handed off yet. check-handoff "
+        "said:\n"
+        + "\n".join(f"    {line}" for line in reasons.splitlines())
+        + "\n\nA hand-off leaves ONLY the post-deploy check open. So:\n"
+        f"  * a PR has not landed: append 'Phase: QUEUED' to {state} and wait for it in the foreground —\n"
+        f"        python {wrapper} wait-landed {_first_number(pr) or '<PR>'} --timeout-seconds 540"
+        "     (Bash timeout 600000)\n"
+        "    re-issued while it exits 11; exit 10 means it came back: fix it in one pass, push once, enqueue again;\n"
+        "  * an open checklist item is not `(post-deploy)`: finish it and tick it — or, when only the operator can,\n"
+        "    append an AWAITING_USER line naming it.\n"
+        "Then end the turn with the SESSION verdict.\n"
+    )
+
+
 def _brake_message(
     sid: str,
     state: Path,
@@ -139,6 +234,9 @@ def _brake_message(
     remain: str,
     issue: str,
     watchdog: "bool | None" = None,
+    pr: str = "",
+    wrapper: str = "scripts/<wrapper>.py",
+    mode: str = "",
 ) -> str:
     lines = [
         f"{HOOK} (the ISSUE-LOOP brake): REFUSING the stop — run {sid[:8]} records itself as UNFINISHED.",
@@ -152,7 +250,25 @@ def _brake_message(
         "dispatched — do the unblocked work while they run.",
         "",
     ]
-    if lib.phase_is_handoff(phase):
+    if (phase or "").strip().upper() in QUEUED_PHASES and lib.mode_is_loop(mode):
+        lines += [
+            f"Phase '{phase}' in a loop run: a queued PR does not hold the loop. Append the whole list of this run's",
+            "queued PRs as `QUEUED_PRS: #a #b` and continue with LOAD_ISSUES -> SELECT. Before DONE, wait for every",
+            f"queued PR with `python {wrapper} wait-landed <n> --timeout-seconds 540` (re-issued on 11) and handle",
+            "each return (exit 10): fix it in one pass, push once, enqueue again.",
+        ]
+    elif (phase or "").strip().upper() in QUEUED_PHASES:
+        lines += [
+            f"Phase '{phase}': the PR is in the merge steward's queue, and this session waits until it LANDS.",
+            "Wait in the FOREGROUND, bounded:",
+            f"    python {wrapper} wait-landed {_first_number(pr) or '<PR>'} --timeout-seconds 540"
+            "     (Bash timeout 600000)",
+            "re-issued while it exits 11. Exit 0: it landed — append 'Phase: HANDED_OFF' (verification watcher)",
+            "or 'Phase: DONE' (verification none). Exit 10: it came back — read the reason, fix it in one pass,",
+            "push once, get the PR's own CI green and enqueue again. Not landed after 3 hours: append an",
+            "AWAITING_USER line naming the queue state.",
+        ]
+    elif lib.phase_is_handoff(phase):
         lines += [
             f"Phase '{phase}' hands ONE issue to the merge steward — in a loop run that is a checkpoint, not the end:",
             "record the next phase (LOAD_ISSUES) and SELECT the next workable issue yourself.",
@@ -169,8 +285,8 @@ def _brake_message(
         lines += [
             f"WORKABLE_ISSUES_REMAIN is '{remain}', so this is a single-issue run: FINISH issue {issue} end to",
             "end — implement, prove, PR, CI green, then merge and close (or, where the merge steward lands the",
-            "trunk, enqueue and hand off) — before any turn ends. That field selects this wording only; it does",
-            "not and cannot release this gate.",
+            "trunk, enqueue, wait with wait-landed until it LANDS, then hand off the deploy check) — before any turn",
+            "ends. That field selects this wording only; it does not and cannot release this gate.",
         ]
     lines += [
         "",
@@ -178,8 +294,9 @@ def _brake_message(
         f"    {state}",
         "(hooks read the LAST occurrence of each field):",
         "  * finished     -> 'Phase: DONE'  (or COMPLETE/COMPLETED/FINISHED/CLOSED/ABANDONED/ESCALATED/CANCELLED)",
-        "  * handed off   -> 'Phase: HANDED_OFF' — a single-issue run whose PR is ENQUEUED with green CI; the",
-        "                    merge steward and the verdict watcher own the rest (never in a loop run)",
+        "  * handed off   -> 'Phase: HANDED_OFF' — a single-issue run whose PR has LANDED and whose open items are",
+        "                    all (post-deploy); check-handoff verifies both, and the verdict watcher owns the rest",
+        "                    (never in a loop run)",
         "  * not begun    -> 'Status: NOT_STARTED'",
         "  * proven pause -> an 'AWAITING_USER' line naming the actual reason in full. A placeholder or a",
         "                    one-word token is rejected; write the reason you would give a person.",
@@ -288,22 +405,75 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
         ctx.log(HOOK, "PROGRESS", f"run={sid[:8]} {calls} tool calls since the last stop attempt; count reset")
 
     # THE RELEASES. Each is an AFFIRMATIVE statement by the run that the turn may end. Anything else holds.
+    def checked_release(recorded: str) -> lib.Decision:
+        """The release of a single-issue run that says its issue is delivered: check-handoff decides (B3)."""
+        ok, said = _handoff_verdict(ctx, issue)
+        if ok is None:
+            lib.counter_reset(counter)
+            ctx.log(HOOK, "NO_VERDICT", f"run={sid[:8]} {recorded} of '{issue}' not verified: {said}")
+            return lib.allow(
+                stderr=(
+                    f"{HOOK}: no verdict on the hand-off of issue {issue} — {said}. Allowing it; the landing and the "
+                    "checklist are NOT verified. Give the wrapper a working `check-handoff` verb (the steward's).\n"
+                )
+            )
+        if ok:
+            lib.counter_reset(counter)
+            ctx.log(HOOK, "ALLOW", f"run={sid[:8]} Phase='{recorded}' mode='{mode}', check-handoff passed")
+            return lib.allow()
+        if at_cap():
+            return allow_at_cap("check-handoff still refuses the hand-off")
+        return block_or_stand_down(
+            f"run={sid[:8]} {recorded} refused: {said.splitlines()[0][:160] if said else ''}",
+            "hand-off refused",
+            _handoff_message(state, issue, ctx.field(state, "PR"), said, _wrapper_text(ctx.project_dir), recorded),
+        )
+
+    def checked_landing(recorded: str, numbers: List[str]) -> lib.Decision:
+        """The DONE of a loop run that queued PRs: every one must have landed (check-landed)."""
+        ok, said = _wrapper_verdict(ctx, "check-landed", [numbers])
+        if ok is None:
+            lib.counter_reset(counter)
+            ctx.log(HOOK, "NO_VERDICT", f"run={sid[:8]} {recorded} with QUEUED_PRS {numbers} not verified: {said}")
+            return lib.allow(
+                stderr=(
+                    f"{HOOK}: no verdict on this loop's queued PRs {', '.join('#' + n for n in numbers)} — {said}. "
+                    "Allowing it; their landing is NOT verified. Give the wrapper a working `check-landed` verb.\n"
+                )
+            )
+        if ok:
+            lib.counter_reset(counter)
+            ctx.log(HOOK, "ALLOW", f"run={sid[:8]} Phase='{recorded}', check-landed passed for {numbers}")
+            return lib.allow()
+        if at_cap():
+            return allow_at_cap("check-landed still finds queued PRs that have not landed")
+        return block_or_stand_down(
+            f"run={sid[:8]} {recorded} refused: queued PRs {numbers} not all landed",
+            "queued PRs not landed",
+            _landed_message(state, recorded, numbers, said, _wrapper_text(ctx.project_dir)),
+        )
+
     if lib.status_is_idle(status):
         lib.counter_reset(counter)
         ctx.log(HOOK, "ALLOW", f"run={sid[:8]} Status='{status}' is idle")
-        return lib.allow()
-    if lib.phase_is_terminal(phase) or lib.phase_is_terminal(status):
-        lib.counter_reset(counter)
-        ctx.log(HOOK, "ALLOW", f"run={sid[:8]} terminal Phase='{phase}' Status='{status}'")
-        return lib.allow()
-    if lib.phase_is_handoff(phase) and lib.mode_is_single_issue(mode):
-        lib.counter_reset(counter)
-        ctx.log(HOOK, "ALLOW", f"run={sid[:8]} handed off Phase='{phase}' mode='{mode}'")
         return lib.allow()
     if lib.is_substantive_escalation(awaiting):
         lib.counter_reset(counter)
         ctx.log(HOOK, "ALLOW", f"run={sid[:8]} AWAITING_USER='{awaiting}'")
         return lib.allow()
+    if lib.phase_is_terminal(phase) or lib.phase_is_terminal(status):
+        # The Phase decides when it is terminal (close-out pairs `Status: COMPLETED` with `Phase: ABANDONED`).
+        recorded = (phase if lib.phase_is_terminal(phase) else status).strip().upper()
+        if recorded in COMPLETION_VALUES and lib.mode_is_single_issue(mode) and _delivered_by_queue(ctx, issue):
+            return checked_release(recorded)
+        queued = re.findall(r"\d+", ctx.field(state, "QUEUED_PRS") or "")
+        if recorded in COMPLETION_VALUES and lib.mode_is_loop(mode) and queued:
+            return checked_landing(recorded, queued)
+        lib.counter_reset(counter)
+        ctx.log(HOOK, "ALLOW", f"run={sid[:8]} terminal Phase='{phase}' Status='{status}'")
+        return lib.allow()
+    if lib.phase_is_handoff(phase) and lib.mode_is_single_issue(mode):
+        return checked_release(phase.strip().upper())
 
     # The run must have CLAIMED tracked work: every session is seeded and OWNED, so without this an ordinary
     # session that recorded a Status was told to finish "issue none".
@@ -379,9 +549,33 @@ def run(ctx: lib.Context) -> lib.Decision:  # noqa: C901 — the brake: every re
         f"run={sid[:8]} working phase='{phase}' status='{status}' claim='{claim}' remain='{remain}'",
         "unfinished work",
         _brake_message(
-            sid, state, status, phase, claim, remain, issue, lib.watchdog_armed(ctx.payload.data.get("session_crons"))
+            sid,
+            state,
+            status,
+            phase,
+            claim,
+            remain,
+            issue,
+            lib.watchdog_armed(ctx.payload.data.get("session_crons")),
+            ctx.field(state, "PR"),
+            _wrapper_text(ctx.project_dir),
+            mode,
         ),
     )
+
+
+def _delivered_by_queue(ctx: lib.Context, issue: str) -> bool:
+    """A real issue number, and a project whose delivery runs through the steward or the verdict watcher — where a
+    "done" single-issue run must have landed its PR and left only (post-deploy) items open."""
+    if lib.is_placeholder(issue) or not re.search(r"\d", issue or ""):
+        return False
+    settings = lib.delivery_settings(ctx.project_dir)
+    return settings.get("merge") == "steward" or settings.get("verification") == "watcher"
+
+
+def _wrapper_text(project: Path) -> str:
+    wrapper = lib.project_wrapper(project)
+    return str(wrapper.relative_to(project)).replace("\\", "/") if wrapper else "scripts/<wrapper>.py"
 
 
 def _write_ack(path: Path, text: str) -> None:

@@ -26,6 +26,9 @@ Usage:
     python scripts/github_wrapper.py enqueue-pr <pr_number>     # "merge": "steward": hand the PR to the queue
     python scripts/github_wrapper.py dequeue-pr <pr_number> --reason "..."
     python scripts/github_wrapper.py queue-status [--json]
+    python scripts/github_wrapper.py wait-landed <pr_number> --timeout-seconds 540   # 0 landed, 10 returned, 11 re-issue
+    python scripts/github_wrapper.py check-handoff <issue_number>                   # 0 ready, 4 not (reasons printed)
+    python scripts/github_wrapper.py check-landed <pr_number> [<pr_number> ...]     # 0 all landed, 4 not
 
 Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
 The owner/repo are auto-detected from .git/config — do NOT hardcode them.
@@ -224,7 +227,8 @@ def wait_run(
 #   - `enqueue-pr <n>` -> `steward_delegate("enqueue-pr", [n], _load_token(), "github")` (below):
 #     the steward's exit code passes through (0 queued, 4 refused with the reason printed — PR CI not
 #     green on the head, a closing keyword under watcher verification, a hold label, ...).
-#   - `dequeue-pr <n> --reason <text>` and `queue-status [--json]` the same way.
+#   - `dequeue-pr <n> --reason <text>`, `queue-status [--json]`, `wait-landed <n> --timeout-seconds 540`
+#     and `check-handoff <issue>` the same way.
 # The wrapper hands the steward ITS token on stdin (`--token-stdin`), so no second secret exists. Under
 # "merge": "steward", merge_pr is refused by the merge-steward PreToolUse gate (only the steward
 # lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap PR
@@ -291,7 +295,14 @@ def wait_run(
 # main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
 STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
 DELIVERY_CONFIG = Path("config") / "delivery.json"
-DELIVERY_VERBS = {"enqueue-pr": "enqueue", "dequeue-pr": "dequeue", "queue-status": "status"}
+DELIVERY_VERBS = {
+    "enqueue-pr": "enqueue",
+    "dequeue-pr": "dequeue",
+    "queue-status": "status",
+    "wait-landed": "wait-landed",  # the session's bounded wait for its PR to land (0 landed, 10 returned, 11 re-issue)
+    "check-handoff": "check-handoff",  # may the issue be handed off? (0 yes, 4 no — the reasons are printed)
+    "check-landed": "check-landed",  # have all these PRs landed? (0 yes, 4 no — one line per PR that has not)
+}
 EXIT_DELIVERY_ELSEWHERE = 2
 
 

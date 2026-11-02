@@ -388,7 +388,7 @@ python -m pytest .claude/hooks/tests -q -p no:cacheprovider
 #   test_unpinned_fixes     handshake BLOCK by text, evidence substance, mtime, cross-gate
 #   test_scoped_temp        the self-writing settings.local.json env block
 #   test_dispatcher         gate discovery and order, a project gate, the disable switch, the launcher
-#   test_no_idle_wait       a turn that ends to wait is refused; a Completion Block verdict is not
+#   test_no_idle_wait       a turn that ends to wait is refused; a SESSION or Completion Block verdict is not
 #   test_reinject_resume    the resume context and the run-watchdog instruction
 #   test_delivery_gates     HANDED_OFF (single-issue only), the merge-steward gate, stop-failure, watchdog
 
@@ -573,7 +573,7 @@ own suite, each is a contract a project had built on and the framework did not k
 
 ## 9. The delivery revision (2026-10-26): what a live project needs, in order
 
-Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, item 7; 2026-10-31: `2026.10.31-delivery-7`, item 8); the agent-facing contract is `.claude/docs/delivery.md`.
+Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, item 7; 2026-10-31: `2026.10.31-delivery-7`, item 8; 2026-11-02: `2026.11.02-delivery-8`, item 9); the agent-facing contract is `.claude/docs/delivery.md`.
 
 1. **Copy the files** (`hooks/*.py` now includes `gate_merge_steward.py`, `gate_stop_failure.py`,
    `wait_for.py`, `supervisor.py`; plus `docs/delivery.md`, `commands/supervise.md`) and
@@ -623,6 +623,20 @@ Contract `2026.10.26-delivery-5` (amended 2026-10-30: `2026.10.30-delivery-6`, i
    tracks is no longer read for a token. Behind an authenticating proxy set `steward.cookie_file`. A
    batch id is never reused within one process (a fast runner rebuilt a judged batch), and a deploy job
    the jobs API reports as allowed to fail no longer returns issues as `needs-rework`.
+
+9. **(2026-11-02) Sessions own their PR until it lands, and end with the SESSION verdict.** Measured on the
+   first steward project: none of ten handed-off issues closed — the train-completion `workflow_run` never fired
+   (a `GITHUB_TOKEN`-started run starts no workflow), a deploy red for an unrelated cause bounced every issue it
+   contained, one hand-off left real work open, and no close-out printed its verdict. A live project:
+   - copies the hooks (two new gates, `gate_session_verdict.py` and `gate_archive_verdict.py`) and
+     RE-PASTES `hooks.py registration`: the PreToolUse matcher now also names
+     `mcp__ccd_session_mgmt__archive_session` (`registration --check` confirms the paste);
+   - installs the steward template (`wait-landed`, `check-handoff`, the red-streak verdict) and the wrapper's two
+     new delivery verbs, removes `workflow_run` from `.github/workflows/merge-steward.yml`, appends the
+     `steward-wake` job (`templates/ci/github-steward-wake.yml.template`) to its CI workflow, and creates the
+     `delivery-status` label (twelve labels);
+   - lets live sessions learn the new phases from the contract handshake: a session already HANDED_OFF on a
+     queued, unlanded PR is NOT done under this revision — `/continue-work` waits for its landing.
 
 What is NOT weakened: every PR still needs its own green CI before the queue takes it, the train
 re-runs the full CI on the exact state that lands, an issue closes only after a green post-deploy

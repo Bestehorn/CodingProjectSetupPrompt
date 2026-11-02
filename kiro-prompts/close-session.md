@@ -11,7 +11,7 @@ state, its scope is the current working tree.
 
 Two differences from the Claude Code twin, both in the ending. Kiro has no session-archive
 tool, so the report leaves ending the session to the user (`/quit` in the CLI) where the Claude
-twin archives itself on `CLOSE: YES`. And Kiro has no structured question tool, so a blocker that
+twin archives itself on `SESSION: CAN CLOSE`, after printing it. And Kiro has no structured question tool, so a blocker that
 genuinely needs a decision is asked in TEXT, in one batched block under the table, in the
 shape "Output" prescribes — the Claude twin routes the same thing through `AskUserQuestion`.
 The verdict table itself is identical on both sides, deliberately.
@@ -60,15 +60,13 @@ the deciding number).
    spec artifacts committed, docs touched where the change requires it — the issue's own task
    items are Step 2's subject and are checked there, mechanically). Read the issue and this
    run's `resume_state.md` rather than trusting recall.
-   - **Handed off is done — for this session.** Where `config/delivery.json` says `merge: steward`
-     (or `verification: watcher`), an issue whose PR is ENQUEUED with its own CI green (or merged
-     with its landing recorded) and whose hand-off note carries the `merge-steward:` lines
-     (`.kiro/docs/delivery.md` §3) has met the session's definition of done: the train, the
-     landing, the deploy and the post-deploy check belong to the steward and the verdict watcher,
-     so "green for the merged SHA" reads "green for the PR's head" here. Confirm it mechanically
-     (`queue-status` lists the PR, or the issue carries the `landed` line); a PR that is NOT in the
-     queue (`queue-failed`, `queue-conflict`, `needs-rework`) is unfinished work — finish it per
-     the bullet below.
+   - **Landed and handed off is done — for this session.** Where `config/delivery.json` says
+     `verification: watcher`, an issue whose PR LANDED (the `merge-steward: landed` line is on it) and
+     for which `python scripts/<wrapper>.py check-handoff <N>` exits 0 (every queued PR landed, every open
+     item `(post-deploy)`) has met the session's definition of done: the deploy and the post-deploy check
+     belong to the verdict watcher. A PR that is still QUEUED is NOT done: wait for it now (`wait-landed
+     <PR> --timeout-seconds 540`, `.kiro/docs/delivery.md` §3); a PR that came back (`queue-failed`,
+     `queue-conflict`, `needs-rework`) is unfinished work — finish it per the bullet below.
    - **If anything is missing, FINISH IT NOW** — `@continue-work` semantics: resume the
      recorded phase and drive it to a terminal state. Do not report a gap and stop; do not
      ask whether to finish it. The answer is always yes, and `continuous-work` governs.
@@ -212,12 +210,13 @@ the deciding number).
       forbidden.
 
 **Step 6 — Your worktree, branch, lock AND claim markers are gone**
-   Confirm the worktree and branch this session created were removed after merge (or after the
-   hand-off — asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty).
-   A handed-off PR's REMOTE branch stays until the steward lands it (deleting a PR's head branch
-   closes the GitHub PR and leaves a GitLab MR without its source; the host's delete-on-merge
-   setting removes it after the landing), and so does the issue's tracker claim — the steward or the watcher releases it when the issue comes back; release only
-   this run's local lock. Tear down a
+   Confirm the worktree and branch this session created were removed after the landing —
+   asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty. A LANDED
+   PR's remote branch goes too (the host's delete-on-merge setting, else `delete-remote-branch`); a
+   PR that has not landed keeps it (deleting a PR's head branch closes the GitHub PR and leaves a
+   GitLab MR without its source). A handed-off issue keeps its tracker claim until the watcher
+   verifies it; release only this run's local lock. Never leave anything running to watch an issue
+   or a deploy. Tear down a
    per-worktree venv FIRST if one exists (locked DLLs otherwise block removal on Windows);
    `git worktree remove` plain, `--force` only after confirming no uncommitted work would be
    lost; then delete the branch and verify with `git worktree list` and that
@@ -236,9 +235,9 @@ the deciding number).
    Report only your own; say nothing about anyone else's.
 
 **Step 7 — Issues updated and closed with evidence**
-   A HANDED-OFF issue is not closed by the session: its hand-off note is the record, the verdict
-   watcher closes it after a green post-deploy check (`.kiro/docs/delivery.md` §4), and row 7's
-   Detail says `#412 handed off — watcher closes`.
+   A HANDED-OFF issue (landed, only `(post-deploy)` items open) is not closed by the session: its
+   hand-off note is the record, the verdict watcher closes it after a green post-deploy check
+   (`.kiro/docs/delivery.md` §4), and row 7's Detail says `#412 landed — watcher closes`.
    For each issue this run finished: a final comment linking the merged MR/PR and the
    evidence, the checklist fully ticked — the count re-read after whatever Step 2 made you
    finish, not the count you started with — time spent recorded, and the issue closed via the
@@ -259,7 +258,8 @@ the deciding number).
 
 **Step 9 — A terminal state recorded**
    APPEND a block at the END of this run's `resume_state.md` carrying `Status: COMPLETED`,
-   a terminal `Phase: DONE`, and `WORKABLE_ISSUES_REMAIN: no`. The `issue-loop-gate` (the
+   a terminal `Phase: DONE`, and `WORKABLE_ISSUES_REMAIN: no` — except a single-issue run whose issue is
+   handed off, which keeps `Phase: HANDED_OFF` (DONE would skip the stop hook's `check-handoff`). The `issue-loop-gate` (the
    same gate Claude Code runs) releases on the terminal `Phase`/`Status`, each the WHOLE value
    of its field (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`); `WORKABLE_ISSUES_REMAIN`
    gates nothing and is written `no` for the reader, HERE and at the orchestrator's DONE only — a
@@ -270,13 +270,13 @@ the deciding number).
 
 ## Output — this form, every time, and nothing else
 
-Reply with exactly three things in this order: the verdict line, the nine-row table, the
+Reply with exactly three things in this order: the SESSION head, the nine-row table, the
 Issues block. A clean single-issue session is 16 lines; the ONLY things that may grow the
 reply are one more line per additional issue and — when something is genuinely blocked — the
 Questions block below. If it is not in this template, it does not go in the reply.
 
 ```
-CLOSE: YES
+SESSION: CAN CLOSE — 9/9 checks pass · #412 closed · 1 filed
 
 | # | Check | ✓ | Detail |
 |---|---|---|---|
@@ -320,15 +320,17 @@ hedging ("appears to", "should be", "looks clean"), no quoted command output, no
 than its basename. If the finding will not fit in 60 characters, you have not finished
 deciding what it is.
 
-**The verdict line is arithmetic, not judgement:** `CLOSE: YES` if and only if zero rows are
-❌; otherwise `CLOSE: NO — <n> blocker(s)` where `<n>` is the exact count of ❌ rows. Nothing
-else ever appears on that line.
+**The SESSION head is arithmetic, not judgement** (the same three heads as every work run's SESSION
+verdict, `.kiro/docs/delivery.md` §7): `SESSION: CAN CLOSE — 9/9 checks pass · <issues>` if and only
+if zero rows are ❌; `SESSION: NEEDS YOU — <the decision>` when a ❌ waits on a question you asked (an
+`AWAITING_USER` is recorded); otherwise `SESSION: NOT DONE — <n> blocker(s): <the first>` where `<n>`
+is the exact count of ❌ rows.
 
 **The Issues block** is the literal header `Issues`, then one line per issue this session
 worked or filed, ascending by number, `- none` if there were none:
 
 ```
-- #<n> <worked → closed | worked → handed off | worked → left open | filed> — <≤70 chars: MR, evidence, or why>
+- #<n> <worked → closed | worked → landed, deploy check pending | worked → left open | filed> — <≤70 chars: MR, evidence, or why>
 ```
 
 One line each, no sub-bullets, no grouping headers. An unticked task item that legitimately
@@ -358,7 +360,7 @@ an issue closed over unfinished items, deleting your own leftovers, tearing down
 worktree — those are obligations, not questions, and Steps 1–2 have already settled them.
 "Shall I continue?" stays forbidden. If nothing is blocked, there is no Questions block.
 
-**When `CLOSE: YES`** there is nothing further to say and nothing to invoke: Kiro has no
+**When `SESSION: CAN CLOSE`** there is nothing further to say and nothing to invoke: Kiro has no
 session-archive tool, so the table IS the go-ahead and ending or archiving the session is the
 operator's (`/quit`). Do not add a sentence telling them so.
 

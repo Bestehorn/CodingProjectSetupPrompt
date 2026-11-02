@@ -29,6 +29,9 @@ Usage:
     python scripts/gitlab_wrapper.py enqueue-pr <mr_iid>          # "merge": "steward": hand the MR to the queue
     python scripts/gitlab_wrapper.py dequeue-pr <mr_iid> --reason "..."
     python scripts/gitlab_wrapper.py queue-status [--json]
+    python scripts/gitlab_wrapper.py wait-landed <mr_iid> --timeout-seconds 540     # 0 landed, 10 returned, 11 re-issue
+    python scripts/gitlab_wrapper.py check-handoff <iid>                            # 0 ready, 4 not (reasons printed)
+    python scripts/gitlab_wrapper.py check-landed <mr_iid> [<mr_iid> ...]           # 0 all landed, 4 not
 
 Credentials: config/gitlab.json (gitignored).
 
@@ -205,7 +208,8 @@ def pipeline_wait(
 #     `steward_delegate("enqueue-pr", [iid], _load_config()["token"], "gitlab")` (below): the
 #     steward's exit code passes through (0 queued, 4 refused with the reason printed — MR pipeline
 #     not green on the head, a closing keyword under watcher verification, a hold label, ...).
-#   - `dequeue-pr <iid> --reason <text>` and `queue-status [--json]` the same way.
+#   - `dequeue-pr <iid> --reason <text>`, `queue-status [--json]`, `wait-landed <iid> --timeout-seconds 540`
+#     and `check-handoff <issue>` the same way.
 # The wrapper hands the steward ITS token on stdin (`--token-stdin`), so no second secret exists and
 # the steward never reads a token from a file git tracks. Under
 # "merge": "steward", mr_merge is refused by the merge-steward PreToolUse gate (only the steward
@@ -273,7 +277,14 @@ def pipeline_wait(
 # main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
 STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
 DELIVERY_CONFIG = Path("config") / "delivery.json"
-DELIVERY_VERBS = {"enqueue-pr": "enqueue", "dequeue-pr": "dequeue", "queue-status": "status"}
+DELIVERY_VERBS = {
+    "enqueue-pr": "enqueue",
+    "dequeue-pr": "dequeue",
+    "queue-status": "status",
+    "wait-landed": "wait-landed",  # the session's bounded wait for its PR to land (0 landed, 10 returned, 11 re-issue)
+    "check-handoff": "check-handoff",  # may the issue be handed off? (0 yes, 4 no — the reasons are printed)
+    "check-landed": "check-landed",  # have all these PRs landed? (0 yes, 4 no — one line per PR that has not)
+}
 EXIT_DELIVERY_ELSEWHERE = 2
 
 

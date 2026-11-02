@@ -40,10 +40,13 @@ DOCUMENT     – BEFORE the push: the fix writeup + evidence on the issue, check
 PR           – rebase on origin/main with line-by-line conflict resolution, stage all
                non-gitignored changes, push once, open the PR (`Refs #X`), wait for its CI in
                the FOREGROUND (bounded), fix every failure in one pass
-HAND_OFF     – merge steward: `enqueue-pr`; the steward tests the exact merged state, lands
-               it, deploys the latest green trunk; the verdict watcher closes the issue after
-               a green post-deploy check on a commit that CONTAINS the landing. Clean up the
-               worktree and local branch, keep the remote branch and the claim, next issue
+QUEUE        – merge steward: `enqueue-pr`; the steward tests the exact merged state and lands
+               it. A single-issue run WAITS until it lands (`wait-landed`, bounded; a return is
+               fixed and re-queued); a loop records the PR in `QUEUED_PRS` and goes on, and waits
+               for all of them before DONE
+HAND_OFF     – the PR LANDED: `check-handoff` passes (only `(post-deploy)` items open), the
+               verdict watcher closes the issue after a green post-deploy check on a commit that
+               CONTAINS the landing. Clean up, keep the claim, next issue
 MERGE_CLEANUP– (direct merge + session verification only) self-approve + merge if branch
                protection allows (else poll for approval), then remove the worktree and
                local branch (no leftovers), monitor post-merge CI on main, rework to green
@@ -54,7 +57,7 @@ RESOLVE      – close the issue with links to the merged PR + evidence
 You stay out of the loop entirely except for a **single batched escalation** if the agent
 is genuinely blocked (an ambiguous issue, an unsatisfiable proof, a genuinely ambiguous
 merge conflict, an undiagnosable CI failure, or a missing wrapper subcommand), and the
-fixed Completion Block when the run ends (see "How a run ends" below). In particular, the
+fixed SESSION verdict when the run ends (see "How a run ends" below). In particular, the
 agent **never pauses between issues
 to ask which one to tackle next or whether to continue** — it selects the next issue by
 its own ranking and keeps going. Order does not matter because every workable issue gets
@@ -76,31 +79,26 @@ agent could spend fixing the next issue.
   PR), and after each merge — so the agent never builds on a stale base or overwrites
   others' changes.
 
-### How a run ends: the Completion Block
+### How a run ends: the SESSION verdict
 
-Every run — whole-backlog, single-issue, blocked, or failed — ends with ONE fixed message,
-so "is it finished?" is answered by the first line rather than by reading a summary:
+Every run — whole-backlog, single-issue, waiting for you, or failed — ends with ONE fixed message whose
+first line answers "can I close this session?":
 
 ```
-ISSUE WORK FINISHED — 2 closed · 0 blocked · 1 filed
+SESSION: CAN CLOSE — 2/2 issues delivered · tasks 13/13 (1 post-deploy) · 1 filed
 
-| Issue | Result | Tasks | PR | Detail |
+| Issue | Now | Tasks | PR | Next |
 |---|---|---|---|---|
-| #412 | closed | 9/9 | #77 merged | tier M; evidence specs/fix-timeout/evidence/ |
-| #415 | closed | 4/4 | #79 merged | tier S; 2 CI runs; flaky test fixed in passing |
-| #420 | filed | — | — | flaky teardown, needs design; Spawned-from #412 |
-
-Cleanup: worktree/branch/lock released · local main untouched
-State: Status COMPLETED / Phase DONE
-Backlog: clear
+| #412 | landed — deploy check pending | 9/9 | #77 landed | watcher |
+| #415 | closed | 4/4 | #79 landed | — |
+| #420 | filed | — | — | backlog |
 ```
 
-The verdict word is arithmetic — `FINISHED` when no row is `blocked`, `BLOCKED` when one
-is (a `Questions` block then follows), `FAILED` for a fatal environment failure — and that
-line appears in no other message of the run, so anything without it is not the end. One
-row per issue the run claimed (`closed` / `blocked` / `skipped`) and one per follow-up issue
-it filed through `issue-intake` (`filed`); `0 filed` is the expected count. `Tasks` is the
-checklist arithmetic from a fresh re-read of the issue. The `issue-intake-agent` ends the
+The head is arithmetic: `CAN CLOSE` when every row is `closed`, `landed — deploy check pending` or `filed`
+and nothing waits for you; `NEEDS YOU — <the decision>` when an `AWAITING_USER` is recorded; `NOT DONE —
+<what is left>` otherwise. Nothing follows the table, and the `session-verdict` Stop gate refuses a released
+run's turn-end without it. A queued PR that has not landed is never "delivered". `Tasks` is the checklist
+arithmetic from a fresh re-read of the issue; `0 filed` is the expected count. The `issue-intake-agent` ends the
 same way (`ISSUE INTAKE FINISHED — FILED #420` over an eight-row field/value table), so a
 filing delegated from a run is as quick to read as the run itself.
 
@@ -174,7 +172,7 @@ optional extras — they are the entry points the continuous-work contract is wr
 | `/work-issue <X>` | the SAME lifecycle for exactly one named issue, then stop |
 | `/auto-work` | the never-stop, unattended whole-backlog run — nobody is watching, so nothing it could ask is worth the wait |
 | `/continue-work` | the manual restart after a run stopped early. Needing it means the contract was not honored, so part of its job is to record WHY |
-| `/close-session` | the end-of-session close-out: finish what is unfinished — including every task item on the issue, REOPENING an issue that was closed while items were still unticked — remediate THIS run's own artifacts, record a terminal `Phase`, then report it as ONE fixed nine-row table (✅/❌/➖ per step, ≤60-char details, an `Issues` block below, blockers asked through `AskUserQuestion`) so a close-out is readable at a glance instead of drifting in shape every run; on `CLOSE: YES` it archives the session without asking |
+| `/close-session` | the end-of-session close-out: finish what is unfinished — including every task item on the issue, REOPENING an issue that was closed while items were still unticked — remediate THIS run's own artifacts, record a terminal `Phase`, then report it as the SESSION head over ONE fixed nine-row table (✅/❌/➖ per step, ≤60-char details, an `Issues` block below, blockers asked through `AskUserQuestion`) so a close-out is readable at a glance instead of drifting in shape every run; on `CLOSE: YES` it archives the session without asking |
 | `/supervise` | the host backstop for a run whose turn an API error ended and whose own run watchdog did not bring it back: judges the `stop-failure-recorder` gate's resume requests and resumes each through `ListAgents` + `SendMessage`, with a bounded backoff |
 
 All six carry `disable-model-invocation: true`, so an autonomous merge-and-close run can never
@@ -206,8 +204,7 @@ in-progress on the tracker (fail-closed `issue start <X>`) before it fetches or 
 anything, works X in its own `.claude/worktrees/issue-<X>/` so it runs in parallel with
 sibling sessions, commits the reviewed spec artifacts as their own commit BEFORE
 implementation, and stops after X is merged and closed — or, under the merge steward, after X's
-PR is enqueued with green CI and the hand-off note is on the issue — instead of continuing into
-the backlog. It also records `MODE: SINGLE_ISSUE`, which is what makes the run GATED — see below.
+PR has LANDED and only its post-deploy check is handed off — instead of continuing into the backlog. It also records `MODE: SINGLE_ISSUE`, which is what makes the run GATED — see below.
 If X turns out to be closed or claimed elsewhere, it reports and stops rather than substituting
 a different issue, recording a terminal `Phase` with the reason, since the gate judges the state
 file rather than the report.
@@ -236,9 +233,10 @@ told to finish "issue none".
   so `Phase: DONE` releases and `Status: COMPLETED (was IN_PROGRESS)` does not;
 - a SUBSTANTIVE `AWAITING_USER` reason. Presence is not enough: `<reason>`, `none`, `no`, `false`,
   `0`, `waiting`, `blocked` and anything too short to be a reason are all rejected;
-- `Phase: HANDED_OFF` on a run whose `MODE` starts with `SINGLE_ISSUE`: a single-issue run whose
-  PR the merge steward now owns. In a loop, or a run whose `MODE` was lost, it releases nothing — the
-  loop records `Phase: LOAD_ISSUES` and selects the next issue;
+- `Phase: HANDED_OFF` on a run whose `MODE` starts with `SINGLE_ISSUE`, once its PR LANDED and the
+  wrapper's `check-handoff` passes (only `(post-deploy)` items open). `Phase: QUEUED` holds the turn. In
+  a loop, or a run whose `MODE` was lost, a hand-off releases nothing — the loop records `QUEUED_PRS` and
+  `Phase: LOAD_ISSUES` and selects the next issue;
 - no claimed work, per the paragraph above.
 
 **`Status: IN_PROGRESS` is not what holds the turn, and the polarity is INVERTED.** An

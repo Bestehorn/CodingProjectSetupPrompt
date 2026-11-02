@@ -63,6 +63,9 @@ def capture(monkeypatch: pytest.MonkeyPatch, code: int) -> Dict[str, Any]:
         ("enqueue-pr", ["77"], "enqueue"),
         ("dequeue-pr", ["77", "--reason", "x"], "dequeue"),
         ("queue-status", [], "status"),
+        ("wait-landed", ["77", "--timeout-seconds", "540"], "wait-landed"),
+        ("check-handoff", ["412"], "check-handoff"),
+        ("check-landed", ["77", "78"], "check-landed"),
     ],
 )
 def test_a_delivery_verb_runs_the_steward_with_the_token_on_stdin(

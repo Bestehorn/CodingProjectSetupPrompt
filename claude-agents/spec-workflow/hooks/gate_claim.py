@@ -34,12 +34,7 @@ def run(ctx: lib.Context) -> lib.Decision:
     issue = match.group(1)
 
     project = ctx.project_dir
-    wrapper = None
-    for name in ("gitlab_wrapper.py", "github_wrapper.py"):
-        candidate = project / "scripts" / name
-        if candidate.is_file():
-            wrapper = candidate
-            break
+    wrapper = lib.project_wrapper(project)  # the queue host's wrapper first (config/delivery.json `host`)
     if wrapper is None:
         return lib.allow()
     interpreter = lib.python_interpreter(project)

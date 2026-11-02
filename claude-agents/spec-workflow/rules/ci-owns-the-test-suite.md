@@ -113,7 +113,7 @@ the evidence report — then run the wrapper's blocking wait in the FOREGROUND, 
 (`wait-run <id> --timeout-seconds 540`; GitLab `pipeline wait <id> --timeout-seconds 540`; exit 0 success, 10 not
 success, 11 timeout — re-issue), never as a background task and never as a `sleep` loop
 (`parallel-by-default.md`). The run you wait for is the PR's own: under the merge steward a
-green PR is enqueued and handed off, and a red train comes back as `needs-rework` — fixed like
+green PR is enqueued and waited for until it lands, and a red train comes back to you — fixed like
 a red PR run, every failure in one pass (`.claude/docs/delivery.md`).
 
 If the push transport's credential lapses mid-run (an expired SSH certificate, a

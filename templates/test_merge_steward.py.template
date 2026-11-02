@@ -189,6 +189,16 @@ class FakeHost:
     def issues_with_label(self, label: str) -> List[int]:
         return sorted(n for n, i in self.issues.items() if i.state == "open" and label in i.labels)
 
+    def issues_with_label_any_state(self, label: str) -> List[int]:
+        return sorted(n for n, i in self.issues.items() if label in i.labels)
+
+    def issue_create(self, title: str, body: str, labels: Sequence[str]) -> int:
+        number = 9000 + len(self.issues)
+        self.issues[number] = ms.Issue(number, "open", body, list(labels), [])
+        self.assignees[number] = []
+        self.calls.append(("create", title))
+        return number
+
     def issue_add_labels(self, number: int, labels: Sequence[str]) -> None:
         for label in labels:
             if label not in self.issues[number].labels:
@@ -226,6 +236,7 @@ class FakeHost:
         self.calls.append(("deploy", sha))
 
     def trigger_tick(self) -> None:
+        self._maybe_fail("trigger_tick")
         self.calls.append(("tick", None))
 
     def deploy_conclusion(self, pipeline: str, jobs: Sequence[str]) -> str:
@@ -714,6 +725,113 @@ def test_the_deploy_guard_admits_only_a_trunk_commit(world: World, tmp_path: Pat
     assert steward.deploy_guard(str(event)) == ms.EXIT_REFUSED, "a commit off the trunk is never deployed"
 
 
+def steward_of(world: World) -> "ms.Steward":
+    return ms.Steward(world.settings, world.git, world.host, ms.Report())
+
+
+def test_wait_landed_reports_the_landing(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    assert steward_of(world).wait_landed(1, timeout_seconds=5, poll_seconds=0.01) == ms.EXIT_OK
+
+
+def test_wait_landed_counts_a_merged_pr_before_its_landing_line(world: World) -> None:
+    head = world.pr(1, "a.txt", "a changed\n")
+    git(world.dev, "push", "origin", f"{head}:main")  # the trunk push arrives before any landing line
+    assert steward_of(world).wait_landed(1, timeout_seconds=5, poll_seconds=0.01) == ms.EXIT_OK
+
+
+def test_wait_landed_reports_a_return(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n", ci="failure")
+    world.tick()  # the queue refuses a red PR: queue-failed
+    assert steward_of(world).wait_landed(1, timeout_seconds=5, poll_seconds=0.01) == ms.EXIT_WAIT_NOT_SUCCESS
+
+
+def test_wait_landed_times_out_and_nudges_a_due_tick_once(make_world) -> None:
+    world = make_world(steward_settings={"landing_grace_minutes": 0})
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("success")  # the verdict is in, but no tick took it (the lost-tick case)
+    code = steward_of(world).wait_landed(1, timeout_seconds=0.05, poll_seconds=0.01, eval_seconds=0)
+    assert code == ms.EXIT_WAIT_TIMEOUT
+    assert world.host.calls.count(("tick", None)) == 1, "exactly one tick per call"
+
+
+def test_wait_landed_does_not_nudge_while_the_train_runs(make_world) -> None:
+    world = make_world(steward_settings={"landing_grace_minutes": 0})
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()  # train CI pending
+    assert steward_of(world).wait_landed(1, timeout_seconds=0.05, poll_seconds=0.01, eval_seconds=0) == 11
+    assert ("tick", None) not in world.host.calls
+
+
+def test_check_handoff_needs_the_landing_and_only_post_deploy_items(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n- [ ] the dev check passes (post-deploy)\n")
+    issue = world.host.issues[101]
+    issue.comments.append("merge-steward: queued PR #1")
+    assert sha and steward_of(world).check_handoff(101) == ms.EXIT_OK
+    issue.body += "- [ ] update the operator guide\n"
+    assert steward_of(world).check_handoff(101) == ms.EXIT_REFUSED, "an open item that is not (post-deploy)"
+    issue.body = "- [x] implement\n"
+    issue.comments.append("merge-steward: queued PR #2")
+    assert steward_of(world).check_handoff(101) == ms.EXIT_REFUSED, "a queued PR that has not landed"
+
+
+def test_a_re_enqueued_pr_is_not_read_as_returned(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n", ci="failure")
+    world.tick()
+    assert "queue-failed" in world.host.labels_of(1)
+    world.host.prs[1]["ci"] = "success"  # fixed in one pass, its own CI green again
+    assert steward_of(world).enqueue(1, allow_pending=False) == ms.EXIT_OK
+    assert "queue-failed" not in world.host.labels_of(1), "a re-enqueue clears the old return"
+    world.host.pr_add_labels(1, ["queue-failed"])  # even a stale label left behind is not a return while queued
+    assert steward_of(world).wait_landed(1, timeout_seconds=0.05, poll_seconds=0.01, eval_seconds=3600) == 11
+
+
+def test_a_failed_nudge_never_ends_the_wait(make_world) -> None:
+    world = make_world(steward_settings={"landing_grace_minutes": 0})
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("success")
+    world.host.fail_once["trigger_tick"] = 5  # the session's token cannot dispatch workflows
+    code = steward_of(world).wait_landed(1, timeout_seconds=0.05, poll_seconds=0.01, eval_seconds=0)
+    assert code == ms.EXIT_WAIT_TIMEOUT
+
+
+def test_no_nudge_for_a_pr_the_queue_would_not_take(make_world) -> None:
+    world = make_world(steward_settings={"landing_grace_minutes": 0})
+    world.pr(1, "a.txt", "a changed\n", labels=("queue", "do-not-merge"))
+    code = steward_of(world).wait_landed(1, timeout_seconds=0.05, poll_seconds=0.01, eval_seconds=0)
+    assert code == ms.EXIT_WAIT_TIMEOUT and ("tick", None) not in world.host.calls
+
+
+def test_check_landed_counts_every_pr(world: World) -> None:
+    world.pr(1, "a.txt", "a changed\n")
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    world.pr(2, "b.txt", "b changed\n")  # still queued
+    world.pr(3, "c.txt", "c changed\n", ci="failure")
+    world.tick()  # #3 is refused (queue-failed); #2 builds a train
+    steward = steward_of(world)
+    assert steward.check_landed([1]) == ms.EXIT_OK
+    assert steward.check_landed([1, 2]) == ms.EXIT_REFUSED
+    assert steward.check_landed([3]) == ms.EXIT_REFUSED
+
+
+def test_a_closed_issue_with_nothing_in_flight_may_end(world: World) -> None:
+    world.host.add_issue(160, body="- [x] confirm it is already fixed\n")
+    world.host.issues[160].state = "closed"
+    assert steward_of(world).check_handoff(160) == ms.EXIT_OK
+
+
+def test_check_handoff_refuses_an_issue_with_no_landing(world: World) -> None:
+    world.host.add_issue(150, body="- [x] implement\n", comments=["merge-steward: queued PR #9"])
+    assert steward_of(world).check_handoff(150) == ms.EXIT_REFUSED
+
+
 def test_a_direct_project_tick_is_green_and_lands_nothing(world: World, tmp_path: Path) -> None:
     path = tmp_path / "direct.json"
     config = {"merge": "direct", "verification": "watcher", "trunk": "main", "host": "github"}
@@ -823,6 +941,59 @@ def test_a_red_deploy_returns_only_the_covered_issues(world: World) -> None:
     assert {"verification-failed", "needs-rework"} <= set(covered.labels) and covered.state == "open"
     assert world.host.assignees[101] == []
     assert world.host.issues[190].labels == ["awaiting-verification"], "a landing the deploy does not contain"
+
+
+def status_body(world: World) -> str:
+    numbers = world.host.issues_with_label_any_state("delivery-status")
+    assert len(numbers) == 1, "exactly one delivery-status issue"
+    status = world.host.issues[numbers[0]]
+    assert status.state == "closed", "kept closed, so no worker selects it"
+    return status.body
+
+
+def test_an_issue_landed_into_a_red_environment_is_not_blamed(world: World) -> None:
+    first = landed_world(world, "- [x] implement\n")
+    world.verdict(first, "failure")  # the streak starts: #101 landed since the last green deploy — a suspect
+    assert "needs-rework" in world.host.issues[101].labels
+    assert f"merge-steward: dev red-since {first}" in status_body(world)
+    world.pr(2, "b.txt", "b changed\n")
+    world.host.issues[102].body = "- [x] implement\n"
+    world.tick()
+    world.set_trains("success")
+    world.tick()
+    second = world.main()
+    world.verdict(second, "failure")  # still red: #102 landed AFTER the streak began
+    issue = world.host.issues[102]
+    assert "needs-rework" not in issue.labels and "verification-failed" not in issue.labels
+    assert "awaiting-verification" in issue.labels and issue.state == "open"
+    assert sum("red since" in c for c in issue.comments) == 1
+    world.verdict(second, "failure")
+    assert sum("red since" in c for c in world.host.issues[102].comments) == 1, "the streak note is posted once"
+    world.verdict(second, "success")
+    assert world.host.issues[102].state == "closed" and world.host.issues[101].state == "closed"
+    body = status_body(world)
+    assert f"merge-steward: dev last-green {second}" in body and "red-since" not in body
+
+
+def test_a_late_red_verdict_for_an_older_deploy_starts_no_streak(world: World) -> None:
+    older = world.main()
+    newer = landed_world(world, "- [x] implement\n")
+    world.verdict(newer, "success")
+    world.verdict(older, "failure")  # a re-run of an OLD deploy reports red after the newer green
+    assert "red-since" not in status_body(world)
+
+
+def test_a_status_body_saved_with_crlf_still_parses() -> None:
+    body = "preamble\r\n\r\nmerge-steward: dev red-since " + "a" * 40 + " 2026-11-02T10:00:00Z\r\n"
+    body += "merge-steward: prod last-green " + "b" * 40 + " 2026-11-02T09:00:00Z\r\n"
+    lines = ms.Steward._status_lines(body)
+    assert set(lines) == {("dev", "red-since"), ("prod", "last-green")}
+
+
+def test_a_first_red_deploy_still_returns_the_issues_it_contains(world: World) -> None:
+    sha = landed_world(world, "- [x] implement\n")
+    world.verdict(sha, "failure")
+    assert {"verification-failed", "needs-rework"} <= set(world.host.issues[101].labels)
 
 
 def test_a_deploy_older_than_the_landing_does_not_cover_it(world: World) -> None:

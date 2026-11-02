@@ -44,9 +44,9 @@ issue, probably several, in less time than a human takes to answer one question.
    `.claude/worktrees/issue-<N>/` cut off freshly-fetched `origin/<main>` with an explicit
    descriptive branch (`-b issue-<N>-<slug>`). Stay MAIN-CHECKOUT-FREE: never
    `git checkout main`, never fast-forward the shared local `main`. Tear the worktree +
-   branch + lock down after every merge or hand-off so nothing stale survives — a handed-off
-   PR's remote branch and the issue's tracker claim stay until the steward lands it (binding:
-   `keep-git-clean.md`, `.claude/docs/delivery.md`).
+   branch + lock down after every merge, queue or hand-off so nothing stale survives — a queued PR's
+   remote branch stays until it lands, and a handed-off issue's tracker claim until the watcher verifies
+   it (binding: `keep-git-clean.md`, `.claude/docs/delivery.md`).
 
 # Run identity — read this before writing any state (NON-NEGOTIABLE)
 
@@ -87,8 +87,9 @@ ability to stop does.
 
 Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → PREPARE
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
-CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → HAND_OFF (merge steward or
-verdict watcher) or MERGE_CLEANUP → RESOLVE → refresh → LOAD_ISSUES. Returned work — an
+CLASSIFY (tier S/M/L) → FIX → PROOF_GATE → DOCUMENT → PR → QUEUE (merge steward: record it in
+`QUEUED_PRS`, go on) or HAND_OFF (direct merge with the verdict watcher) or MERGE_CLEANUP → RESOLVE → refresh
+→ LOAD_ISSUES; before DONE every queued PR lands (`wait-landed`) and is handed off. Returned work — an
 issue labelled `needs-rework` or `needs-closeout` — is selected before any new issue. If an issue number was passed as `$ARGUMENTS`, work that one first,
 then continue with the rest of the backlog.
 
@@ -152,16 +153,16 @@ already achieves:
   area. Then resume the recorded phase; do not restart the issue or the backlog.
 - If the user wants compaction to run earlier (a bigger safety margin on long runs), that
   is their `/autocompact <tokens>` setting to make — if you hit repeated compactions, say so
-  once as the Completion Block's `State` caveat, and never pause to ask about it.
+  once, in the SESSION verdict's head, and never pause to ask about it.
 
 # When you may stop (the only three exits)
 
 1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue in a FRESH snapshot.
    Release it by APPENDING `Status: COMPLETED` and `Phase: DONE` at the END of this run's
    `resume_state.md` — each the WHOLE value of its field (`run-identity.md` §5) — and set
-   `WORKABLE_ISSUES_REMAIN: no` for the record (it releases nothing). Then reply with the
-   agent definition's Completion Block — verdict line, per-issue table, three trailer
-   lines — and nothing else; it is the only message of the run that carries that verdict.
+   `WORKABLE_ISSUES_REMAIN: no` for the record (it releases nothing) — after every PR in `QUEUED_PRS`
+   has landed and been handed off. Then reply with the agent definition's SESSION verdict — the head
+   (`SESSION: CAN CLOSE` / `NEEDS YOU` / `NOT DONE`) and the per-issue table — and nothing else.
 2. **A single batched escalation** when genuinely blocked (an issue too ambiguous to
    derive testable criteria even after research, a PROOF_GATE exhausted after the cap, a
    genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
@@ -171,13 +172,12 @@ already achieves:
    an ambiguous issue specifically: comment the question on the issue, `issue release <N>`,
    drop the lock, remove the worktree, and move to the next issue.
 3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Record a
-   terminal `Phase: ABANDONED` with the reason in prose, then stop with the Completion
-   Block, verdict `ISSUE WORK FAILED — <reason>`, so the gate sees the same conclusion the
-   block does.
+   terminal `Phase: ABANDONED` with the reason in prose, then stop with the SESSION verdict,
+   `SESSION: NOT DONE — <reason>`, so the gate sees the same conclusion the block does.
 
 Anything else — a finished issue, a long fix, a filling context window, an urge to
 summarize — is not a stopping point. Select the next issue and keep going. A merged or
-handed-off PR, a green suite and a closed issue mean the NEXT issue begins in the SAME turn; an accurate
+queued PR, a green suite and a closed issue mean the NEXT issue begins in the SAME turn; an accurate
 report of finished sub-work is the DISGUISED CHECK-IN described in
 `.claude/rules/continuous-work.md`, the most common form of this failure, and its accuracy is
 exactly what disguises it.
@@ -202,9 +202,9 @@ anything else → a row in `docs/findings-ledger.md`. A pass that files zero iss
 expected result, not a gap.
 
 **Belt and braces.** For a genuinely unattended run the user should pair this command with a
-completion condition — `/goal every open issue is merged and closed or handed off, or no
-workable issue remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
+completion condition — `/goal every open issue is merged and closed or landed and handed off, or
+no workable issue remains` typed BEFORE `/auto-work` (built-ins are recognized only at the start of a user
 message, so this command cannot set it for them). `/goal` has an independent evaluator judge
 after every turn whether the condition holds, which takes the "am I done?" decision out of
-your hands entirely. If you end this run with workable issues still remaining, the
-Completion Block's `Backlog` line says why and that `/goal` would have prevented it.
+your hands entirely. If you end this run with workable issues still remaining, the SESSION
+verdict's head says so (`NOT DONE — <n> workable issues remain: <why>`).

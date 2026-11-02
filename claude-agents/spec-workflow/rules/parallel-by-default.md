@@ -30,8 +30,8 @@ process started as `<command> > <log> 2>&1; echo "exit=$?" >> <log>` with
 background task is for output you read LATER while you keep working. The
 `no-foreground-sleep` and `no-idle-wait` gates enforce this.
 
-Under the merge steward (`config/delivery.json`) a PR whose own CI is green is enqueued and
-handed off: its merge, the trunk run and the deploy are not yours to wait for
+Under the merge steward (`config/delivery.json`) a PR whose own CI is green is enqueued and waited
+for, bounded, until it LANDS (`wait-landed`); the trunk run and the deploy are not yours to wait for
 (`.claude/docs/delivery.md`).
 
 ## Self-check before any dispatch

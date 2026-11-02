@@ -150,6 +150,17 @@
 #     -n` / `-u -n` closed; `hooks.py registration --check`; discovery invalidates import caches.
 #     Docs: lock release removes the owner record; the CLAUDE.md framework text is about 3 KB; MCP
 #     servers pinned and pre-warmed. `CONTRACT_VERSION` 2026.10.31-delivery-7.
+#   - 2026-11-02: A SESSION THAT CAN BE CLOSED SAYS SO. On the first steward project none of ten
+#     handed-off issues closed and no close-out printed its verdict (project-docs/session-endings-
+#     analysis-2026-11-01.md). A session now owns its PR until it LANDS (`Phase: QUEUED`, `wait-landed`
+#     with a bounded nudge of a due tick; only the post-deploy check is handed off, after `check-handoff`
+#     passes: every PR landed, only `(post-deploy)` items open); every registered work run ends with
+#     `SESSION: CAN CLOSE | NEEDS YOU | NOT DONE` and one table, nothing after it (`session-verdict`
+#     gate); close-out prints it before it archives (`archive-after-verdict` gate); the watchdog is
+#     deleted at the hand-off. The steward is woken by a `steward-wake` job at the end of every train's
+#     CI (its `workflow_run` trigger could never fire), and a red deploy no longer blames issues that
+#     landed while the environment was already red (the `delivery-status` issue records red streaks).
+#     `CONTRACT_VERSION` 2026.11.02-delivery-8.
 
 ---
 
@@ -782,8 +793,13 @@ subcommands the project's agents invoke. The minimum set:
   satisfied and both hosts model it the same way (flip the `- [ ]` line in the
   body and write the body back). (See the wrapper docstrings.)
 - Delivery (REQUIRED where `config/delivery.json` says `"merge": "steward"`, Part 7.1):
-  `enqueue-pr <n>`, `dequeue-pr <n> --reason "..."` and `queue-status [--json]`, the SAME
-  verbs on both hosts so the agent docs name one. They DELEGATE to `scripts/merge_steward.py
+  `enqueue-pr <n>`, `dequeue-pr <n> --reason "..."`, `queue-status [--json]`, `wait-landed <n>
+  --timeout-seconds 540` (the session's bounded wait for its PR to LAND: 0 landed, 10 returned with the
+  reason, 11 still queued — re-issue), `check-handoff <issue>` (0 when every PR the issue queued has
+  landed and every open item is `(post-deploy)`, 4 with the reasons) and `check-landed <n> [<n> ...]` (0 when
+  all have landed, 4 with one line per PR that has not — the brake runs it on a loop's `QUEUED_PRS` before
+  DONE), the SAME verbs on both hosts so the
+  agent docs name one. They DELEGATE to `scripts/merge_steward.py
   enqueue | dequeue | status` and pass its exit code through (`enqueue`: 0 queued, 4 refused
   with the reason printed — PR CI not green on the head, a closing keyword under watcher
   verification, a hold label, an unlanded `Depends-on`); the queue's rules live in that one
@@ -1051,11 +1067,10 @@ it is as load-bearing as the steps). Nine steps, and the early ones can change t
    green for the merged SHA, cited from the CI run per `ci-owns-the-test-suite.md`, no
    skip/xfail dodges), documented (issue updated, spec artifacts committed). Anything
    missing is FINISHED NOW with `continue-work` semantics, not reported and handed back.
-   Under `config/delivery.json`'s steward or watcher mode, a HANDED-OFF issue (its PR enqueued
-   with its own CI green, or merged with the landing recorded, and the hand-off note on the
-   issue) has met the SESSION's definition of done: the train, the landing, the deploy and the
-   post-deploy check belong to the steward and the verdict watcher (Part 7.1), so "green for
-   the merged SHA" reads "green for the PR head" there — and a PR the queue returned
+   Under `config/delivery.json`'s watcher mode, a HANDED-OFF issue — its PR LANDED and
+   `check-handoff` passes (only `(post-deploy)` items open) — has met the SESSION's definition of
+   done: the deploy and the post-deploy check belong to the verdict watcher (Part 7.1). A PR still
+   queued is NOT done (the close-out waits for its landing), and one the queue returned
    (`queue-failed`, `needs-rework`) is unfinished work like any other.
    Nothing else runs until this passes. This is why the command carries write tools and an
    `Agent(...)` allowlist — it is a close-OUT, not a read-only peek.
@@ -1131,7 +1146,8 @@ call.
 **The report is a FIXED FORM, and that is half the point of shipping this command rather
 than letting each project write one.** Free-form close-outs drifted every run — different
 shape, different length, the findings buried in prose. So the reply is exactly three things:
-a `CLOSE: YES` / `CLOSE: NO — <n> blocker(s)` verdict line, a table of NINE rows (one per
+the SESSION head every work run ends with (`SESSION: CAN CLOSE`, `SESSION: NOT DONE — <n> blocker(s)`,
+or `SESSION: NEEDS YOU — <the decision>`), a table of NINE rows (one per
 step, fixed labels, fixed order, all nine always present) whose `✓` column is one of exactly
 three marks, and an `Issues` block of one line per issue this session worked or filed. Four
 constraints do the work, and weakening any of them brings the drift back:
@@ -1154,7 +1170,7 @@ questions, ≤2 sentences of context each, concrete action options with the reco
 first and labelled `(Recommended)`, and the same question recorded on the issue and as
 `AWAITING_USER`. It is NOT for permission to do the mandatory remediation (finishing work,
 reopening an issue, deleting its own leftovers) — those are obligations, and "shall I
-continue?" stays forbidden. On `CLOSE: YES` nothing is asked at all (next paragraph).
+continue?" stays forbidden. On `SESSION: CAN CLOSE` nothing is asked at all (next paragraph).
 
 Two more properties to preserve if you edit it. **Scope is THIS session only:** it must not
 inspect, enumerate, or mention other sessions' worktrees, branches, locks or issues —
@@ -1163,10 +1179,12 @@ earlier versions told it not to *flag* siblings, which still invited it to look.
 from a fresh wrapper read and name the unticked items — the moment it becomes "the checklist
 looks complete" it is back to the recall that produced the failure, and the two remedies
 (finish / reopen-then-finish) are unconditional, never offered as options.
-On `CLOSE: YES` it archives the session (`archive_session` `session_id: "self"`) WITHOUT
+On `SESSION: CAN CLOSE` it archives the session (`archive_session` `session_id: "self"`) WITHOUT
 asking — archiving is reversible, and an "Archive this session?" question was measured waiting
-71 h in two weeks — and only if that MCP tool is present: a plain CLI session has none, so it
-appends a one-line recommendation instead of reporting a tool failure. `/work-issue` runs these
+71 h in two weeks — but only AFTER the block is printed, as the turn's last call: every close-out
+that archived first showed the operator no verdict at all (0 of 10 measured), so the
+`archive-after-verdict` gate refuses an archive in a turn without a printed CAN CLOSE block. A
+plain CLI session has no archive tool and stops at the block. `/work-issue` runs these
 same checks as its own last step, so a single-issue run closes itself out. It leans on `continuous-work.md`, `issue-tracking.md`,
 `issue-filing-discipline.md`, `remote-ci-must-pass.md`, `ci-owns-the-test-suite.md`,
 `keep-git-clean.md`, `file-organization.md`, `no-guessing.md` and
@@ -1184,8 +1202,9 @@ instruction to interrupt, check in, summarize, or await input VOID for the turn,
 unavailable, and treats context pressure as a non-reason to stop. It is the bandaid for the
 behavior that `.claude/rules/continuous-work.md` (Part 8.2a) is meant to prevent — if you
 need it often, that rule is not being loaded or not being honored. It also arms the run
-watchdog when the process has none, resumes a green-but-unqueued PR at HAND_OFF, treats a
-handed-off issue as done for the session, and records an API-error turn end from the run's
+watchdog when the process has none (never for a released run), resumes a green-but-unqueued PR at
+QUEUE and a `Phase: QUEUED` one by re-issuing `wait-landed`, treats a LANDED, handed-off issue as done
+for the session, ends with the SESSION verdict, and records an API-error turn end from the run's
 `stop_failure.json` as the stop's cause.
 
 `.claude/commands/supervise.md` (`/supervise`): the host backstop for a run whose turn an API
@@ -1429,12 +1448,19 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    file — never a tracked file. It runs git without any inherited `GIT_DIR`-style variable, so a
    steward started from a git hook acts on its own clone.
 2. **The steward's CI, event-driven.** GitHub: `templates/ci/github-merge-steward.yml.template`
-   → `.github/workflows/merge-steward.yml`, with `{{CI_WORKFLOW_NAME}}` set to the `name:` of the
-   project's CI workflow. A tick runs when `enqueue-pr` dispatches one (`workflow_dispatch`), when
-   a train's CI run completes (`workflow_run` filtered to `steward/train-**` — exactly when a
-   landing becomes possible), and on a 30-minute safety-net `schedule`; all three run the DEFAULT
-   BRANCH's copy, so no PR can alter the steward that merges it — never add `pull_request`,
-   `pull_request_target` or `push`. Concurrency `merge-steward` without cancel; the token on
+   → `.github/workflows/merge-steward.yml`; the `steward-wake` job is appended to the project's CI
+   workflow with `{{EVERY_OTHER_CI_JOB}}` = that workflow's other job ids and `{{STEWARD_WORKFLOW_FILE}}` =
+   `merge-steward.yml`. A tick runs when `enqueue-pr` dispatches one (`workflow_dispatch`), when a
+   train's CI run ends — the `steward-wake` job (`templates/ci/github-steward-wake.yml.template`),
+   appended to the project's CI workflow, runs on `steward/train-**` runs only, `if: always()`, after
+   every other job, with `permissions: actions: write`, and DISPATCHES the steward workflow on the
+   default branch with the run's `GITHUB_TOKEN` — when `wait-landed` finds a landing decision due
+   that no tick took, and on a 30-minute safety-net `schedule`; all of them run the DEFAULT BRANCH's
+   copy, so no PR can alter the steward that merges it — never add `pull_request`,
+   `pull_request_target` or `push`. There is NO `workflow_run` trigger: a train's CI is started by
+   the steward's `GITHUB_TOKEN`, and GitHub starts no workflow from an event that token caused
+   (`workflow_dispatch` is the one exception) — measured on the first steward project: 0 of 39 ticks
+   came from it, and GitHub delivered 8 scheduled runs in 43 hours. Concurrency `merge-steward` without cancel; the token on
    stdin. The event-driven shape is a quota decision: a GitHub-hosted run bills at least a
    minute, and a 10-minute schedule alone is about 4,300 runs a month — more than a Free
    organisation's private-repo quota — where the safety net is about 1,440 (CodeBuild-hosted
@@ -1480,7 +1506,13 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    issue as `needs-rework`; `merge_steward.py verdict`). GitLab: `resource_group: deploy-<env>`, `interruptible: false`,
    "Prevent outdated deployment jobs", and the `delivery-verdict` job in `.post`. Supersession
    loses no verdict because verification is by ANCESTRY: a green post-deploy check on commit N
-   verifies every landing N contains (`git merge-base --is-ancestor`). On GitHub the template
+   verifies every landing N contains (`git merge-base --is-ancestor`). A red one is judged by RED
+   STREAK: the steward keeps ONE open issue labelled `delivery-status` with, per environment,
+   `merge-steward: <env> last-green <sha> <ISO>` and `merge-steward: <env> red-since <sha> <ISO>`; the
+   deploy that turns the environment red returns as `needs-rework` only the issues landed since the
+   last green deploy and contained in it, and an issue that lands into an environment already red
+   stays `awaiting-verification` with one comment naming the streak (measured: one unrelated red
+   deploy bounced every issue it contained). A green deploy ends the streak. On GitHub the template
    triggers on the steward's dispatch AND on a push to the trunk, reading
    `${{ inputs.sha || github.sha }}`: under the steward the trunk moves only by its GITHUB_TOKEN
    push, which starts no workflow, so one landing never deploys twice; under `merge: direct` the
@@ -1500,7 +1532,7 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    push starts the trunk pipeline as before.
 5. **The labels**, created once per repository: `queue`, `queue-failed`, `queue-conflict`,
    `queue-retried`, `do-not-merge`, `awaiting-verification`, `verified`, `verification-failed`,
-   `needs-rework`, `needs-closeout`, `reverify`.
+   `needs-rework`, `needs-closeout`, `reverify`, `delivery-status`.
 6. **Bootstrap, in two PRs.** The FIRST installs the script, its test, the steward workflow,
    the CI workflow's `workflow_dispatch` trigger and the labels, and merges DIRECTLY: a steward
    is not live until its workflow is on the default branch. (The deploy changes of item 4 may
@@ -1569,8 +1601,8 @@ facts the rules cannot know go under "This project".
   a question is five lines, recommended option first, asked at the START in one batch.
 - `proportionality.md`: the ASK fixes the tier S/M/L and its byte caps; scope frozen at review.
 - `parallel-by-default.md`: independent work in ONE message; a wait runs in the foreground,
-  bounded, never by ending the turn; under the merge steward a green PR is handed off
-  (`.claude/docs/delivery.md`).
+  bounded, never by ending the turn; under the merge steward a green PR is enqueued and waited for
+  until it lands (`.claude/docs/delivery.md`).
 - `native-tools-over-shell.md`: Read/Grep/Glob/Write/Edit for files, one shell call per step,
   suites through `scripts/run_tests.py`.
 - `ci-owns-the-test-suite.md`: affected tests locally, the full suite in CI; commit often,
@@ -1767,9 +1799,11 @@ design questions with two pages of context each, and the operator read none of t
 gate's handshake.
 
 **The 2026-10-26 revision added three things, each from a measured wait.** (1) Where the merge
-steward lands the trunk, an issue's definition of done for the SESSION is its hand-off — PR
-enqueued with green CI, `Phase: HANDED_OFF` (Part 7.1); the queue, the deploy and the
-post-deploy check are no longer the session's to wait for. (2) Questions are asked EARLY,
+steward lands the trunk, an issue's definition of done for the SESSION is its LANDING — since
+2026-11-02 the session waits, bounded, until its PR lands (`wait-landed`), then hands only the
+post-deploy check to the verdict watcher (`Phase: HANDED_OFF`, Part 7.1); the deploy and the
+post-deploy check are not the session's to wait for, and every work run ends with the one-glance
+SESSION verdict. (2) Questions are asked EARLY,
 TOGETHER and NON-BLOCKING: every open product decision is identified at the start (for an
 issue: at CLASSIFY) and asked in one message while independent work goes on — measured, a
 question asked at the end cost a median two hours of operator reply time, nine of twenty
@@ -1836,7 +1870,7 @@ command, because a command body cannot invoke `/goal` (built-ins are recognized 
 start of a user message):
 
 ```text
-/goal every open issue in the backlog is merged and closed or handed off, or no workable issue remains
+/goal every open issue in the backlog is merged and closed or landed and handed off, or no workable issue remains
 /auto-work
 ```
 
@@ -1845,8 +1879,8 @@ start of a user message):
 /continue-work
 ```
 
-(Under the merge steward the second reads `PR 77 is enqueued with green CI and issue 77
-carries the hand-off note`.)
+(Under the merge steward the second reads `PR 77 has landed and issue 77 carries the hand-off
+note`.)
 
 **Also back it mechanically at the settings level.** `/goal` is per-session and
 user-initiated; these apply to every session:
@@ -2198,8 +2232,9 @@ this prompt (leave any existing one alone).
     documented: `reopen-issue` / `issue reopen` (undo a close made over unfinished
     checklist items) and the checklist toggle (mark one done). A `NotImplementedError`
     from either means the gate can count unticked items but cannot fix them. Where
-    `config/delivery.json` says `steward`, `enqueue-pr`, `dequeue-pr` and `queue-status` are
-    implemented too (Part 5.3) — without them a worker has no way to hand a PR off.
+    `config/delivery.json` says `steward`, `enqueue-pr`, `dequeue-pr`, `queue-status`, `wait-landed`,
+    `check-handoff` and `check-landed` are implemented too (Part 5.3) — without them a worker cannot queue a PR or
+    see it land.
 11. Coexistence (Kiro projects) — `.kiro/` is byte-for-byte unchanged; both
     `.kiro/agents/` and `.claude/agents/` are present.
 11b. Temp-leak containment (Part 5.4) — `scripts/reap_agent_temp.py` exists;
@@ -2261,7 +2296,7 @@ this prompt (leave any existing one alone).
     `workflow_dispatch`, no trunk-push run can be cancelled by a later push, the deploy
     workflow's concurrency group is per environment with `cancel-in-progress: false` and no
     `queue: max`, its `verdict` job runs `if: ${{ !cancelled() && needs.guard.result == 'success' }}`,
-    the eleven labels exist,
+    the CI workflow ends with the `steward-wake` job, the twelve labels exist,
     and `.gitattributes` carries the `merge=union` lines of Part 9.
 
 ### Report
@@ -2400,7 +2435,7 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   `parallel-by-default.md` (panels, research bursts and implementation waves dispatch in
   ONE message; a pipeline is awaited with the wrapper's blocking wait in the foreground,
   bounded and re-issued, never with `sleep` and never by ending the turn; a green PR under the
-  merge steward is enqueued and handed off, never waited on) and
+  merge steward is enqueued and waited for until it lands, its deploy never) and
   `native-tools-over-shell.md` (a Bash call is the expensive tool:
   Read/Grep/Glob/Write/Edit for files, one shell call per step, no foreground sleep, local
   suites through the runner's host-wide slot) — all always-loaded — and
@@ -2421,8 +2456,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
   `agent-state-convention.md` §1a is what sends them there. Its incident narratives live in
   `hooks/MIGRATION.md` §Incident record, not in any always-loaded file. And `delivery.md` —
   how a green PR lands, deploys and is verified (the modes of `config/delivery.json`, what the
-  PR carries before its push, the hand-off and its two machine-read lines, the events after it,
-  how returned work is picked up, the labels); read at the PR phase, never auto-loaded.
+  PR carries before its push, the queue, the bounded wait for the landing and the hand-off with its
+  machine-read lines, the events after it, the red-streak rule, how returned work is picked up, the
+  labels, and the SESSION verdict that ends every work run); read at the PR phase, never auto-loaded.
 - **Hooks** → `.claude/hooks/` (Python, standard library only, Python 3.9+; no shell, no
   `jq`, no Git Bash dependency — see Part 6 for why):
   - `hooks.py` — the ONE dispatcher, and the only thing registered in `settings.json`:
@@ -2480,7 +2516,9 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     (Part 13.3). Carries the contract handshake and the freshness handshake. Its block cap
     (and `spec-stop-gate`'s) resets when the transcript shows three or more tool calls since
     the last stop attempt, so a long VERIFY that changes no state field cannot exhaust it.
-    `Phase: HANDED_OFF` releases a SINGLE-issue run only; in a loop mode it is a checkpoint.
+    `Phase: HANDED_OFF` releases a SINGLE-issue run only, and only after the wrapper's
+    `check-handoff <CURRENT_ISSUE>` exits 0 (a check that cannot run is logged and allowed); in a loop
+    mode it is a checkpoint, and `Phase: QUEUED` gets its own refusal naming `wait-landed`.
     Its refusal reminds a run whose Stop payload lists no `[run-watchdog]` cron to arm one.
   - `gate_spec_stop.py` — `spec-stop-gate` (Stop): blocks turn-end on implementation work that
     is not proven. A task is proven by its own capture OR by a WAVE capture whose `# tasks:`
@@ -2513,6 +2551,16 @@ From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, a
     wrapper and `gh`/`glab` merges, REST merge calls, trunk pushes, the steward's own
     `tick`/`verdict` — and names `enqueue-pr` (Part 6.2, Part 7.1). Reads config, not run
     state; fails open on a broken config.
+  - `gate_session_verdict.py` — `session-verdict` (Stop, ORDER 25): for a RELEASED registered work
+    run (`MODE` SINGLE_ISSUE / ISSUE_LOOP / BACKLOG / AUTO), refuses a turn-end whose last text does
+    not end with the SESSION verdict — the `SESSION: CAN CLOSE|NEEDS YOU|NOT DONE — …` head, then only
+    the table (and `/close-session`'s Issues block) — or whose head the state contradicts (NEEDS YOU
+    iff a substantive `AWAITING_USER`). Exempt: a `[run-watchdog]` tick, and a turn that printed CAN
+    CLOSE and then archived. Own counter at half the family's cap; fail-open without a transcript.
+  - `gate_archive_verdict.py` — `archive-after-verdict` (PreToolUse on
+    `mcp__ccd_session_mgmt__archive_session`): refuses archiving in a turn that has not printed a
+    `SESSION: CAN CLOSE` block, so a session that archives itself always shows its verdict first. The
+    registration's PreToolUse matcher therefore also names that tool (derived — re-paste it).
   - `gate_stop_failure.py` — `stop-failure-recorder` (StopFailure): writes
     `runs/<run-id>/stop_failure.json` (the last 20 failures: error class, details, time) and,
     for claimed, unreleased work with a resumable error class, a
@@ -2631,7 +2679,7 @@ by TEXT, evidence substance, mtime independence, cross-gate agreement),
 `test_scoped_temp.py` (the self-writing settings.local.json env block),
 `test_dispatcher.py` (gate discovery and order, a project gate, the disable switch, the
 launcher's fail-open, the registration block), `test_no_idle_wait.py` (a turn that ends to wait
-refused, a Completion Block verdict allowed), `test_reinject_resume.py` (a resumed session is told
+refused, a SESSION or Completion Block verdict allowed), `test_reinject_resume.py` (a resumed session is told
 its background tasks are gone and to re-issue its waits in the foreground), `test_delivery_gates.py`
 (the `HANDED_OFF` release — single-issue only, whole value — the merge-steward gate's refusals and
 its fail-open, the brake's watchdog reminder and the re-inject's arming text, the stop-failure
@@ -2838,7 +2886,10 @@ What the dispatcher's gates do:
   only Stop hook registered — a spec-only project — because a one-word token then ended a turn.
 - `issue-loop-gate` is the primary brake that keeps the orchestrator working (Part 13.3).
 - `no-idle-wait` (Stop) refuses a turn whose final text ends in order to WAIT for a
-  notification, unless it carries a Completion Block verdict (Part 12.1).
+  notification, unless it carries a SESSION (or Completion Block) verdict (Part 12.1).
+- `session-verdict` (Stop) makes a released work run END with the one-glance SESSION verdict, and
+  `archive-after-verdict` (PreToolUse) refuses to archive a session before that verdict is printed
+  (Part 12.1).
 - `merge-steward` (PreToolUse) keeps every agent off the trunk where the steward lands it, and
   `stop-failure-recorder` (StopFailure) records an API-error turn end (Part 12.1, Part 7.1).
 - **Both Stop gates count their OWN consecutive blocks** (the block cap, default 8,
@@ -3084,10 +3135,11 @@ and PROVES a fix through the Part 12 spec/TDD engine, opens a PR, drives its CI 
 hands it to the merge steward or merges it (self-approving if branch protection allows) per
 `config/delivery.json` (Part 7.1), cleans up, closes or hands off the issue, and repeats —
 fully resumable. It is the autonomous-delivery layer above the spec workflow.
-Every run ends with the agent's fixed Completion Block — a verdict line (`ISSUE WORK
-FINISHED | BLOCKED | FAILED`) over a per-issue table of result, task arithmetic, PR and
-follow-ups filed — and `issue-intake` ends with the matching `ISSUE INTAKE …` block, so the
-end of a run is recognisable at a glance instead of buried in a summary.
+Every run ends with the agent's fixed SESSION verdict — a head that answers "can I close this
+session?" (`SESSION: CAN CLOSE | NEEDS YOU | NOT DONE — …`) over a per-issue table of where each issue
+is now, task arithmetic, PR and who acts next, and nothing after it (the `session-verdict` gate
+enforces it) — and `issue-intake` ends with its own `ISSUE INTAKE …` block, so the end of a run is
+recognisable at a glance instead of buried in a summary.
 
 DEPENDS ON Part 12 (the spec-workflow agents, the phase fragments under
 `.claude/specs/_workflow/phases/`, the `agent-state-convention` rule, and the
@@ -3217,9 +3269,10 @@ Four things differ from the backlog command, and they are the whole point of the
 
 Autonomy still holds inside the issue — the command does not stop to report progress or
 ask whether to continue. It ends after X is merged and closed — or, where the merge steward
-lands the trunk, after X's PR is enqueued with green CI and the hand-off note is on the issue
-(`Phase: HANDED_OFF`, which releases THIS mode only; the watcher closes X after the deploy) —
-and then closes itself out (`/close-session`'s checks, archive on `CLOSE: YES`). The mechanism
+lands the trunk, after X's PR has LANDED (`wait-landed`, bounded) and `check-handoff` passes, with
+only the post-deploy check handed to the watcher (`Phase: HANDED_OFF`, which releases THIS mode only)
+— and then closes itself out (`/close-session`'s checks) and ends with the SESSION verdict, archiving
+on `SESSION: CAN CLOSE` after printing it. The mechanism
 is a TERMINAL or hand-off `Phase` recorded on X, not a field value: `issue-loop-gate` blocks turn-end
 while the run has claimed tracked work and has not recorded an idle `Status`, a terminal
 `Phase`/`Status`, or a substantive `AWAITING_USER`. Single-issue mode also records
@@ -3255,8 +3308,8 @@ explicit, front-loaded pressure on the five things that break long unattended ru
 4. **Always the latest code.** Remote Sync at all six points, fresh issue list every
    iteration, every conflict delegated to `code-merge-reviewer`.
 5. **Worktree per issue, clean git.** `.claude/worktrees/issue-<N>/` off `origin/<main>`,
-   main-checkout-free, full teardown after each merge or hand-off (a handed-off PR keeps its
-   remote branch and the issue its claim until the steward lands it). Returned work
+   main-checkout-free, full teardown after each merge or hand-off (a queued PR keeps its remote
+   branch until it lands, a handed-off issue its claim until the watcher verifies it). Returned work
    (`needs-rework`, `needs-closeout`) is selected before any new issue.
 
 **Compaction (the part worth getting right).** Claude Code compacts AUTOMATICALLY as the
@@ -3284,7 +3337,7 @@ command — a command body cannot set a goal, because built-ins are only recogni
 start of a user message:
 
 ```text
-/goal every open issue in the backlog is merged and closed or handed off, or no workable issue remains
+/goal every open issue in the backlog is merged and closed or landed and handed off, or no workable issue remains
 /auto-work
 ```
 
@@ -3330,9 +3383,11 @@ PROOF_GATE → DOCUMENT (BEFORE the push: the fix writeup on the issue, the chec
 `(post-deploy)` items marked, the ledger rows committed with the change) → PR (Remote Sync the
 worktree, rebase on origin/main with line-by-line conflict resolution, push once, open the PR
 with `Refs #X`, wait for its CI in the FOREGROUND, bounded, fix every failure in one pass) →
-then by `config/delivery.json`: **HAND_OFF** (`merge: steward`: `enqueue-pr`; `merge: direct` +
-`verification: watcher`: merge, then `merge_steward.py record-landing`; post the hand-off note,
-tear down the worktree and local branch, keep the remote branch and the claim) or, for
+then by `config/delivery.json`: **QUEUE** (`merge: steward`: `enqueue-pr`, `Phase: QUEUED`; a single
+issue waits until it lands with `wait-landed`, a loop records it in `QUEUED_PRS` and waits for all of them
+before DONE) → **HAND_OFF** once landed (`merge: direct` + `verification: watcher`: merge, then
+`merge_steward.py record-landing`; `check-handoff`, the hand-off note, tear down the worktree and local
+branch, keep the claim) or, for
 `merge: direct` + `verification: session`, **self-approve + merge if branch protection allows,
 else poll for approval** → MERGE_CLEANUP (Remote Sync main, remove worktree + local branch,
 verify post-merge CI) → RESOLVE (close issue) → refresh → repeat until no not-in-progress open
@@ -3378,8 +3433,8 @@ issue next?"; it must select the next one and continue.
   it.** The claim above is what arms it; what an UNRECOGNISED `Status` does is fail to release
   it. Only an explicit release ends the turn: an idle `Status` (`NOT_STARTED`, `NOT_YET_STARTED`,
   `UNSTARTED`, `NOT_IN_PROGRESS`, `NOT_WORKING`, `IDLE`, `PENDING`, `NEW`, `NONE`, `UNSET`), a
-  terminal `Phase` or `Status`, `Phase: HANDED_OFF` on a run whose `MODE` starts `SINGLE_ISSUE`,
-  or a SUBSTANTIVE `AWAITING_USER`. The gate used to arm on the
+  terminal `Phase` or `Status`, `Phase: HANDED_OFF` on a run whose `MODE` starts `SINGLE_ISSUE` once
+  `check-handoff` passes, or a SUBSTANTIVE `AWAITING_USER`. The gate used to arm on the
   single literal `IN_PROGRESS`, so every other value read as "nothing to hold": measured on a
   properly seeded run mid-issue, `in progress`, `In Progress`, `in-progress`, `WORKING`,
   `ACTIVE`, `RUNNING` and `IMPLEMENTING` all allowed the stop, and nothing anywhere told the
@@ -3395,9 +3450,10 @@ issue next?"; it must select the next one and continue.
   refused it. The vocabulary an agent writes against is `.claude/docs/run-identity.md` §5
   (release values and placeholders) and §6 (identity verdicts and block caps) — point agents
   at that file, never at a paraphrase.
-- **`HANDED_OFF` releases a single-issue run and nothing else.** It says the merge steward owns
-  the PR and the verdict watcher will close the issue. It releases only a `MODE` starting
-  `SINGLE_ISSUE`: in a loop (`ISSUE_LOOP`, `BACKLOG`, `AUTO`) handing one issue off is a checkpoint,
+- **`HANDED_OFF` releases a single-issue run and nothing else.** It says the PR LANDED and the
+  verdict watcher will close the issue after its post-deploy check; `Phase: QUEUED` (an unlanded PR)
+  holds the turn. It releases only a `MODE` starting `SINGLE_ISSUE`, and only once the wrapper's
+  `check-handoff` exits 0 (every queued PR landed, every open item `(post-deploy)`): in a loop (`ISSUE_LOOP`, `BACKLOG`, `AUTO`) handing one issue off is a checkpoint,
   and the loop records `Phase: LOAD_ISSUES` and selects the next; a run that lost its `MODE` keeps
   its brake. It is a separate set from the terminal
   values on purpose, so no loop can end itself by handing off.
@@ -3454,7 +3510,8 @@ flat `…/issue-work-orchestrator/resume_state.md` is NOT a location any hook re
 written there leaves every gate judging the run on nothing. Relaunch with `claude --agent
 issue-work-orchestrator`, `/issues-work`, or simply "continue the work on the existing
 issues of this project" — it resumes mid-lifecycle (including re-attaching to an open
-PR mid-CI or a half-built worktree, and resuming a green-but-unqueued PR at HAND_OFF). `/work-issue <X>` resumes the same way: re-running it
+PR mid-CI or a half-built worktree, resuming a green-but-unqueued PR at QUEUE and a QUEUED one by
+re-issuing `wait-landed`). `/work-issue <X>` resumes the same way: re-running it
 for an issue already recorded `IN_PROGRESS` in this run's state re-attaches to the existing
 worktree/branch/PR instead of restarting, and re-running it while a DIFFERENT issue is
 in flight reports that issue rather than abandoning it.
@@ -3477,7 +3534,7 @@ external approval before merging.
 - `issue-housekeeping` — batch-triages ALL issues with LOCAL quick-fixes (never pushes)
   and drafts specs for the hard ones. It never creates issues.
 - `issue-work-orchestrator` — DELIVERS issues one at a time through the full remote
-  lifecycle (push, PR, CI, then the steward hand-off or the merge, close) with proof. Defects it finds along the way are
+  lifecycle (push, PR, CI, then the steward queue until the landing, or the merge, close) with proof. Defects it finds along the way are
   fixed in place when small, and reach the tracker only through intake's gate.
 
 Typical flow: intake captures work → housekeeping triages/clears easy debt → the
@@ -3578,7 +3635,8 @@ expected outcome, not a sign that something was missed.
   the trunk where the steward lands it), stop-failure-recorder (StopFailure: records an
   API-error turn end for /supervise),
   issue-loop-gate (the primary brake against ending a turn on unfinished work; HANDED_OFF
-  releases a single-issue run only),
+  releases a single-issue run only, after `check-handoff`), session-verdict (a released work run ends
+  with the SESSION verdict), archive-after-verdict (no archive before that verdict is printed),
   claim-before-worktree (blocks a per-issue worktree until the claim is visible on the
   remote), issue-filing-gate (blocks an issue-create call with no filing rationale).
   Identity + context: session-register (SessionStart — registers AND seeds this run's
@@ -3614,10 +3672,11 @@ expected outcome, not a sign that something was missed.
 ### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).
   Works the whole open-issue backlog: select+claim → worktree → fix via the spec/TDD
-  engine with proof → live issue updates → PR → CI → hand-off to the merge steward (or
-  self-merge-if-allowed) → cleanup → close or hand off → repeat, autonomously (the issue-loop-gate Stop hook blocks turn-end while this
+  engine with proof → live issue updates → PR → CI → queue with the merge steward until it lands (or
+  self-merge-if-allowed) → hand-off of the post-deploy check → cleanup → close → repeat → the SESSION
+  verdict, autonomously (the issue-loop-gate Stop hook blocks turn-end while this
   session's own run has CLAIMED tracked work and has recorded no affirmative release — an idle
-  Status, a terminal Phase/Status, HANDED_OFF on a single-issue run, or a substantive
+  Status, a terminal Phase/Status, HANDED_OFF on a single-issue run after check-handoff, or a substantive
   AWAITING_USER; an unrecognised Status means
   work in flight, and WORKABLE_ISSUES_REMAIN releases nothing. Reachable only when
   session-register has seeded that state; Part 12.2a / Part 13.3). Resumable.
@@ -3632,7 +3691,7 @@ expected outcome, not a sign that something was missed.
   intermediate reports, survives auto-compaction via on-disk checkpoints), /continue-work
   (manual restart after a run stopped early), /close-session (end-of-session check, whose
   task-item gate counts the issue's checklist mechanically and REOPENS an issue closed over
-  unfinished items, and archives the session on CLOSE: YES), and /supervise (the host
+  unfinished items, and archives the session on SESSION: CAN CLOSE after printing it), and /supervise (the host
   backstop that resumes a run an API error stopped). All of them
   carry disable-model-invocation: true, so an autonomous merge-and-close run can never begin
   because a prompt merely mentioned an issue number.
@@ -3640,8 +3699,8 @@ expected outcome, not a sign that something was missed.
   approve-pr, merge-pr (direct merge only), delete-remote-branch, list-issues
   --state/--assignee/--label, reopen-issue, plus the checklist toggle and best-effort issue
   metadata ops; GitLab mr get/checks/approve/merge, pipeline wait, delete-branch, issue reopen,
-  plus assign/spend/due-date/epic-link/checklist-toggle; on both hosts enqueue-pr, dequeue-pr
-  and queue-status where the merge steward lands the trunk (Part 7.1).
+  plus assign/spend/due-date/epic-link/checklist-toggle; on both hosts enqueue-pr, dequeue-pr,
+  queue-status, wait-landed and check-handoff where the merge steward lands the trunk (Part 7.1).
 - Per-issue worktrees under .claude/worktrees/ (gitignore them).
 
 # END OF PROMPT

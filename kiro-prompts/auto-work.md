@@ -55,9 +55,9 @@ six-reviewer design panel in waves of at most four.
    `git checkout main`, never fast-forward the shared local `main` — sibling runs and the
    developer depend on it. Per the `keep-git-clean` steering file, commit
    source/config/docs/tests, never generated or temp files, and tear the worktree + branch
-   + lock down after every merge or hand-off so nothing stale survives — a handed-off PR's
-   remote branch and the issue's tracker claim stay until the steward lands it
-   (`.kiro/docs/delivery.md`).
+   + lock down after every merge, queue or hand-off so nothing stale survives — a queued PR's
+   remote branch stays until it lands, and a handed-off issue's tracker claim until the watcher
+   verifies it (`.kiro/docs/delivery.md`).
 
 # Setup, then the loop
 
@@ -91,8 +91,9 @@ Then run the outer loop until DONE: LOAD_ISSUES → SELECT (+ lock + claim) → 
 (fetch, worktree, per-worktree venv if this project executes code from worktrees) →
 CLASSIFY (tier S/M/L; every open product question asked now, in one batch, posted on the
 issue — an issue that cannot go on without the answer is set aside and the run continues) →
-FIX → PROOF_GATE → DOCUMENT (before the push) → PR → HAND_OFF (merge steward or verdict
-watcher) or MERGE_CLEANUP → RESOLVE → refresh → LOAD_ISSUES. Returned work — an issue labelled
+FIX → PROOF_GATE → DOCUMENT (before the push) → PR → QUEUE (merge steward: record it in `QUEUED_PRS`,
+go on) or HAND_OFF (direct merge with the verdict watcher) or MERGE_CLEANUP → RESOLVE → refresh →
+LOAD_ISSUES; before DONE every queued PR lands (`wait-landed`) and is handed off. Returned work — an issue labelled
 `needs-rework` or `needs-closeout` — is selected before any new issue.
 
 # Research, and the spec process
@@ -156,11 +157,12 @@ already achieves:
 
 # When you may stop (the only three exits)
 
-1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue (a handed-off issue keeps
-   its claim, so it is not workable). APPEND `Status: COMPLETED` and `Phase: DONE` — the
-   terminal values release the stop gate — and `WORKABLE_ISSUES_REMAIN: no` for the record, then
-   reply with the agent definition's Completion Block — verdict line, per-issue table, three
-   trailer lines — and nothing else; it is the only message of the run carrying that verdict.
+1. **DONE** — SELECT finds no open, not-in-progress, unlocked issue (a queued or handed-off issue
+   keeps its claim, so it is not workable), and every PR in `QUEUED_PRS` has landed and been handed
+   off. APPEND `Status: COMPLETED` and `Phase: DONE` — the terminal values release the stop gate —
+   and `WORKABLE_ISSUES_REMAIN: no` for the record, then reply with the agent definition's SESSION
+   verdict — the head (`SESSION: CAN CLOSE` / `NEEDS YOU` / `NOT DONE`) and the per-issue table — and
+   nothing else.
 2. **A single batched escalation** when genuinely blocked (an issue too ambiguous to
    derive testable criteria even after research, a PROOF_GATE exhausted after the cap, a
    genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper
@@ -169,10 +171,10 @@ already achieves:
    an ambiguous issue specifically: comment the question on the issue, `issue release <N>`,
    drop the lock, remove the worktree, and move to the next issue.
 3. **A fatal environment failure** — no wrapper script / no `ISSUE_MECHANISM`. Record a
-   terminal `Phase: ABANDONED` with the reason, then stop with the Completion Block, verdict
-   `ISSUE WORK FAILED — <reason>`.
+   terminal `Phase: ABANDONED` with the reason, then stop with the SESSION verdict,
+   `SESSION: NOT DONE — <reason>`.
 
-Anything else — a finished or handed-off issue, a long fix, a filling context window, an urge
+Anything else — a finished or queued issue, a long fix, a filling context window, an urge
 to summarize — is not a stopping point. Select the next issue and keep going. (Kiro has no run
 watchdog: a turn an API error ends stays ended until the operator types `@continue-work`.)
 

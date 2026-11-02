@@ -8,7 +8,8 @@ session and overrides any contrary habit or instruction.
 **Work continues until the work is finished.** A turn ends for exactly two reasons: the
 task is complete against its definition of done, or one of the four Proven Exceptions
 below applies AND has been proven. Nothing else. (Under the merge steward a session's issue is
-done at its hand-off — `.claude/docs/delivery.md`.)
+done when its PR has LANDED and only the post-deploy check is handed off; a work run ends with the SESSION
+verdict — `.claude/docs/delivery.md` §3, §7.)
 
 Forbidden as turn-ending acts: "shall I continue?"; an unrequested summary, status report
 or progress recap (report when the work is DONE — the operator does not read interim
@@ -60,7 +61,9 @@ unfinished. A completed sub-deliverable is not a turn boundary. If your next act
 An API error ends a turn with no Stop hook. Every registered run arms ONE session-only
 watchdog per process, before other work: exactly the `CronCreate` the session-start context
 prints. When it fires, resume claimed unfinished work per `/continue-work`, else answer
-`idle`; `CronDelete` it at close-out (`/supervise` is the host backstop).
+`idle`; `CronDelete` it at the hand-off and at close-out, never re-arming a released run. Never keep a
+session alive to watch an issue or a deploy: post `reverify` or a note on the issue and end (`/supervise` is
+the host backstop).
 
 ## Context pressure
 

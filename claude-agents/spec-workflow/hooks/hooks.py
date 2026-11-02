@@ -4,9 +4,9 @@
 Usage:
     python .claude/hooks/hooks.py session-start     # SessionStart: register, scoped temp, re-inject
     python .claude/hooks/hooks.py pre-tool-use      # PreToolUse: env vars, sleep, push gate, claim, merge steward,
-                                                    #             filing (+ project)
+                                                    #             filing, archive-after-verdict (+ project)
     python .claude/hooks/hooks.py post-tool-use     # PostToolUse: project gates only (none shipped)
-    python .claude/hooks/hooks.py stop              # Stop: evidence gate, no-idle-wait, loop brake
+    python .claude/hooks/hooks.py stop              # Stop: evidence gate, no-idle-wait, loop brake, session verdict
     python .claude/hooks/hooks.py stop-failure      # StopFailure: record a turn an API error ended (resume request)
     python .claude/hooks/hooks.py selftest          # prove the registered launch form executes and blocks
     python .claude/hooks/hooks.py registration      # print the settings.json hooks block to install
@@ -35,7 +35,8 @@ GATE DISCOVERY. Every `gate_*.py` beside this file that declares `EVENT`, `ORDER
 `TOOLS` (a set of tool names, PreToolUse only; absent = every tool) is its matcher. The framework's gates use
 ORDER 10..90; a PROJECT adds its own gate as `gate_<name>.py` with an ORDER above 100 (or below 10 to run
 first) — no second dispatcher, no second registration. A project-specific `Write`/`Edit` gate declares
-`TOOLS = {"Write", "Edit"}` and the project widens the PreToolUse matcher in settings.json to `Bash|Write|Edit`.
+`TOOLS = {"Write", "Edit"}`; the PreToolUse matcher is DERIVED from every gate's TOOLS (`registration` prints it —
+re-paste after adding a gate), never widened by hand.
 `hooks.config.json` beside this file, `{"disabled_gates": ["spec-tdd-gate"]}`, switches a gate off by its
 HOOK name; the self-test honours it.
 
@@ -225,6 +226,7 @@ def dispatch(  # noqa: C901 — the per-event policy, in one place
             stderr.append(decision.stderr)
         if decision.blocked:
             blocked = True
+            ctx.blocked_by.append(name)
             if event == "pre-tool-use":
                 break
     if event in NON_BLOCKING_EVENTS:
@@ -838,6 +840,43 @@ def _selftest_checks(results: List[Tuple[str, bool, str]]) -> None:  # noqa: C90
                     f"exit {waiting.returncode} {waiting.stderr[:120]}",
                 )
             )
+        if "session-verdict" not in off:
+            _selftest_session_verdict(results, project, tmp, spawn)
+
+
+def _selftest_session_verdict(results: List[Tuple[str, bool, str]], project: Path, tmp: str, spawn: Any) -> None:
+    """A released single-issue run whose transcript ends WITHOUT the SESSION verdict is refused; the same run
+    ending with a valid block is allowed."""
+    sid = "selftest-verdict-3333-4444-555566667777"
+    run_dir = project / ".claude" / "agent-state" / lib.ORCHESTRATOR_DIRNAME / "runs" / sid[:8]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / lib.RESUME_FILENAME).write_text(
+        f"SESSION_ID: {sid}\nMODE: SINGLE_ISSUE\nStatus: COMPLETED\nPhase: DONE\nCURRENT_ISSUE: 999\n"
+        "AWAITING_USER: none\n",
+        encoding="utf-8",
+    )
+    transcript = Path(tmp) / "verdict-transcript.jsonl"
+
+    def ending(text: str) -> subprocess.CompletedProcess:
+        prompt = {"type": "user", "message": {"role": "user", "content": "work issue 999"}}
+        reply = {
+            "type": "assistant",
+            "message": {"role": "assistant", "model": "claude", "content": [{"type": "text", "text": text}]},
+        }
+        transcript.write_text(json.dumps(prompt) + "\n" + json.dumps(reply) + "\n", encoding="utf-8")
+        payload = {"session_id": sid, "cwd": project.as_posix(), "hook_event_name": "Stop"}
+        payload["transcript_path"] = str(transcript)
+        return spawn("stop", json.dumps(payload), project)
+
+    prose = ending("Issue 999 is merged and closed. Here is what shipped, in some detail.")
+    block = ending(lib.SESSION_TEMPLATE)
+    results.append(
+        (
+            "Stop refuses a finished work run that does not end with its SESSION verdict, allows one that does",
+            prose.returncode == 2 and "session-verdict" in prose.stderr and block.returncode == 0,
+            f"prose exit {prose.returncode}, block exit {block.returncode} {block.stderr[:120]}",
+        )
+    )
 
 
 def _registration_line(results: List[Tuple[str, Optional[bool], str]]) -> None:

@@ -52,17 +52,19 @@ been compacted since you started, so do not trust recall:
    cheap. If the following message names the work, use it; otherwise infer it — do not ask.
 4. Resume the recorded phase: PR open with CI running → re-issue the foreground bounded wait
    (`wait-run <id> --timeout-seconds 540` / `pipeline wait <id> --timeout-seconds 540`); PR
-   green but not yet enqueued, or merged with no landing line → HAND_OFF
-   (`.kiro/docs/delivery.md` §3); handed off → that issue is done for this session (close-out
-   for a single issue, LOAD_ISSUES in a loop); returned as `needs-rework` / `queue-failed` →
-   the issue is yours again, fix and re-enqueue; merged but not cleaned → MERGE_CLEANUP.
+   green but not yet enqueued → QUEUE; `Phase: QUEUED` → re-issue `wait-landed <PR>
+   --timeout-seconds 540` (a loop: carry `QUEUED_PRS` forward and continue); landed, or merged with no
+   landing line → HAND_OFF (`check-handoff` first, `.kiro/docs/delivery.md` §3); handed off → that
+   issue is done for this session (close-out and the SESSION verdict for a single issue, LOAD_ISSUES
+   in a loop); returned as `needs-rework` / `queue-failed` → the issue is yours again: re-claim, fix,
+   re-enqueue, wait; merged but not cleaned → MERGE_CLEANUP.
 
 **Then continue the recorded phase to a terminal state.** Never restart completed work and
 never redo a step the evidence shows is done. If an issue is in flight, drive it to its
 definition of done — merged and closed, or, under `config/delivery.json`'s steward or watcher
-mode, handed off (claim still held, spec artifacts committed, tests green with captured
-evidence, the PR's CI green, worktree and local branch torn down, then the issue closed or its
-hand-off note posted). Honor the standing steering rules
+mode, LANDED with only its post-deploy check handed off (claim still held, spec artifacts committed,
+tests green with captured evidence, the PR landed, `check-handoff` passed, worktree and local branch
+torn down, the hand-off note posted), then the SESSION verdict. Honor the standing steering rules
 throughout: complete command output (`no-output-shortening`), evidence for every claim
 (`no-guessing`), wrapper-only remote operations (`use-git-wrapper-scripts`), clean git
 (`keep-git-clean`), the issue as the live record (`issue-tracking`), no AI attribution

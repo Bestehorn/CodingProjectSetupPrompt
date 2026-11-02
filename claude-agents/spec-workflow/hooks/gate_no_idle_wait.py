@@ -51,7 +51,9 @@ WAIT_RE = re.compile(
 # A Completion Block's verdict line: the close-out table (`CLOSE: ...`) or the orchestrator's
 # `ISSUE WORK FINISHED|BLOCKED|FAILED — ...` (which also ends a single-issue run that HANDED OFF its PR).
 VERDICT_RE = re.compile(
-    r"^(?:CLOSE|VERDICT|RESULT|STATUS|OUTCOME):|^ISSUE WORK (?:FINISHED|BLOCKED|FAILED)\b", re.MULTILINE
+    r"^(?:CLOSE|VERDICT|RESULT|STATUS|OUTCOME):|^ISSUE WORK (?:FINISHED|BLOCKED|FAILED)\b"
+    r"|^SESSION: (?:CAN CLOSE|NEEDS YOU|NOT DONE)\b",
+    re.MULTILINE,
 )
 
 

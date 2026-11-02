@@ -1,12 +1,12 @@
 ---
-description: Work ONE specific issue end to end — claim it in-progress on the tracker FIRST, sync from remote, develop the fix in its own git worktree via the spec/TDD engine (spec artifacts committed before implementation), open a PR and drive its CI green, then hand it to the merge steward (or merge it and verify it, per config/delivery.json), close out the session, and stop. Single issue only; never continues into the backlog.
+description: Work ONE specific issue end to end — claim it in-progress on the tracker FIRST, sync from remote, develop the fix in its own git worktree via the spec/TDD engine (spec artifacts committed before implementation), open a PR and drive its CI green, then queue it with the merge steward and wait until it LANDS (or merge it and verify it, per config/delivery.json), hand only the post-deploy check to the verdict watcher, close out the session, end with the one-glance SESSION verdict, and stop. Single issue only; never continues into the backlog.
 argument-hint: "[issue number or ID, e.g. 77 or PROJ-123]"
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, AskUserQuestion, CronCreate, CronDelete, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
 Take issue **$ARGUMENTS** (call it issue X) from open to **merged and verified** — or, where the merge
-steward lands the trunk, to **queued and handed off** (`.claude/docs/delivery.md`) — scoped to
+steward lands the trunk, to **landed, with only its post-deploy check handed off** (`.claude/docs/delivery.md`) — scoped to
 THIS ONE ISSUE. Steps 1–8 below ARE the single-issue lifecycle; consult the matching phase
 section of `.claude/agents/issue-work-orchestrator.md` only if a detail here leaves a
 question open — never read the whole file up front. You play the orchestrator role in this
@@ -70,7 +70,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      (`python scripts/run_checks.py`, the same one CI runs), the one-time
      concurrency-safe git config (`gc.auto 0`, `maintenance.auto false`,
      `gc.autoDetach false`), and `ISSUE_MECHANISM` (the wrapper script — its absence is
-     fatal: stop with the Completion Block, verdict FAILED). Record the in-progress
+     fatal: stop with `SESSION: NOT DONE — no git wrapper script; …`). Record the in-progress
      convention and the merge authority.
 
 **Step 1: Read issue X fresh from the remote**
@@ -78,10 +78,9 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      local `main` — you stay MAIN-CHECKOUT-FREE and branch off `origin/<main>`.
    - Fetch X fresh via the wrapper (`get-issue`, `get-issue-comments`) — never work from a
      cached or previously-listed snapshot. Quote its state, labels, assignee, and body.
-   - If X is already CLOSED, stop with the Completion Block — X as a `skipped` row quoting
-     the state (do not reopen).
-   - If X does not exist, stop with the Completion Block — X as a `skipped` row quoting the
-     wrapper's exact error.
+   - If X is already CLOSED, stop with the SESSION verdict — X as a `not started: closed` row (do not
+     reopen).
+   - If X does not exist, stop with the SESSION verdict — X as a `not started: <the wrapper's error>` row.
 
 **Step 2: Claim X as in-progress BEFORE any work (the anti-duplicate-work gate)**
    - Acquire the local cross-run lock FIRST: atomically `mkdir`
@@ -90,7 +89,7 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      timestamp inside. RELEASING it means reading that record and, only when it names this run,
      `rm -r` of the directory with its record (`rmdir` refuses a non-empty directory). If it exists and its owner is a LIVE run (in `registry.json` with a
      fresh heartbeat), a sibling session in this clone already has X: stop with the
-     Completion Block (X as a `skipped` row naming that run).
+     SESSION verdict (X as a `not started: held by run <id>` row).
      Reclaim only a provably stale lock (owner heartbeat past the bound AND its worktree's
      `.git` pointer no longer resolves AND its `resume_state` is terminal), archiving the
      stale contents first.
@@ -266,22 +265,28 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      and re-pushing to discover the next is forbidden. Never abandon a red pipeline.
 
 **Step 8: Land, verify or hand off — then close out and STOP**
-   - **`merge: steward` (any verification) — HAND OFF.** `python scripts/<wrapper>.py enqueue-pr <PR>`
-     (exit 4 prints why the queue refuses it: fix that, never work around it; the `merge-steward` gate refuses
-     `merge-pr` and any push to the trunk). Post the hand-off note on X (`.claude/docs/delivery.md` §3: PR,
-     evidence path, what the post-deploy check must show, and the two `merge-steward:` lines verbatim, the
-     claim time from Step 2). APPEND `Phase: HANDED_OFF` to `resume_state.md` and `Phase: DONE` +
-     `Status: COMPLETED` to `workflow_state.md`. The steward lands it; the verdict watcher (or, under
-     `verification: none`, the landing itself) verifies and closes X. A conflict, a red train or a red deploy
-     comes back to X as `needs-rework` with the claim released — a later run picks it up. Keep the tracker
-     claim; release the local lock in the close-out below.
+   - **`merge: steward` — QUEUE, WAIT UNTIL IT LANDS, then HAND OFF the post-deploy check**
+     (`.claude/docs/delivery.md` §3). `python scripts/<wrapper>.py enqueue-pr <PR>` (exit 4 prints why the queue
+     refuses it: fix that, never work around it; the `merge-steward` gate refuses `merge-pr` and any push to the
+     trunk). Post the queued note on X with the two `merge-steward:` lines verbatim (the claim time from Step
+     2) and APPEND `Phase: QUEUED`. Then wait: `python scripts/<wrapper>.py wait-landed <PR> --timeout-seconds
+     540` in the FOREGROUND (Bash timeout 600000), re-issued while it exits 11; never dispatch the steward or a
+     deploy yourself. Exit 10 (returned, reason printed): re-claim X (`start-issue`), fix every cause in ONE
+     pass, push once, PR CI green, enqueue again, wait again; after 3 returns or 3 hours without a landing,
+     APPEND `AWAITING_USER: PR #<n> has not landed after 3 h — <queue state>` and end `SESSION: NEEDS YOU`.
+     Exit 0 (`landed <sha>`): under `verification: none` the landing verified and closed X — APPEND `Phase:
+     DONE` + `Status: COMPLETED`. Under `verification: watcher` run `python scripts/<wrapper>.py check-handoff
+     <X>`: exit 4 lists what is still open — finish every item that is not `(post-deploy)` now, never hand it
+     off; exit 0 → post the hand-off note (the landing, evidence path, what the post-deploy check must show),
+     APPEND `Phase: HANDED_OFF` to `resume_state.md` and `Phase: DONE` + `Status: COMPLETED` to
+     `workflow_state.md`. Keep the tracker claim until the watcher verifies X.
    - **`merge: direct` + `verification: watcher` — MERGE, RECORD, HAND OFF.** Approve + merge per the
      recorded authority (`approve-pr`, `merge-pr`; if branch protection forbids self-approval, set
      `AWAITING_USER: waiting for external approval of PR #<n>`, poll `get-pr` on an interval with
      checkpoints, merge once approved and CI is green, then clear `AWAITING_USER` to `none`); confirm the
      merge landed (`git fetch origin --prune --no-auto-gc`, `git merge-base --is-ancestor <merge-sha>
-     origin/<main>`); `python scripts/merge_steward.py record-landing <PR>`; then the hand-off note and
-     `Phase: HANDED_OFF` exactly as above.
+     origin/<main>`); `python scripts/merge_steward.py record-landing <PR>`; then `check-handoff`, the hand-off
+     note and `Phase: HANDED_OFF` exactly as above.
    - **`merge: direct` + `verification: session` — today's lifecycle.** Merge as just described, then wait for
      the post-merge trunk pipeline in the FOREGROUND, bounded and re-issued — its deploy and post-deploy stage
      run the committed end-to-end check, and that verdict on a commit containing the merge is the E2E
@@ -293,35 +298,37 @@ Claude/AI/bot into a branch, commit, PR, or issue and never add a `Co-Authored-B
      recorded on the issue may stay unticked, routed per `issue-filing-discipline.md`) — time spent recorded
      (elapsed from the Step 2 start time), then close X via `update-issue`, and append `Status: COMPLETED`
      and `Phase: DONE`. **The terminal or hand-off value is what releases the Stop gate** — it must be the
-     WHOLE value of the field (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`).
+     WHOLE value of the field (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`); `HANDED_OFF` releases only
+     after `check-handoff` passes.
    - **Close out — every mode, at once, without asking.** Run the `/close-session` checks
      (`.claude/commands/close-session.md`) as this command's last step: tree clean; nothing unpushed
      (`git -C <worktree> status --porcelain` empty AND `git -C <worktree> log origin/<branch>..HEAD` empty —
      otherwise push, never discard); tear down the worktree venv FIRST if one was provisioned (locked DLLs
      otherwise block removal on Windows), `git worktree remove .claude/worktrees/issue-<X>`, `git branch -D
-     issue-<X>-<slug>` (the REMOTE branch stays until the PR lands — deleting a PR's head branch closes the
-     GitHub PR and leaves a GitLab MR without its source; the host's delete-on-merge setting removes it after
-     the landing, and `delete-remote-branch` only after a direct merge the host did not auto-delete), verify
-     with `git worktree list`; the reaper; under `verification: session` remove the tracker's in-progress
-     marker BEFORE releasing the local lock (`.locks/issue-<X>.lock`, as Step 2 says); under hand-off keep the tracker claim and release only the lock; `CronDelete`
-     the run watchdog. On `CLOSE: YES` archive the session (`archive_session` with `session_id: "self"`)
-     WITHOUT asking — the measured "Archive this session?" wait was 71 h in two weeks; on `CLOSE: NO` the
-     close-out's own question rules apply.
-   - **Then STOP, and reply with the agent definition's Completion Block** — the fixed
-     verdict line, the per-issue table (X as its `closed` row, or its `handed off` row with the queued or
-     landed PR; `Tasks` from a fresh re-read; the CI-run count in `Detail`; plus a `filed` row for anything
-     routed through intake), and the three trailer lines — and nothing else. Do NOT select another
-     issue — that is what `/issues-work` (or `/auto-work`, for an unattended whole-backlog
-     run) is for. The block's `Backlog` line is where "other workable issues remain" is
-     said; the user decides from there.
+     issue-<X>-<slug>`; the PR has landed, so its REMOTE branch goes too (the host's delete-on-merge setting,
+     else `delete-remote-branch`) — a PR whose landing you could not wait for (NEEDS YOU) keeps it, because
+     deleting a PR's head branch closes the GitHub PR and leaves a GitLab MR without its source; verify with
+     `git worktree list`; the reaper; under `verification: session` remove the tracker's in-progress marker
+     BEFORE releasing the local lock (`.locks/issue-<X>.lock`, as Step 2 says); under hand-off keep the
+     tracker claim and release only the lock; `CronDelete` the run watchdog. Never keep this session alive to
+     watch the deploy or another issue: a `reverify` or a note on X is the whole follow-up.
+   - **Then STOP, and reply with the SESSION verdict** (the agent definition's "The SESSION verdict"
+     section): `SESSION: CAN CLOSE — …` / `SESSION: NEEDS YOU — …` / `SESSION: NOT DONE — …`, a blank line and
+     the table — X as its `closed` or `landed — deploy check pending` row with `Tasks` from a fresh re-read, plus
+     a `filed` row for anything routed through intake — and NOTHING after the table. In the desktop app the
+     `wrap_up` recap repeats the SESSION line verbatim. On `SESSION: CAN CLOSE` archive the session
+     (`archive_session` with `session_id: "self"`) WITHOUT asking, as the LAST call of the turn and only after
+     the block is printed (the `archive-after-verdict` gate refuses it otherwise); write nothing after it. On
+     NEEDS YOU / NOT DONE never archive. Do NOT select another issue — that is what `/issues-work` (or
+     `/auto-work`) is for.
 
 **Escalation and the ambiguous-issue path**
    - If X is too ambiguous to derive testable acceptance criteria even after research, post
      the clarifying question(s) ON issue X via `comment-issue` (questions live on the
      issue, not in transient chat), then release the claim with `issue release <X>` and the
      local lock, tear down the worktree venv and remove the worktree so nothing stale is
-     left, record the state, and stop with the Completion Block (X as a `blocked` row,
-     `Detail` = released; question on issue). Do not guess, and do not silently substitute
+     left, record the state (`AWAITING_USER` naming the question), and stop with `SESSION: NEEDS YOU — <the
+     question>` (X as a `blocked: question on the issue` row). Do not guess, and do not silently substitute
      a different issue.
    - Otherwise escalate ONCE, batched, only when genuinely blocked (proof gate exhausted, a
      genuinely ambiguous conflict, an undiagnosable CI failure, a missing wrapper

@@ -53,7 +53,7 @@ spec-workflow specialists, `code-merge-reviewer`) and the Part 8A.2 gate scripts
 `.kiro/hooks-bin/` — in particular the `issue-loop-gate` gate, the `stop` gate that mechanically
 holds the agent in the backlog loop, and the `claim-before-worktree` gate, which blocks
 creating a worktree for an unclaimed issue. Like every orchestrator run, it ends with the
-agent definition's fixed Completion Block (`ISSUE WORK FINISHED | BLOCKED | FAILED` over a
+agent definition's fixed SESSION verdict (`SESSION: CAN CLOSE | NEEDS YOU | NOT DONE — …` over a
 per-issue table), never a free-form summary.
 
 `continue-work` has no fleet dependency — it restarts any stalled session. Both prompts
@@ -68,9 +68,9 @@ is the task-item gate — it counts the issue's `- [ ]` / `- [x]` lines from a f
 read and, if the issue was CLOSED while items were still unfinished, REOPENS it, says so,
 finishes them, and re-closes. That needs the wrapper's `issue reopen` / `reopen-issue`
 subcommand and its checklist toggle (Part 6.2). Its worktree/lock/CI steps degrade gracefully
-outside an orchestrator run. A handed-off issue (PR enqueued with the merge steward, or landed
-and recorded — `.kiro/docs/delivery.md`) counts as the session's work done; the verdict watcher
-closes it. Two endings differ from the Claude twin: Kiro has no session-archive tool (the
+outside an orchestrator run. A handed-off issue (its PR LANDED, only `(post-deploy)` items open —
+`.kiro/docs/delivery.md`) counts as the session's work done; a queued PR does not. The verdict
+watcher closes it. Two endings differ from the Claude twin: Kiro has no session-archive tool (the
 table is the go-ahead; ending or archiving the session is the operator's), and no structured
 question tool, so a blocker needing a decision becomes one batched `Questions` block instead
 of an `AskUserQuestion` call.

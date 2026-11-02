@@ -4,12 +4,12 @@ The Kiro CLI twin of the Claude Code
 [`issue-work-orchestrator`](../../claude-agents/issue-work-orchestrator/README.md): an
 autonomous, main-session agent that works a project's entire open-issue backlog end to
 end — select, claim, fix through the embedded spec/TDD engine, prove, PR, drive its CI green,
-hand it to the merge steward (or merge it — `config/delivery.json`, `.kiro/docs/delivery.md`),
-clean up, close or hand off, repeat. The agent definition is
+queue it with the merge steward and see it LAND (or merge it — `config/delivery.json`,
+`.kiro/docs/delivery.md`), hand only the post-deploy check to the verdict watcher, clean up, repeat. The agent definition is
 [`issue-work-orchestrator.md`](issue-work-orchestrator.md); the Kiro agent config is
 [`KiroCLIAgent-IssueWorkOrchestrator.json`](KiroCLIAgent-IssueWorkOrchestrator.json).
-The lifecycle, the standing disciplines, the escalation contract, and the fixed Completion
-Block that ends every run (identical on both hosts) are documented in the Claude twin's
+The lifecycle, the standing disciplines, the escalation contract, and the fixed SESSION
+verdict that ends every run (identical on both hosts) are documented in the Claude twin's
 README — this port differs in host paths (`.kiro/…`), a four-subagent concurrency cap, and
 the gate semantics below.
 
@@ -34,7 +34,8 @@ gone with the scripts:
   non-placeholder `CURRENT_ISSUE`, a non-placeholder `CURRENT_SPEC`, or a `MODE` naming an
   orchestrator mode — and releases only on an explicitly idle `Status`, a terminal `Phase`
   **or** `Status` (whole-value), `Phase: HANDED_OFF` on a run whose `MODE` starts with `SINGLE_ISSUE`
-  (a single-issue run whose PR the merge steward now owns), or a substantive `AWAITING_USER`.
+  once its PR LANDED and `check-handoff` passes (`Phase: QUEUED` holds the turn), or a substantive
+  `AWAITING_USER`.
   Its polarity is inverted: an unrecognised `Status` is work in flight.
   `WORKABLE_ISSUES_REMAIN` selects the refusal's wording and gates nothing.
 - The `merge-steward` `preToolUse` gate runs here too (matcher `execute_bash`): where
@@ -42,8 +43,9 @@ gone with the scripts:
   host merges and any push to the trunk, so only the steward lands what its train tested.
 - What does NOT carry over, by harness: Kiro has no StopFailure event (the
   `stop-failure-recorder` gate is installed but never invoked), no session cron (no run
-  watchdog), and its stop payload names no transcript (`no-idle-wait` allows). A turn an API
-  error ends is resumed by the operator with `@continue-work`.
+  watchdog), its stop payload names no transcript (`no-idle-wait` and `session-verdict` allow — the
+  SESSION verdict is the agent's own discipline here), and no archive tool (`archive-after-verdict` never
+  fires; the operator archives). A turn an API error ends is resumed by the operator with `@continue-work`.
 - Identity resolves through three session-keyed rungs (the registry's `state_dir`,
   `runs/<first-8-of-session_id>/`, a `runs/*/resume_state.md` recording this `SESSION_ID`).
   A registered session with no state file is `BROKEN` and the Stop gates fail CLOSED on it;

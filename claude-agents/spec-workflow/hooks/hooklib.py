@@ -153,7 +153,7 @@ WATCHDOG_PROMPT = (
 RESUME_REQUESTS_DIRNAME = ".resume-requests"
 #: The delivery modes (.claude/docs/delivery.md); the absent file is today's behaviour.
 DELIVERY_CONFIG = Path("config") / "delivery.json"
-DELIVERY_DEFAULTS = {"merge": "direct", "verification": "session", "trunk": "main"}
+DELIVERY_DEFAULTS = {"merge": "direct", "verification": "session", "trunk": "main", "host": ""}  # host "" = not set
 
 # Runner-summary predicates, anchored on a NON-ZERO COUNTER, never a bare word: a test NAMED
 # `test_reports_skipped_reason` is not a skip, and `0 failed` is not a failure.
@@ -360,8 +360,8 @@ def run_is_released(status: str, phase: str, awaiting: str, mode: str) -> bool:
 
 
 def delivery_settings(project_dir: Path) -> Dict[str, str]:
-    """`config/delivery.json`'s merge / verification / trunk, defaults for whatever is absent or unreadable. A
-    gate that reads this FAILS OPEN on a broken file: the defaults are today's behaviour."""
+    """`config/delivery.json`'s merge / verification / trunk / host, defaults for whatever is absent or unreadable
+    (host "" = not set). A gate that reads this FAILS OPEN on a broken file: the defaults are today's behaviour."""
     settings = dict(DELIVERY_DEFAULTS)
     path = project_dir / DELIVERY_CONFIG
     if not path.is_file():
@@ -376,6 +376,21 @@ def delivery_settings(project_dir: Path) -> Dict[str, str]:
             if isinstance(value, str) and value.strip():
                 settings[key] = value.strip()
     return settings
+
+
+def project_wrapper(project_dir: Path) -> Optional[Path]:
+    """The project's git wrapper: `scripts/<host>_wrapper.py` for the host `config/delivery.json` names, else the
+    first of `scripts/gitlab_wrapper.py`, `scripts/github_wrapper.py` that exists. A project kept on two hosts (the
+    second a read-only archive) has both wrappers; the queue's host decides which one answers."""
+    host = delivery_settings(project_dir).get("host", "").strip().lower()
+    names = ["gitlab_wrapper.py", "github_wrapper.py"]
+    if host in ("github", "gitlab"):
+        names.insert(0, f"{host}_wrapper.py")
+    for name in names:
+        candidate = project_dir / "scripts" / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def watchdog_armed(payload_crons: object) -> Optional[bool]:
@@ -917,6 +932,247 @@ def transcript_last_assistant_text(transcript: Optional[Path]) -> str:
     return ""
 
 
+#: How far back the current-turn reader looks. A turn longer than this (a long /work-issue turn) is read from its tail
+#: only; its prompt is then unknown (None), and no gate reads an unknown prompt as a watchdog tick.
+TURN_TAIL_BYTES = 2_000_000
+_NOT_A_PROMPT = ("<system-reminder>", "<task-notification>", "<local-command")
+
+
+@dataclass
+class TurnView:
+    """The CURRENT turn of a transcript: everything the model did since the last real user prompt or watchdog tick."""
+
+    prompt: Optional[str]  # the text that started the turn; None when it lies before the window read
+    events: List[Tuple[str, str]]  # ("text", text) or ("tool", tool name), in order
+
+    @property
+    def texts(self) -> List[str]:
+        return [value for kind, value in self.events if kind == "text"]
+
+    @property
+    def is_watchdog_tick(self) -> bool:
+        return bool(self.prompt) and str(self.prompt).lstrip().startswith(WATCHDOG_MARK)
+
+
+def _turn_start_text(record: dict) -> Optional[str]:
+    """The prompt text when this USER record starts a turn, else None. A turn starts at a real prompt — not a tool
+    result, a compact summary, a system reminder, a task notification, a local-command echo or a hook's feedback (the
+    harness records those as isMeta) — or at a watchdog tick, which the harness records as an isMeta user record."""
+    if record.get("type") != "user" or record.get("isSidechain") or record.get("isCompactSummary"):
+        return None
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list) and content and isinstance(content[0], dict):
+        if content[0].get("type") == "tool_result":
+            return None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+        if not text.strip() and any(isinstance(b, dict) and b.get("type") == "image" for b in content):
+            text = "(an image)"
+    else:
+        return None
+    stripped = text.lstrip()
+    if record.get("isMeta"):
+        return text if stripped.startswith(WATCHDOG_MARK) else None
+    if not stripped or stripped.startswith(_NOT_A_PROMPT):
+        return None
+    return text
+
+
+def transcript_current_turn(transcript: Optional[Path], tail_bytes: int = TURN_TAIL_BYTES) -> Optional[TurnView]:
+    """The current turn read backwards from the transcript's tail; None when there is no readable transcript. The
+    model's own records only: a sidechain (subagent) record and a harness-made `<synthetic>` message are skipped."""
+    if transcript is None:
+        return None
+    try:
+        with transcript.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            start = max(0, size - tail_bytes)
+            handle.seek(start)
+            tail = handle.read()
+    except OSError:
+        return None
+    lines = tail.splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]  # the first line of a window is usually cut
+    backwards: List[Tuple[str, str]] = []
+    prompt: Optional[str] = None
+    for raw in reversed(lines):
+        if b'"assistant"' not in raw and b'"user"' not in raw:
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "user":
+            prompt = _turn_start_text(record)
+            if prompt is not None:
+                break
+            continue
+        backwards.extend(reversed(_assistant_events(record)))
+    return TurnView(prompt=prompt, events=list(reversed(backwards)))
+
+
+def _assistant_events(record: dict) -> List[Tuple[str, str]]:
+    """("text", text) / ("tool", name) of one MODEL assistant record, in order; [] for anything else."""
+    if record.get("type") != "assistant" or record.get("isSidechain"):
+        return []
+    message = record.get("message")
+    if not isinstance(message, dict) or message.get("model") == "<synthetic>":
+        return []
+    content = message.get("content")
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    events: List[Tuple[str, str]] = []
+    for block in blocks if isinstance(blocks, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and str(block.get("text", "")).strip():
+            events.append(("text", str(block["text"])))
+        elif block.get("type") == "tool_use":
+            events.append(("tool", str(block.get("name", ""))))
+    return events
+
+
+# ---------------------------------------------------------------------------------------------------------
+# The SESSION verdict: the last thing a registered work run says (.claude/docs/delivery.md).
+# ---------------------------------------------------------------------------------------------------------
+
+#: Matched on a line with its Markdown dressing removed (`_session_line`): `**SESSION: CAN CLOSE — …**`, `## SESSION:
+#: …` and `> SESSION: …` are the same head; the separator may be an em or en dash, a hyphen or a colon.
+SESSION_HEAD_RE = re.compile(r"^SESSION:\s*(CAN CLOSE|NEEDS YOU|NOT DONE)\s*[\u2014\u2013:-]\s*\S")
+SESSION_SUMMARY_RE = re.compile(r"^SESSION:\s*(?:CAN CLOSE|NEEDS YOU|NOT DONE)\s*[\u2014\u2013:-]\s*(.*)$")
+_FENCE_RE = re.compile(r"^(?:```|~~~)[\w+.-]*$")
+_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
+
+
+def _session_line(line: str) -> str:
+    """A line without its Markdown dressing: leading `#`, `>`, `*`, `_` and spaces; trailing `*`, `_` and spaces."""
+    return line.strip().lstrip("#>*_ \t").rstrip("*_ \t")
+
+
+SESSION_SUMMARY_MAX = 160
+#: The run modes whose ending carries the SESSION verdict (prefix, hyphens normalised).
+WORK_RUN_MODE_RE = re.compile(r"^(SINGLE_ISSUE|ISSUE_LOOP|BACKLOG|AUTO)", re.IGNORECASE)
+SESSION_TEMPLATE = (
+    "SESSION: CAN CLOSE \u2014 2/2 issues delivered \u00b7 tasks 8/8 (1 post-deploy) \u00b7 1 filed\n"
+    "\n"
+    "| Issue | Now | Tasks | PR | Next |\n"
+    "|---|---|---|---|---|\n"
+    "| #1486 | landed \u2014 deploy check pending | 4/4 | #1519 landed | watcher |\n"
+    "| #1488 | closed | 4/4 | #1519 landed | \u2014 |\n"
+    "| #1517 | filed | \u2014 | \u2014 | backlog |\n"
+)
+
+
+def _after_session_head(lines: List[str], allow_issues_block: bool) -> Tuple[List[str], List[str]]:
+    """(what is wrong, the table's lines) below a SESSION line: anything but the table (header row present), blank
+    lines, a lone code-fence line, and — for the /close-session form — its `Issues` block of `- #<n> …` / `- none`
+    lines."""
+    problems: List[str] = []
+    table: List[str] = []
+    in_issues = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or _FENCE_RE.match(stripped):
+            continue
+        if not in_issues and stripped.startswith("|"):
+            table.append(stripped)
+        elif allow_issues_block and not in_issues and _session_line(stripped).rstrip(":") == "Issues":
+            in_issues = True
+        elif not (in_issues and (stripped.startswith("- #") or stripped == "- none")):
+            problems.append(f"text after the table: {stripped[:80]!r}")
+            break
+    if len(table) < 2:
+        problems.append("no table under the SESSION line (its header row is always present)")
+    return problems, table
+
+
+def mode_is_work_run(mode: Optional[str]) -> bool:
+    text = (mode or "").strip().replace("-", "_")
+    return bool(text) and not is_placeholder(text) and bool(WORK_RUN_MODE_RE.match(text))
+
+
+def session_head(text: str) -> Optional[str]:
+    """CAN CLOSE / NEEDS YOU / NOT DONE of the LAST SESSION line in `text`, None when there is none."""
+    head = None
+    for line in (text or "").replace("\r", "").split("\n"):
+        match = SESSION_HEAD_RE.match(_session_line(line))
+        if match:
+            head = match.group(1)
+    return head
+
+
+def session_verdict_problems(
+    text: str, awaiting_substantive: bool, allow_issues_block: bool, phase: str = "", status: str = ""
+) -> Tuple[Optional[str], List[str]]:
+    """(the head, what is wrong) for a text that must END with the SESSION block: the head line (the LAST one in the
+    text), a table with its header row, then nothing but blank lines — and an `Issues` block when allowed (the
+    /close-session form). The head agrees with the state: NEEDS YOU exactly when an AWAITING_USER is recorded."""
+    lines = (text or "").replace("\r", "").split("\n")
+    at = None
+    for index, line in enumerate(lines):
+        if SESSION_HEAD_RE.match(_session_line(line)):
+            at = index
+    if at is None:
+        return None, ["the last message has no `SESSION: CAN CLOSE|NEEDS YOU|NOT DONE \u2014 \u2026` line"]
+    head_line = _session_line(lines[at])
+    head = SESSION_HEAD_RE.match(head_line).group(1)  # type: ignore[union-attr]
+    problems: List[str] = []
+    summary = SESSION_SUMMARY_RE.match(head_line)
+    if summary and len(summary.group(1)) > SESSION_SUMMARY_MAX:
+        problems.append(
+            f"the SESSION line runs {len(summary.group(1))} characters after the dash (at most {SESSION_SUMMARY_MAX})"
+        )
+    below, table = _after_session_head(lines[at + 1 :], allow_issues_block)
+    problems += below
+    if head == "NEEDS YOU" and not awaiting_substantive:
+        problems.append("the head says NEEDS YOU, but this run records no AWAITING_USER reason")
+    if awaiting_substantive and head != "NEEDS YOU":
+        problems.append(
+            f"this run records an AWAITING_USER reason, so the head is NEEDS YOU, not {head} — if that question has "
+            "been answered, append `AWAITING_USER: none` at the END of resume_state.md"
+        )
+    if head == "CAN CLOSE":
+        problems += _can_close_problems(table, phase, status)
+    return head, problems
+
+
+def _cells(row: str) -> List[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def _can_close_problems(table: List[str], phase: str, status: str) -> List[str]:
+    """CAN CLOSE must be TRUE: no ESCALATED run, every row of the issue table closed / landed / filed, and no ❌ in
+    the /close-session table. Any other table gets no row check."""
+    problems: List[str] = []
+    if "ESCALATED" in ((phase or "").strip().upper(), (status or "").strip().upper()):
+        problems.append("the head says CAN CLOSE, but this run recorded ESCALATED — the head is NOT DONE or NEEDS YOU")
+    if not table:
+        return problems
+    header = [cell.lstrip("*_").rstrip("*_").strip().lower() for cell in _cells(table[0])]
+    rows = [r for r in table[1:] if not all(_TABLE_SEPARATOR_CELL_RE.match(c) or not c for c in _cells(r))]
+    if len(header) >= 2 and header[0] == "issue" and header[1] == "now":
+        for row in rows:
+            cells = _cells(row)
+            now = cells[1].lstrip("*_").strip().lower() if len(cells) > 1 else ""
+            if not now.startswith(("closed", "landed", "filed")):
+                problems.append(
+                    f"the head says CAN CLOSE, but row {cells[0]} is {cells[1] if len(cells) > 1 else '(empty)'!r} — "
+                    "only closed, landed — deploy check pending, and filed rows can close"
+                )
+    elif len(header) >= 3 and header[0] == "#" and header[1] == "check" and header[2] == "\u2713":
+        for row in rows:
+            cells = _cells(row)
+            if len(cells) > 2 and cells[2] == "\u274c":
+                problems.append(f"the head says CAN CLOSE, but check {cells[0]} ({cells[1]}) is \u274c")
+    return problems
+
+
 def decision_log(base: Path, name: str, decision: str, detail: str) -> None:
     """One line per invocation, to a FILE: observability without touching the stderr contract."""
     log_dir = base / ORCHESTRATOR_DIRNAME / ".hook-decisions"
@@ -1105,6 +1361,8 @@ class Context:
         self.hooks_dir = hooks_dir or Path(__file__).resolve().parent
         self.process_cwd = cwd or Path.cwd()
         self.states = StateCache()
+        #: the gates of this dispatch that have BLOCKED so far, in order (a later gate need not pile on)
+        self.blocked_by: List[str] = []
         self._project_dir: Optional[Path] = None
         self._state_base: Optional[Path] = None
         self._resolved: Dict[str, Tuple[str, Optional[Path]]] = {}

@@ -245,20 +245,27 @@ Install per the setup prompt's Part 7.1. On a project that already runs, the ORD
 it is the order `.claude/hooks/MIGRATION.md` §9 gives:
 
 1. **Files and registration**, in this update's hook commit: the `hooks/*.py` copy now also
-   brings `gate_merge_steward.py`, `gate_stop_failure.py`, `wait_for.py` and `supervisor.py`;
-   add `.claude/docs/delivery.md` and `.claude/commands/supervise.md`; re-paste the block
-   `hooks.py registration` prints — it now registers `StopFailure`, and without the paste the
-   recorder never runs. The wrapper gains `enqueue-pr`, `dequeue-pr` and `queue-status`,
-   delegating to `scripts/merge_steward.py` (setup prompt Part 5.3). Nothing changes behaviour
-   until `config/delivery.json` says so.
+   brings `gate_merge_steward.py`, `gate_stop_failure.py`, the SESSION-verdict and
+   archive-after-verdict gates, `wait_for.py` and `supervisor.py`; add `.claude/docs/delivery.md`
+   and `.claude/commands/supervise.md`; re-paste the block `hooks.py registration` prints — it
+   registers `StopFailure`, and its PreToolUse matcher now also names
+   `mcp__ccd_session_mgmt__archive_session`; without the paste the recorder and the archive gate
+   never run (`hooks.py registration --check` confirms it). The wrapper gains `enqueue-pr`,
+   `dequeue-pr`, `queue-status`, `wait-landed` and `check-handoff`, delegating to
+   `scripts/merge_steward.py` (setup prompt Part 5.3). Nothing changes behaviour until
+   `config/delivery.json` says so.
 2. **PR 1 — this update.** Install `scripts/merge_steward.py`, `test/test_merge_steward.py`,
    `test/test_wrapper_delivery.py` (the wrapper's delivery verbs: `steward_delegate`, token on stdin), the
-   steward workflow (`{{CI_WORKFLOW_NAME}}` = the `name:` of the CI workflow; GitLab: the
+   steward workflow and the `steward-wake` job appended to the CI workflow (`{{EVERY_OTHER_CI_JOB}}` = its
+   other job ids, `{{STEWARD_WORKFLOW_FILE}}` = `merge-steward.yml`; GitLab: the
    `merge-steward` and `steward-wake` jobs and the 30-minute schedule; `{{STEWARD_RUNS_ON}}` /
    `{{DEPLOY_RUNS_ON}}` = the `runs-on` the CI jobs already use, never a hosted label the repository
-   cannot run — dispatch the steward workflow once and see its job start), `workflow_dispatch` on
-   the CI workflow, a trunk CI that a later push can no longer cancel
-   (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`), the eleven labels, and a
+   cannot run — dispatch the steward workflow once and see its job start; NO `workflow_run` trigger,
+   which a `GITHUB_TOKEN`-started train can never fire), `workflow_dispatch` on the CI workflow and
+   the `steward-wake` job appended to it (`templates/ci/github-steward-wake.yml.template`: it starts
+   a tick when a train's CI ends), a trunk CI that a later push can no longer cancel
+   (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`), the twelve labels
+   (`delivery-status` included), and a
    `config/delivery.json` that says `"merge": "direct"`, `"verification": "session"` — today's
    behaviour — with `host`, `trunk` and the workflow names filled in, because the tick reads them
    (an absent file defaults the host to GitHub). This PR merges DIRECTLY (step 8): the steward is
@@ -280,7 +287,10 @@ it is the order `.claude/hooks/MIGRATION.md` §9 gives:
    `direct` + `watcher` ends only the last of the three, while every merge still races the
    others. `direct` stays right only for a repository with a single worker.
 4. **No install step for the run watchdog**: the session-start context prints the exact
-   `CronCreate` to every registered run, and the issue-loop brake reminds a run that has none.
+   `CronCreate` to every registered run that is not yet released, and the issue-loop brake reminds a
+   run that has none. Sessions now wait, bounded, until their PR LANDS and end with the one-glance
+   SESSION verdict (`.claude/docs/delivery.md` §3, §7): a live session that recorded `HANDED_OFF` on a
+   queued, unlanded PR is not done under this revision — `/continue-work` waits for its landing.
 5. **`/supervise` reaches a session in bypass mode only where the operator's USER-level
    settings say `crossSessionInbound: accept`** — a project setting can only tighten that, so
    this update cannot set it. Say in the PR whether it is set; without it a `due` resume
@@ -303,7 +313,7 @@ registered run's next turn-end and at every compaction, and the freshness check 
 registered run once per later revision with the fast-forward instruction. Leave both
 channels intact: install `REVISION_NOTICE.md` and `CONTRACT_VERSION` as-is, and do not
 delete the notice before its `Valid-until` date. The 2026-10-26 revision
-(`CONTRACT_VERSION` `2026.10.31-delivery-7`, REVISION_NOTICE items 9 and 11) reaches a live session
+(`CONTRACT_VERSION` `2026.11.02-delivery-8`, REVISION_NOTICE items 9, 11 and 12) reaches a live session
 the same way; a process that started before it has no run watchdog until the brake's refusal
 names the `CronCreate` that arms one.
 

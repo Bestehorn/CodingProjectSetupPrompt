@@ -1,5 +1,5 @@
 ---
-description: Autonomously work the open-issue backlog end to end — select the highest-priority not-in-progress issue, fix it via the spec/TDD cycle with proof, open a PR, drive its CI green, hand it to the merge steward (or merge it, per config/delivery.json), clean up, close or hand off, and repeat. Resumable.
+description: Autonomously work the open-issue backlog end to end — select the highest-priority not-in-progress issue, fix it via the spec/TDD cycle with proof, open a PR, drive its CI green, queue it with the merge steward until it lands (or merge it, per config/delivery.json), hand only the post-deploy check to the verdict watcher, clean up, repeat, and end with the one-glance SESSION verdict. Resumable.
 argument-hint: "[optional: a specific issue number to start with, or blank to work the whole backlog]"
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, CronCreate, CronDelete, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
@@ -55,10 +55,12 @@ loop LOAD_ISSUES → SELECT (returned `needs-rework` work first) → PREPARE (wo
 → CLASSIFY (tier S/M/L; every open question asked now, in one batch) → FIX (embedded spec/TDD
 core, proof with evidence) → PROOF_GATE → DOCUMENT (before the push) → PR (rebase,
 line-by-line conflict resolution, push, open, the PR's CI awaited in the foreground, bounded)
-→ HAND_OFF (merge steward or verdict watcher; `.claude/docs/delivery.md`) or, for direct
-merge with session verification, self-approve+merge → MERGE_CLEANUP → RESOLVE → refresh,
-until no not-in-progress open issue remains. A handed-off issue keeps its claim, so the next
-SELECT skips it; the loop never waits for its queue, landing or deploy.
+→ QUEUE (merge steward: enqueue, record it in `QUEUED_PRS`, go on) or HAND_OFF (direct merge with the
+verdict watcher) or, for direct merge with session verification, self-approve+merge → MERGE_CLEANUP →
+RESOLVE → refresh, until no not-in-progress open issue remains; then every PR in `QUEUED_PRS` must LAND
+(`wait-landed`, returns fixed) and be handed off before DONE (`.claude/docs/delivery.md` §3). A queued or
+handed-off issue keeps its claim, so SELECT skips it. The run ends with the SESSION verdict — the agent
+definition's "The SESSION verdict" section — and nothing after it.
 
 Honor all the mandates in the agent definition: wrapper-only remote ops, evidence-not-
 assertion (the implementer never certifies its own work; the adversarial-verifier

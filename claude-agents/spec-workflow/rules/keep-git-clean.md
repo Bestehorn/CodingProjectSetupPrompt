@@ -31,8 +31,8 @@ often (`ci-owns-the-test-suite.md`) is not a licence to skip this classification
 - Per-issue/per-task worktrees and branches are EPHEMERAL: at a terminal state (merged,
   handed off, abandoned, escalated), `git worktree remove <path>`, `git branch -d/-D`, and verify
   with `git worktree list` plus a directory check — after asserting nothing is unpushed
-  (`git log origin/<branch>..HEAD` empty); a handed-off PR's REMOTE branch stays until it
-  lands (deleting it would close the PR — `delivery.md` §3), and under the merge steward only the steward writes the trunk. The clean end-state is **per run** —
+  (`git log origin/<branch>..HEAD` empty); a queued PR's REMOTE branch stays until it lands
+  (deleting it would close the PR — `delivery.md` §3), and under the merge steward only the steward writes the trunk. The clean end-state is **per run** —
   each run leaves no worktree, branch, or lock of its own behind; assert cleanliness on
   the run's OWN working area.
 - **Do NOT move the shared local `main` branch.** When multiple runs may share one clone,

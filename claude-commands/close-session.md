@@ -1,13 +1,14 @@
 ---
-description: End-of-session close-out — confirm the assigned work is actually complete (merged and closed, or handed off to the merge steward per config/delivery.json) INCLUDING every task item on its issue (reopening an issue closed over unfinished items), wait out the PR's own running CI in the foreground, clean up this session's own files, temp residue, worktree/branch/lock and claim markers, record a terminal Phase, then report one fixed nine-row verdict table.
+description: End-of-session close-out — confirm the assigned work is actually complete (landed and closed, or landed with only its post-deploy check handed off per config/delivery.json) INCLUDING every task item on its issue (reopening an issue closed over unfinished items), wait out the PR's own running CI in the foreground, clean up this session's own files, temp residue, worktree/branch/lock and claim markers, record a terminal Phase, then report the SESSION verdict over one fixed nine-row table — and archive only after it.
 argument-hint: "[nothing]"
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, AskUserQuestion, CronList, CronDelete, mcp__ccd_session_mgmt__archive_session, Agent(spec-author, spec-researcher, spec-review-agent, test-architect, standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer, adversarial-verifier, spec-implementer, code-merge-reviewer)
 ---
 
-<!-- archive_session is allowlisted because the final step invokes it on CLOSE: YES, without asking
-     (archiving is reversible — the sidebar unarchives — and the measured wait on "Archive this session?" was
-     71 h in two weeks). It is an MCP tool and may be absent (plain CLI): then RECOMMEND archiving rather than
+<!-- archive_session is allowlisted because the final step invokes it on SESSION: CAN CLOSE, without asking
+     and only AFTER the block is printed (archiving is reversible — the sidebar unarchives — and the measured
+     wait on "Archive this session?" was 71 h in two weeks; every close-out that archived before printing its
+     verdict left the operator no verdict at all). It is an MCP tool and may be absent (plain CLI): then RECOMMEND archiving rather than
      reporting a failure. AskUserQuestion is allowlisted for ONE purpose — a blocker that genuinely needs a
      user decision — never to ask permission to do the mandatory remediation. See "Asking" below. -->
 
@@ -54,14 +55,13 @@ deciding number).
    (issue updated, spec artifacts committed, docs touched where the change requires it —
    the issue's own task items are Step 2's subject and are checked there, mechanically).
    Read the issue and `runs/<run-id>/resume_state.md` rather than trusting recall.
-   - **Handed off is done — for this session.** Where `config/delivery.json` says `merge: steward` (or
-     `verification: watcher`), an issue whose PR is ENQUEUED with its own CI green (or merged with its
-     landing recorded) and whose hand-off note carries the `merge-steward:` lines (`.claude/docs/delivery.md`
-     §3) has met the session's definition of done: the train, the landing, the deploy and the post-deploy
-     check belong to the steward and the verdict watcher, so "green for the merged SHA" reads "green for
-     the PR's head" here. Confirm it mechanically (`queue-status` lists the PR, or the issue carries the
-     `landed` line); a PR that is NOT in the queue (`queue-failed`, `queue-conflict`, `needs-rework`) is
-     unfinished work — finish it per the bullet below.
+   - **Landed and handed off is done — for this session.** Where `config/delivery.json` says
+     `verification: watcher`, an issue whose PR LANDED (the `merge-steward: landed` line is on it) and for
+     which `python scripts/<wrapper>.py check-handoff <N>` exits 0 (every queued PR landed, every open item
+     `(post-deploy)`) has met the session's definition of done: the deploy and the post-deploy check belong to
+     the verdict watcher. A PR that is still QUEUED is NOT done: wait for it now (`wait-landed <PR>
+     --timeout-seconds 540`, `.claude/docs/delivery.md` §3); a PR that came back (`queue-failed`,
+     `queue-conflict`, `needs-rework`) is unfinished work — finish it per the bullet below.
    - **If anything is missing, FINISH IT NOW** — `continue-work` semantics: resume the
      recorded phase and drive it to a terminal state. Do not report a gap and stop; do not
      ask whether to finish it. The answer is always yes, and `continuous-work.md` governs.
@@ -135,8 +135,8 @@ deciding number).
 **Step 3 — Is CI still running? (wait for it; it is part of the work)**
    Pending CI means the work is not finished, so this precedes every cleanliness check.
    - Determine your own run: the PR/branch from your run state, via the wrapper script
-     (`use-git-wrapper-scripts.md`) — never `gh`/`glab`/`curl`. Your run is the PR's own; a
-     handed-off PR's train, the trunk and the deploy are the steward's (Step 1) and are not
+     (`use-git-wrapper-scripts.md`) — never `gh`/`glab`/`curl`. Your run is the PR's own (its
+     landing is Step 1's); the trunk and the deploy are the steward's and the watcher's and are not
      waited for here.
    - If a run is non-terminal, WAIT for it in the FOREGROUND, bounded: `wait-run <id>
      --timeout-seconds 540` (GitLab: `pipeline wait <id> --timeout-seconds 540`) with the Bash
@@ -201,13 +201,14 @@ deciding number).
       the settings file does not parse — name which in that same cell.
 
 **Step 6 — Your worktree, branch, lock AND claim markers are gone**
-   Confirm the worktree and branch this session created were removed after merge (or after the
-   hand-off — asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty).
-   A handed-off PR's REMOTE branch stays until the steward lands it (deleting a PR's head branch
-   closes the GitHub PR and leaves a GitLab MR without its source; the host's delete-on-merge
-   setting removes it after the landing), and so does the issue's tracker claim — the steward or the watcher releases it when the issue comes back; release only
-   this run's local lock. `CronDelete` this session's run watchdog (the `[run-watchdog]` entry of
-   `CronList`), so a finished session is not woken again. Tear down a
+   Confirm the worktree and branch this session created were removed after the landing —
+   asserting first that nothing is unpushed: `git log origin/<branch>..<branch>` empty. A LANDED
+   PR's remote branch goes too (the host's delete-on-merge setting, else `delete-remote-branch`); a
+   PR that has not landed keeps it (deleting a PR's head branch closes the GitHub PR and leaves a
+   GitLab MR without its source). A handed-off issue keeps its tracker claim until the watcher
+   verifies it; release only this run's local lock. `CronDelete` this session's run watchdog (the
+   `[run-watchdog]` entry of `CronList`), so a finished session is not woken again, and remove any
+   other cron this session created to watch an issue or a deploy. Tear down a
    per-worktree venv FIRST if one exists (locked DLLs otherwise block removal on Windows);
    `git worktree remove` plain, `--force` only after confirming no uncommitted work would be
    lost; then delete the branch and verify with `git worktree list`.
@@ -225,9 +226,9 @@ deciding number).
    Report only your own; say nothing about anyone else's.
 
 **Step 7 — Issues updated and closed with evidence**
-   A HANDED-OFF issue is not closed by the session: its hand-off note is the record, the verdict
-   watcher closes it after a green post-deploy check (`.claude/docs/delivery.md` §4), and row 7's
-   Detail says `#412 handed off — watcher closes`.
+   A HANDED-OFF issue (landed, only `(post-deploy)` items open) is not closed by the session: its
+   hand-off note is the record, the verdict watcher closes it after a green post-deploy check
+   (`.claude/docs/delivery.md` §4), and row 7's Detail says `#412 landed — watcher closes`.
    For each issue this run finished: a final comment linking the merged PR and the evidence,
    the checklist fully ticked — the count re-read after whatever Step 2 made you finish, not
    the count you started with — time spent recorded, and the issue closed via the wrapper.
@@ -250,20 +251,22 @@ deciding number).
    APPEND a block at the END of this run's `resume_state.md` carrying `Status: COMPLETED` and
    a terminal `Phase` (`DONE`/`COMPLETED`/`ABANDONED`/`ESCALATED`) — **that terminal value is
    what releases the `issue-loop-gate` gate**, and it must be the WHOLE value of the field
-   (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`; vocabulary: `run-identity.md` §5). Do
+   (`Phase: DONE`, never `Phase: DONE (was IMPLEMENT)`; vocabulary: `run-identity.md` §5). A single-issue
+   run whose issue is handed off keeps `Phase: HANDED_OFF` — never overwrite it with DONE, which would
+   skip the brake's `check-handoff`. Do
    NOT record a terminal `Phase` to end a turn on work that is not finished: that is the
    failure the gate exists to catch, and the state file is the record someone will trust
    later.
 
 ## Output — this form, every time, and nothing else
 
-Reply with exactly three things in this order: the verdict line, the nine-row table, the
+Reply with exactly three things in this order: the SESSION head, the nine-row table, the
 Issues block. A clean single-issue session is 16 lines; the ONLY thing that may grow the
 reply is one more line per additional issue. If it is not in this template, it does not go
-in the reply.
+in the reply — nothing follows the Issues block.
 
 ```
-CLOSE: YES
+SESSION: CAN CLOSE — 9/9 checks pass · #412 closed · 1 filed
 
 | # | Check | ✓ | Detail |
 |---|---|---|---|
@@ -306,15 +309,18 @@ id, a SHA prefix, `m/n`, a byte total, a count. No sentences, no trailing period
 basename. If the finding will not fit in 60 characters, you have not finished deciding what
 it is.
 
-**The verdict line is arithmetic, not judgement:** `CLOSE: YES` if and only if zero rows are
-❌; otherwise `CLOSE: NO — <n> blocker(s)` where `<n>` is the exact count of ❌ rows. Nothing
-else ever appears on that line.
+**The SESSION head is arithmetic, not judgement** (the same three heads as every work run's SESSION
+verdict, `.claude/docs/delivery.md` §7): `SESSION: CAN CLOSE — 9/9 checks pass · <issues>` if and
+only if zero rows are ❌; `SESSION: NEEDS YOU — <the decision>` when a ❌ waits on a question you
+asked (an `AWAITING_USER` is recorded); otherwise `SESSION: NOT DONE — <n> blocker(s): <the first>`
+where `<n>` is the exact count of ❌ rows. In the desktop app the `wrap_up` recap repeats this line
+verbatim.
 
 **The Issues block** is the literal header `Issues`, then one line per issue this session
 worked or filed, ascending by number, `- none` if there were none:
 
 ```
-- #<n> <worked → closed | worked → handed off | worked → left open | filed> — <≤70 chars: PR, evidence, or why>
+- #<n> <worked → closed | worked → landed, deploy check pending | worked → left open | filed> — <≤70 chars: PR, evidence, or why>
 ```
 
 One line each, no sub-bullets, no grouping headers. An unticked task item that legitimately
@@ -337,12 +343,13 @@ an issue closed over unfinished items, deleting your own leftovers, tearing down
 worktree — those are obligations, not questions, and Steps 1–2 have already settled them.
 "Shall I continue?" stays forbidden. If nothing is blocked, make no call.
 
-**When `CLOSE: YES`**, archive the session WITHOUT asking: after the reply, call `archive_session`
-with `session_id: "self"` (archiving is reversible; an "Archive this session now?" question was
-measured waiting 71 h in two weeks). On `CLOSE: NO` nothing is archived. If that MCP tool is
-absent (a plain CLI session has no session-management server), append exactly this one line
-instead: `Archive: recommended — no session tool in this session.` That line is the only
-permitted addition to the template.
+**When `SESSION: CAN CLOSE`**, archive the session WITHOUT asking — but only AFTER the reply is
+printed: the block is a message of its own, then `archive_session` with `session_id: "self"` is the
+LAST call of the turn, and nothing is written after it (the `archive-after-verdict` gate refuses an
+archive in a turn that has not printed a `SESSION: CAN CLOSE` block; measured: every close-out that
+archived first showed the operator no verdict at all). On NEEDS YOU / NOT DONE nothing is archived.
+If that MCP tool is absent (a plain CLI session has no session-management server), do nothing more:
+the CAN CLOSE head already says the session may be closed.
 
 No AI attribution in any comment, commit or issue text (`no-ai-attribution.md`). Never touch
 `.kiro/`.
