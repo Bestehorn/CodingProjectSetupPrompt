@@ -1,8 +1,11 @@
-# CodingProjectSetupPrompt
+# SoftwareFactoryFramework
 
 An engineering framework for AI-assisted software projects. Pasting one of its prompts into Claude Code or Kiro
 sets up a new project, or brings an existing one up to the framework's current state: git hooks, check and test
 scripts, CI, rules, agents, commands, agent hooks and docs, for either client or both.
+
+This repository was called `CodingProjectSetupPrompt` until 2026-11; older documents in consumer projects use
+that name.
 
 ## Which prompt to paste
 

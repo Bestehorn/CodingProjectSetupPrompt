@@ -1,6 +1,7 @@
 # Update this project to the current engineering framework
 
-The framework is the CodingProjectSetupPrompt repository you have been given access to
+The framework is the SoftwareFactoryFramework repository (formerly CodingProjectSetupPrompt;
+a local clone may still sit in a folder of that name) you have been given access to
 alongside this project. It is read-only reference material: its setup prompt is the
 specification, and its clients/, src/ and templates/ directories are the canonical sources
 of every asset the prompt installs (prompts/ holds the prompts themselves).

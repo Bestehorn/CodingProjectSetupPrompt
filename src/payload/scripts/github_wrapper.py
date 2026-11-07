@@ -284,7 +284,7 @@ def wait_run(
 # this host" result so the caller can fall back to a comment and move on.
 #
 # Reference: see the original scaffold in
-# CodingProjectSetupPrompt repo at src/payload/scripts/github_wrapper.py
+# SoftwareFactoryFramework repo at src/payload/scripts/github_wrapper.py
 # and extend per project needs.
 
 
