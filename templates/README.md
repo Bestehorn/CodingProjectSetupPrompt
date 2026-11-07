@@ -1,38 +1,47 @@
 # Templates
 
-Skeleton files referenced by `KiroProjectSetupPrompt.v2.txt` and
-`ClaudeCodeSetupPrompt.txt` (the templates are assistant-agnostic and
+Skeleton files referenced by `prompts/setup-kiro.txt` and
+`prompts/setup-claude.txt` (the templates are assistant-agnostic and
 shared by both). Each template is a minimum viable starting point; the
 agent copies it into the target project (renaming `*.template` to the
 final filename) and then extends or adapts it as the project evolves.
 
+The Python the prompts install is not here: it lives in [`src/payload/`](../src/payload/),
+laid out exactly like the target project (so its path there IS its path in the project),
+where it is linted and tested before any project receives it. It is listed in the second
+table. `docs/` holds the one document shipped verbatim ([`docs/README.md`](docs/README.md)).
+
 | Template | Target path in project | When to use |
 |---|---|---|
-| `aws_config.py.template` | `src/aws_config.py` | Always (any project that talks to AWS) |
-| `aws_accounts.json.template` | `config/aws_accounts.json.template` | Always (any project that talks to AWS) |
+| `config/aws_accounts.json.template` | `config/aws_accounts.json.template` | Always (any project that talks to AWS) |
 | `githooks/pre-commit` | `.githooks/pre-commit` | Always (tracked hook: lint + security, no tests) |
 | `githooks/pre-push` | `.githooks/pre-push` | Always (tracked hook: type check; suite only during a declared CI outage) |
 | `setup-hooks.sh.template` | `scripts/setup-hooks.sh` | Always (ENABLES the tracked hooks per clone) |
 | `pre-commit-config.yaml.template` | `.pre-commit-config.yaml` | Always |
-| `run_tests.py.template` | `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast; holds a host-wide suite slot for any run wider than named files) |
-| `suite_semaphore.py.template` | `scripts/suite_semaphore.py` | Always (the host-wide cap on concurrent suites: `max(1, cores // 4)` slots per user, OS file locks the kernel releases on exit; `run_tests.py` takes a slot, a synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <cmd>`; `selftest` proves it on the host) |
-| `run_checks.py.template` | `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
-| `ci_outage_mode.py.template` | `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
-| `github_wrapper.py.template` | `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`, and `enqueue-pr` / `dequeue-pr` / `queue-status` delegating to the merge steward) |
-| `gitlab_wrapper.py.template` | `scripts/gitlab_wrapper.py` | GitLab-hosted projects (includes the REQUIRED blocking `pipeline wait`, and the same three queue subcommands) |
-| `gitlab.json.template` | `config/gitlab.json.template` | GitLab-hosted projects |
-| `test_instruction_corpus_budget.py.template` | `test/test_instruction_corpus_budget.py` | Always (caps the always-loaded corpus and the memory docs; the mechanical half of the token budget) |
-| `memory_compile.py.template` | `scripts/memory_compile.py` | Always (report budgets; archive aged ledger rows and lessons; drop the exact duplicate rows a `union` merge can carry; move incident text out of rules — run by `/compile-memory`) |
-| `reap_agent_temp.py.template` | `scripts/reap_agent_temp.py` | Always (bounded removal of the session-scoped temp and of known agent-tooling residue in the shared OS temp; `/close-session` runs it) |
-| `test_reap_agent_temp.py.template` | `test/test_reap_agent_temp.py` | With the reaper |
-| `delivery.json.template` | `config/delivery.json` | Projects with several agents merging to one trunk (selects `merge: steward` / `direct` and `verification: watcher` / `session` / `none`; absent = direct + session, today's behaviour) |
-| `merge_steward.py.template` | `scripts/merge_steward.py` | With `delivery.json` (the merge queue, the train builder and the post-deploy verdict; run by CI, never by an agent session except `enqueue` / `dequeue` / `status` / `check-pr`) |
-| `test_merge_steward.py.template` | `test/test_merge_steward.py` | With the steward (drives it against a real bare git origin and a fake host) |
-| `test_wrapper_delivery.py.template` | `test/test_wrapper_delivery.py` | With the steward (pins the wrapper's delivery verbs: the token on stdin, the exit code passed through, an archive host refusing) |
+| `config/gitlab.json.template` | `config/gitlab.json.template` | GitLab-hosted projects |
+| `config/delivery.json.template` | `config/delivery.json` | Projects with several agents merging to one trunk (selects `merge: steward` / `direct` and `verification: watcher` / `session` / `none`; absent = direct + session, today's behaviour) |
 | `ci/github-merge-steward.yml.template` | `.github/workflows/merge-steward.yml` | GitHub + steward (the tick, started by dispatches only — no `workflow_run`, which a GITHUB_TOKEN-started train can never fire; a weak 30-minute schedule as the safety net; never cancelled) |
 | `ci/github-steward-wake.yml.template` | a job appended to the project's CI workflow | GitHub + steward (`steward-wake`: when a train's CI is done, it dispatches the steward with the run's GITHUB_TOKEN — the one event that token may start) |
 | `ci/github-deploy.yml.template` | `.github/workflows/deploy.yml` (or merged into the existing deploy) | GitHub + steward or watcher (a `guard` job that admits only a trunk commit, read from the event file — no `env:` maps; one deploy per environment at a time, `cancel-in-progress: false`, the newest pending deploy supersedes; the verdict job last). Under the steward its ADMISSION must accept the steward's dispatch: a trunk push by `GITHUB_TOKEN` starts no workflow |
 | `ci/gitlab-delivery.gitlab-ci.yml.template` | merged into `.gitlab-ci.yml` | GitLab + steward or watcher (the tick job in a REAL stage — GitLab runs no pipeline made only of `.pre`/`.post` jobs; the `.not-on-tick` rule as `!reference` or anchor, since a job's own `rules:` replaces an `extends`ed list; train pipelines, deploy supersession, the verdict job) |
+| `docs/codebuild-ci-backup-mechanism.md` | `docs/codebuild-ci-backup-mechanism.md` | Always, copied verbatim (how to build the CI fallback onto CodeBuild-hosted runners; see [`docs/README.md`](docs/README.md)) |
+
+| Shipped Python: path under `src/payload/` = path in the project | When to use |
+|---|---|
+| `src/aws_config.py` | Always (any project that talks to AWS) |
+| `scripts/run_tests.py` | Always (the ONE test invocation: bounded workers, no fail-fast; holds a host-wide suite slot for any run wider than named files) |
+| `scripts/suite_semaphore.py` | Always (the host-wide cap on concurrent suites: `max(1, cores // 4)` slots per user, OS file locks the kernel releases on exit; `run_tests.py` takes a slot, a synth or `npm test` runs under `python scripts/suite_semaphore.py run -- <cmd>`; `selftest` proves it on the host) |
+| `scripts/run_checks.py` | Always (runs every check, reports every failure; CI calls this) |
+| `scripts/ci_outage_mode.py` | Always (declares/clears the CI-outage marker the pre-push hook reads) |
+| `scripts/github_wrapper.py` | GitHub-hosted projects (includes the REQUIRED blocking `wait-run`, and `enqueue-pr` / `dequeue-pr` / `queue-status` delegating to the merge steward) |
+| `scripts/gitlab_wrapper.py` | GitLab-hosted projects (includes the REQUIRED blocking `pipeline wait`, and the same three queue subcommands) |
+| `test/test_instruction_corpus_budget.py` | Always (caps the always-loaded corpus and the memory docs; the mechanical half of the token budget) |
+| `scripts/memory_compile.py` | Always (report budgets; archive aged ledger rows and lessons; drop the exact duplicate rows a `union` merge can carry; move incident text out of rules — run by `/compile-memory`) |
+| `scripts/reap_agent_temp.py` | Always (bounded removal of the session-scoped temp and of known agent-tooling residue in the shared OS temp; `/close-session` runs it) |
+| `test/test_reap_agent_temp.py` | With the reaper |
+| `scripts/merge_steward.py` | With `delivery.json` (the merge queue, the train builder and the post-deploy verdict; run by CI, never by an agent session except `enqueue` / `dequeue` / `status` / `check-pr`) |
+| `test/test_merge_steward.py` | With the steward (drives it against a real bare git origin and a fake host) |
+| `test/test_wrapper_delivery.py` | With the steward (pins the wrapper's delivery verbs: the token on stdin, the exit code passed through, an archive host refusing) |
 
 Git hooks pattern: the hooks themselves are TRACKED files under the
 project's `.githooks/` directory (copied from `templates/githooks/`), so
@@ -59,8 +68,8 @@ check needs no hook edit. The test suite is never a precondition for a commit;
 pipeline run from drifting away from the real one during an outage.
 
 The rule these templates implement is
-`claude-agents/spec-workflow/rules/ci-owns-the-test-suite.md` (Kiro steering 8.34 in
-`KiroProjectSetupPrompt.v2.txt`). It records the three measured failures that made
+`clients/claude/rules/ci-owns-the-test-suite.md` (Kiro steering 8.34 in
+`prompts/setup-kiro.txt`). It records the three measured failures that made
 the split necessary — hour-long commits, a host made unusable by `pytest -n auto`
 across concurrent worktrees, and one CI run per failure — so read it before
 "simplifying" any of this back.
@@ -77,8 +86,8 @@ and fails on a rule that carries dated incident headings. `memory_compile.py` is
 mechanical half of the repair: it reports, archives ledger rows and lessons older than six
 weeks to `docs/archive/` (verbatim, still in git), and moves dated incident sections out of
 the rules. The judgment half — promote a finding to an issue, turn a lesson into a test — is
-the `/compile-memory` command (`claude-commands/compile-memory.md`, Kiro:
-`kiro-prompts/compile-memory.md`).
+the `/compile-memory` command (`clients/claude/commands/compile-memory.md`, Kiro:
+`clients/kiro/prompts/compile-memory.md`).
 
 ## Delivery: the merge steward (what the newest templates implement)
 
@@ -91,8 +100,8 @@ CI on each train, fast-forwards the trunk to the longest green prefix — so the
 is exactly the commit that was tested — and drops only the culprit. Deploys never cancel each
 other; the newest pending one supersedes, and the verdict job verifies every issue whose landing
 the deployed commit CONTAINS (`git merge-base --is-ancestor`). The agent-facing contract is
-`claude-agents/spec-workflow/docs/delivery.md`; the design and its quality invariants are in
-`project-docs/delivery-redesign-2026-10-26.md`. GitLab Premium projects can use native merge
+`clients/common/docs/delivery.md`; the design and its quality invariants are in
+`docs/reports/delivery-redesign-2026-10-26.md`. GitLab Premium projects can use native merge
 trains instead of the steward's queue and keep the verdict job.
 
 ## Conventions

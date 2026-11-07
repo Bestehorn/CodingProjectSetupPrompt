@@ -190,7 +190,7 @@ def wait_run(
 # JSON or human-readable output.
 #
 # PR / merge / CI lifecycle subcommands (required by the
-# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13):
+# issue-work-orchestrator agent — see prompts/setup-claude.txt Part 13):
 #   - list_issues: support --state (open/closed/all), --assignee (a login,
 #     or "*" for "any assignee", or "none"), and --label filters, so the
 #     orchestrator can detect which open issues are "in progress"
@@ -219,7 +219,7 @@ def wait_run(
 #     the fix documentation / evidence.
 #
 # Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
-# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# .claude/docs/delivery.md and src/payload/scripts/merge_steward.py). They DELEGATE — the queue's
 # rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
 #   - `enqueue-pr <n>` -> `steward_delegate("enqueue-pr", [n], _load_token(), "github")` (below):
 #     the steward's exit code passes through (0 queued, 4 refused with the reason printed — PR CI not
@@ -284,12 +284,12 @@ def wait_run(
 # this host" result so the caller can fall back to a comment and move on.
 #
 # Reference: see the original scaffold in
-# CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
+# CodingProjectSetupPrompt repo at src/payload/scripts/github_wrapper.py
 # and extend per project needs.
 
 
 # The delivery verbs (`enqueue-pr`, `dequeue-pr`, `queue-status`) — a REFERENCE IMPLEMENTATION, wired as-is in
-# main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
+# main(); test/test_wrapper_delivery.py (src/payload/test/test_wrapper_delivery.py) pins it.
 STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
 DELIVERY_CONFIG = Path("config") / "delivery.json"
 DELIVERY_VERBS = {

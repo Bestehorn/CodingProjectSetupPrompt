@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """merge_steward.py — the merge queue, the train builder and the post-deploy verdict of this project.
 
-Installed from ``templates/merge_steward.py.template`` to ``scripts/merge_steward.py`` and configured by
+Installed from ``src/payload/scripts/merge_steward.py`` to ``scripts/merge_steward.py`` and configured by
 ``config/delivery.json``. The CI host runs ``tick`` and ``verdict`` (``.github/workflows/merge-steward.yml``
 and the deploy workflow's last job, or the GitLab ``merge-steward`` and ``delivery-verdict`` jobs); an
 agent session runs only ``enqueue``, ``dequeue``, ``status`` and ``check-pr``, through the git wrapper.

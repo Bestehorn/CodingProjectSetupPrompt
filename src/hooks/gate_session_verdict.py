@@ -9,7 +9,7 @@ releases `hooklib.run_is_released` names), the LAST assistant text of the turn m
 followed by its table (header row always present) and NOTHING else — except, for /close-session, its `Issues`
 block. NEEDS YOU exactly when an AWAITING_USER reason is recorded. Measured 2026-11-01 (chess, the 16 sessions after
 the delivery redesign): 0 of 10 `/close-session` turns printed their verdict, and the work-issue endings were
-prose or a block whose header said "FINISHED — 0 closed" next to "Status IN_PROGRESS" (project-docs/
+prose or a block whose header said "FINISHED — 0 closed" next to "Status IN_PROGRESS" (docs/reports/
 session-endings-analysis-2026-11-01.md).
 
 Not judged: an unregistered or broken session, a run of any other MODE, a run that is NOT released (the issue-loop

@@ -1,4 +1,4 @@
-# Pre-commit configuration for THIS repository (the prompt/agent authoring repo).
+# Pre-commit configuration for THIS repository (the framework's own repository).
 #
 # The `stages:` field on each hook decides WHEN it runs, and the tracked git hooks in
 # `.githooks/` run whole STAGES rather than named ids — so this file is the single source of
@@ -6,29 +6,27 @@
 # `templates/pre-commit-config.yaml.template`:
 #
 #   pre-commit  ruff, ruff-format, detect-secrets, detect-private-key, bandit   (< 2 s)
-#   manual      pytest (the CV suite)
+#   manual      pytest (the hook suite, the shipped payload tests, the layout guard)
 #
 # Do not remove the `stages:` keys. Without them pre-commit defaults a hook to the
 # pre-commit stage, which is exactly how a slow hook ends up running on every commit.
 #
 # WHY THERE IS NO pre-push STAGE HERE
-#   The template puts mypy at pre-push. This repository has no `src/` package to
-#   type-check — it is Markdown/JSON prompt material plus the CV suite under
-#   `cli-agents/cv/` — so mypy is absent and `.githooks/pre-push` simply finds no
-#   pre-push-stage hooks to run. Its other job still applies: if CI-OUTAGE MODE is ever
-#   declared here (`python scripts/ci_outage_mode.py declare`), it runs the suite at push
-#   time.
+#   The template puts mypy at pre-push. This repository has no mypy configuration yet (the
+#   self-hosting step adds its pyproject.toml), so mypy is absent and `.githooks/pre-push`
+#   simply finds no pre-push-stage hooks to run. Its other job still applies: if CI-OUTAGE
+#   MODE is ever declared here (`python scripts/ci_outage_mode.py declare`), it runs the suite
+#   at push time.
 #
 # WHY pytest IS `stages: [manual]`
-#   Tests are never a commit gate. Note this repository has NO CI pipeline of its own — it
-#   ships prompts, and its only Python is the CV agent suite under `cli-agents/cv/` — so
-#   here the suite is genuinely run on demand (`python scripts/run_tests.py`, or
+#   Tests are never a commit gate. This repository has NO CI pipeline of its own yet, so here
+#   the suites are run on demand (`python scripts/run_tests.py`, or
 #   `pre-commit run --hook-stage manual pytest`) rather than by a pipeline. In a project set
 #   up BY these prompts, CI owns it; the shape of the hooks is the same either way, which is
 #   the point of dogfooding them here.
 #
-# Python in this repository lives under `cli-agents/cv/` (shared scripts + tests) plus
-# `templates/*.py.template` files, which are NOT valid standalone modules and are excluded.
+# Python in this repository lives under `src/` (the shipped hook runtime and payload), `test/`
+# and `scripts/`; ruff reads the root `ruff.toml`, and `src/hooks/ruff.toml` for the hooks.
 # Prompt/documentation files are untouched by these hooks.
 default_install_hook_types: [pre-commit, pre-push]
 
@@ -63,23 +61,22 @@ repos:
       - id: detect-private-key
         stages: [pre-commit]
 
-  # Scoped to the only real Python in this repo. `templates/` is excluded because a
-  # `*.py.template` is not a valid module, and the CV tests are test code.
+  # Scoped to the shipped Python under src/. The suites are test code (assert is their job).
   - repo: https://github.com/PyCQA/bandit
     rev: 1.8.6
     hooks:
       - id: bandit
         args: [-ll]
         stages: [pre-commit]
-        files: ^cli-agents/cv/shared/
-        exclude: ^(venv/|tmp/|templates/)
+        files: ^src/
+        exclude: ^(src/hooks/tests/|src/payload/test/)
 
   - repo: local
     hooks:
-      # On demand only — CI owns the suite. Run from cli-agents/cv/, which has its own
-      # pytest.ini; there is no root-level suite to run.
+      # On demand only — CI owns the suite. scripts/run_tests.py runs every suite in one
+      # invocation from the repository root.
       - id: pytest
-        name: pytest (manual — never a commit gate; runs the CV suite)
+        name: pytest (manual — never a commit gate; runs every suite)
         entry: python scripts/run_tests.py
         language: system
         stages: [manual]

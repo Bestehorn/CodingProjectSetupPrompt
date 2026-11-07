@@ -1,6 +1,6 @@
 """Tests for the git wrapper's delivery verbs: `enqueue-pr`, `dequeue-pr`, `queue-status`.
 
-Installed from ``templates/test_wrapper_delivery.py.template`` to ``test/test_wrapper_delivery.py``, next to
+Installed from ``src/payload/test/test_wrapper_delivery.py`` to ``test/test_wrapper_delivery.py``, next to
 ``scripts/github_wrapper.py`` and/or ``scripts/gitlab_wrapper.py``. The verbs DELEGATE to
 ``scripts/merge_steward.py`` (``steward_delegate``); what is pinned is the contract the steward and the
 no-environment-vars rule rely on: the wrapper's token travels on stdin and never in argv, the steward's exit code

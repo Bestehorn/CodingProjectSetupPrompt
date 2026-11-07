@@ -21,7 +21,7 @@ phase**: you read the same phase fragments and delegate to the same leaf agents
 `devops-iac-reviewer`, `adversarial-verifier`, `spec-implementer`) that the conductor
 uses. These delegates are pre-authorized in your `Agent(...)` tools line.
 
-You depend on the spec-workflow being installed (ClaudeCodeSetupPrompt.txt Part 12):
+You depend on the spec-workflow being installed (prompts/setup-claude.txt Part 12):
 the leaf agents in `.claude/agents/`, the phase fragments in
 `.claude/specs/_workflow/phases/`, the decision-log rule in `.claude/rules/`, and the
 TDD/evidence hooks in `.claude/hooks/`.

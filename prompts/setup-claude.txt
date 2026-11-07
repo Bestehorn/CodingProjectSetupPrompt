@@ -13,14 +13,15 @@
 #   3. An existing project with neither: scaffolds Claude config and migrates
 #      any ad-hoc rules it finds.
 #
-# This is the Claude Code counterpart of KiroProjectSetupPrompt.v2.txt. It
+# This is the Claude Code counterpart of prompts/setup-kiro.txt. It
 # produces the same engineering standards, expressed in Claude Code's native
 # file formats: CLAUDE.md, .claude/rules/, .claude/settings.json (permissions +
 # hooks), .mcp.json, .claude/commands/, and .claude/agents/.
 #
-# It reuses the SAME templates/ directory as the Kiro prompt (pyproject, ruff,
-# pre-commit, git wrappers, aws_config) — those artifacts are assistant-agnostic.
-# The custom agents come from the claude-agents/ directory in this repo.
+# It reuses the SAME templates/ and src/payload/ trees as the Kiro prompt (pre-commit,
+# git hooks, config skeletons; the git wrappers, check scripts and aws_config are Python
+# under src/payload/) — those artifacts are assistant-agnostic. The custom agents, commands
+# and rules come from clients/claude/ in this repo, shared prose from clients/common/.
 #
 # WHERE TESTS RUN (the one thing to know before editing Parts 2, 7 or 12):
 #   pre-commit hook = lint + security (< 2 s). pre-push hook = mypy. CI = the
@@ -99,7 +100,7 @@
 #     or dot no longer resolves to its twin); `CONTRACT_VERSION` is 2026.10.10 and
 #     REVISION_NOTICE item 9 reaches the sessions already running.
 #   - 2026-10-10 (later): NEVER END A TURN TO WAIT. Thirty days of three projects' transcripts
-#     (project-docs/stop-forensics-2026-10-10.md): the Stop gates were honoured 1,227 times
+#     (docs/reports/stop-forensics-2026-10-10.md): the Stop gates were honoured 1,227 times
 #     out of 1,227; every operator restart followed a background task that died with the
 #     session's process (the harness runs no turn for a `stopped` task: 82 of 82), an API
 #     error, or a turn that ended "waiting on it in the background". So: CI and suite waits
@@ -109,7 +110,7 @@
 #     not only on a changed state field (a long VERIFY had exhausted it); the resume re-inject
 #     names the lost tasks. REVISION_NOTICE item 10; `CONTRACT_VERSION` continuous-work-4.
 #   - 2026-10-26: HAND OFF, DO NOT WAIT; ONE WRITER OF THE TRUNK. Two weeks of two projects'
-#     sessions (project-docs/wait-time-analysis-2026-10-25.md): 66.5 percent of the build span was
+#     sessions (docs/reports/wait-time-analysis-2026-10-25.md): 66.5 percent of the build span was
 #     waiting, led by the post-merge pipeline a session watched for its own commit and by turns an
 #     API error ended (they idled a median 7.5 h until a person typed `/continue-work`). On the
 #     busiest project (merge-velocity-chess-2026-10-25.md: about 24 merges a day, a 55-minute CI)
@@ -151,7 +152,7 @@
 #     Docs: lock release removes the owner record; the CLAUDE.md framework text is about 3 KB; MCP
 #     servers pinned and pre-warmed. `CONTRACT_VERSION` 2026.10.31-delivery-7.
 #   - 2026-11-02: A SESSION THAT CAN BE CLOSED SAYS SO. On the first steward project none of ten
-#     handed-off issues closed and no close-out printed its verdict (project-docs/session-endings-
+#     handed-off issues closed and no close-out printed its verdict (docs/reports/session-endings-
 #     analysis-2026-11-01.md). A session now owns its PR until it LANDS (`Phase: QUEUED`, `wait-landed`
 #     with a bounded nudge of a due tick; only the post-deploy check is handed off, after `check-handoff`
 #     passes: every PR landed, only `(post-deploy)` items open); every registered work run ends with
@@ -497,8 +498,8 @@ necessary; the files below are its mechanism.
       on Linux/macOS. (Merge into an existing `.gitattributes` per Rule 1.)
    f. COMMIT `.githooks/` and `.gitattributes` — they are tracked. Do NOT add
       `.githooks/` to `.gitignore`.
-3. Copy the check scripts from `templates/` into `scripts/` (strip the
-   `.template` suffix):
+3. Copy the check scripts from `src/payload/scripts/` into `scripts/` (same
+   file names):
    - `run_tests.py` — the ONE definition of how tests are invoked. Bounded local
      workers (`min(4, cores // 4)`, floor 1), `--workers auto` for CI only, and
      it REFUSES `-x`/`--maxfail` so no caller can make a run report one failure
@@ -657,7 +658,7 @@ already correct — verify it and move on. If not, migrate legacy formats
   silently) and `detect-secrets` (backs the pre-commit secret scan — without it
   a leaked credential is caught only in CI, after the commit exists).
 
-(See KiroProjectSetupPrompt.v2.txt Part 4 for the full tables; the content is
+(See prompts/setup-kiro.txt Part 4 for the full tables; the content is
 the same. This prompt does not duplicate it to avoid drift.)
 
 ---
@@ -719,8 +720,8 @@ Tailor to the project:
 
 ### Part 5.2 — AWS account configuration (AWS projects only)
 
-Identical to the Kiro standard. Copy `templates/aws_config.py.template` to
-`src/aws_config.py` and `templates/aws_accounts.json.template` to
+Identical to the Kiro standard. Copy `src/payload/src/aws_config.py` to
+`src/aws_config.py` and `templates/config/aws_accounts.json.template` to
 `config/aws_accounts.json.template` (and to `config/aws_accounts.json` as a
 stub). If `src/aws_config.py` exists but lacks `get_account`/`get_account_id`/
 `get_profile`/`get_region`/`list_environments`, ADD the missing methods using
@@ -729,9 +730,9 @@ the template as reference; do not overwrite the existing implementation.
 ### Part 5.3 — Git repository wrapper scripts
 
 Identical to the Kiro standard. Detect the host from `.git/config` remote
-origin. For GitHub, copy `templates/github_wrapper.py.template` to
+origin. For GitHub, copy `src/payload/scripts/github_wrapper.py` to
 `scripts/github_wrapper.py` and stub `credentials/github-pat.txt(.template)`.
-For GitLab, copy `templates/gitlab_wrapper.py.template` to
+For GitLab, copy `src/payload/scripts/gitlab_wrapper.py` to
 `scripts/gitlab_wrapper.py` and stub `config/gitlab.json(.template)`. Verify
 with a read-only command once a real token is pasted
 (`python scripts/github_wrapper.py list-workflows`).
@@ -779,8 +780,8 @@ subcommands the project's agents invoke. The minimum set:
   approve/merge`, `delete-branch`, and `issue list` with state/assignee/labels.
   `merge-pr` / `mr merge` serve `"merge": "direct"` projects (and the bootstrap PR of
   Part 7.1); under `"merge": "steward"` the `merge-steward` gate refuses them.
-  (See the expanded docstrings in `templates/github_wrapper.py.template` and
-  `templates/gitlab_wrapper.py.template` for the exact REST endpoints and the
+  (See the expanded docstrings in `src/payload/scripts/github_wrapper.py` and
+  `src/payload/scripts/gitlab_wrapper.py` for the exact REST endpoints and the
   "can't approve your own PR/MR" caveat the orchestrator handles by polling.)
 - Issue metadata + checklist (per `issue-tracking.md`): assign an issue, set
   start/end dates, record time-spent, set a parent/epic link, and toggle a
@@ -882,13 +883,13 @@ because shared hardware means shared state — and the DEFAULT here is the worst
 every project writing into one global temp dir so nobody can safely clean any of it.
 Scoping makes each artifact attributable to the tree that made it.
 
-**2. Install the reaper and its tests.** Copy `templates/reap_agent_temp.py.template` to
-`scripts/reap_agent_temp.py` and `templates/test_reap_agent_temp.py.template` to
+**2. Install the reaper and its tests.** Copy `src/payload/scripts/reap_agent_temp.py` to
+`scripts/reap_agent_temp.py` and `src/payload/test/test_reap_agent_temp.py` to
 `test/test_reap_agent_temp.py`. It is report-only by default; `--apply` deletes:
 
 ```bash
-cp templates/reap_agent_temp.py.template scripts/reap_agent_temp.py
-cp templates/test_reap_agent_temp.py.template test/test_reap_agent_temp.py
+cp src/payload/scripts/reap_agent_temp.py scripts/reap_agent_temp.py
+cp src/payload/test/test_reap_agent_temp.py test/test_reap_agent_temp.py
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp          # report
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
 ```
@@ -1055,7 +1056,7 @@ auto-generated `claude/<name>` branch; strip any such trailer the tool adds.
 
 Also install the **project-agnostic** commands that are not derived from a Kiro
 hook but belong in every project. These ship verbatim in this repo's
-`claude-commands/` (same file-copy pattern as `spec-*`/`issues-work`):
+`clients/claude/commands/` (same file-copy pattern as `spec-*`/`issues-work`):
 
 `.claude/commands/close-session.md` (`/close-session`): the end-of-session close-out. It
 answers "can we close this session?" by FINISHING what is unfinished, then verifying, then
@@ -1221,9 +1222,9 @@ message from a sender that is not, unless the OPERATOR's user-level settings say
 the report says whether it is set.
 
 ```bash
-cp claude-commands/close-session.md  .claude/commands/
-cp claude-commands/continue-work.md  .claude/commands/
-cp claude-commands/supervise.md      .claude/commands/
+cp clients/claude/commands/close-session.md  .claude/commands/
+cp clients/claude/commands/continue-work.md  .claude/commands/
+cp clients/claude/commands/supervise.md      .claude/commands/
 ```
 
 ### Part 6.2 — Event-driven automation → settings.json `hooks`
@@ -1293,7 +1294,7 @@ switch a framework gate off writes `.claude/hooks/hooks.config.json` with
 `{"disabled_gates": ["<HOOK name>"]}`; the self-test honours it. A project gate that fails to
 import is skipped with a note and never takes the framework's gates down with it.
 
-The gates the PreToolUse dispatcher runs (all ship in `claude-agents/spec-workflow/hooks/`):
+The gates the PreToolUse dispatcher runs (all ship in `src/hooks/`):
 - `no-env-vars` (`gate_no_env_vars.py`): if the Bash command sets AWS_*/GITHUB_TOKEN/
   GITLAB_TOKEN through `export`, `setx`, `set` or `$env:`, it blocks (exit 2) and prints
   why. This enforces `no-environment-vars.md`.
@@ -1325,7 +1326,7 @@ The gates the PreToolUse dispatcher runs (all ship in `claude-agents/spec-workfl
   checked out), naming `enqueue-pr` instead — only the steward lands the trunk, so the state
   its train tested is the state that lands. It fails OPEN on an absent or unreadable config.
 - `issue-filing-gate` (PreToolUse: Bash; ships in
-  `claude-agents/spec-workflow/hooks/`): recognizes an issue-CREATE call
+  `src/hooks/`): recognizes an issue-CREATE call
   (`create-issue`, `issue create`, `gh/glab issue create`) and exits 2 (blocks)
   when the body is provably missing the provenance lines required by
   `.claude/rules/issue-filing-discipline.md` (`Origin:`, `Subject:`,
@@ -1408,7 +1409,7 @@ multi-command check step, a `pytest -x`) and say what it costs.
 
 A pipeline that reports every failure is half of CI; the other half is what happens after a PR
 is green, and on a busy trunk the default shape breaks. Measured on a project with about 24
-merges a day and a 55-minute CI (the framework's `project-docs/merge-velocity-chess-2026-10-25.md`):
+merges a day and a 55-minute CI (the framework's `docs/reports/merge-velocity-chess-2026-10-25.md`):
 each merge cancelled the trunk run of the merge before it (29 of 34 in one day), the deploy that
 only a green trunk tip could start queued for a median 4.7 h, and sessions sat watching for a
 deploy of their own commit that supersession never produced. `config/delivery.json` selects the
@@ -1422,9 +1423,9 @@ remedy per project; `.claude/docs/delivery.md` (Part 12.1) is the agent-facing c
 | `direct` | `session` | a solo, low-traffic repo — and the behaviour when the file is ABSENT |
 
 ```bash
-cp templates/merge_steward.py.template       scripts/merge_steward.py
-cp templates/test_merge_steward.py.template  test/test_merge_steward.py
-cp templates/delivery.json.template          config/delivery.json   # TRACKED: fill host, trunk, workflows
+cp src/payload/scripts/merge_steward.py       scripts/merge_steward.py
+cp src/payload/test/test_merge_steward.py  test/test_merge_steward.py
+cp templates/config/delivery.json.template          config/delivery.json   # TRACKED: fill host, trunk, workflows
 ```
 
 1. **`config/delivery.json`** — `host` (`github`/`gitlab`), `trunk`, and under `steward` the
@@ -1441,7 +1442,7 @@ cp templates/delivery.json.template          config/delivery.json   # TRACKED: f
    queue lives on: a second host kept as a read-only archive or mirror gets no steward, no labels and
    no delivery workflow, and its wrapper's delivery verbs refuse.
    **The token.** The wrapper's delivery verbs (`steward_delegate` in the wrapper template, pinned by
-   `templates/test_wrapper_delivery.py.template` → `test/test_wrapper_delivery.py`) hand the
+   `src/payload/test/test_wrapper_delivery.py` → `test/test_wrapper_delivery.py`) hand the
    wrapper's own token to the steward with `--token-stdin`; CI passes its token on stdin (GitHub) or
    as a FILE variable (`--token-file`, GitLab). Without a token option the steward reads
    `credentials/github-pat.txt`, or the `token` of `config/gitlab.json` only while git ignores that
@@ -1646,7 +1647,7 @@ paths:
 ```
 
 Create these rule files (porting content verbatim from `.kiro/steering/` if
-present, else from KiroProjectSetupPrompt.v2.txt Part 8):
+present, else from prompts/setup-kiro.txt Part 8):
 
 Always-on (no `paths:`):
 - `coding-standards.md`, `design-principles.md`, `file-organization.md`,
@@ -1657,12 +1658,12 @@ Always-on (no `paths:`):
   `always-test-e2e.md`, `tests-must-not-fail.md`, `use-git-wrapper-scripts.md`,
   `remote-ci-must-pass.md`, `project-specific.md`, `continuous-work.md` and
   `ci-owns-the-test-suite.md` (the last two ship in
-  `claude-agents/spec-workflow/rules/`; installed with the other fleet rules in
+  `clients/claude/rules/`; installed with the other fleet rules in
   Part 12.1 — see Part 8.2a), and — for any project whose agents can reach an issue
   tracker — `issue-filing-discipline.md` (same location).
 
 That list is the Kiro-derived set only. Part 12.1 installs MORE always-on rules that
-have no Kiro counterpart and are copied from `claude-agents/spec-workflow/rules/` rather
+have no Kiro counterpart and are copied from `clients/claude/rules/` rather
 than ported: `agent-state-convention.md`, `no-ai-attribution.md`, `keep-git-clean.md`,
 `issue-tracking.md`, `continuous-work.md` (WHEN a turn may end; the five-line question
 shape), `proportionality.md` (HOW MUCH spec a change gets: tiers, byte caps, scope
@@ -1737,9 +1738,9 @@ carries no filing rationale.
 
 ### Part 8.2a — `continuous-work.md`: the anti-stopping contract (install this)
 
-`claude-agents/spec-workflow/rules/continuous-work.md` → `.claude/rules/` (always loaded;
+`clients/claude/rules/continuous-work.md` → `.claude/rules/` (always loaded;
 copied by the Part 12.1 wildcard). It is the single highest-leverage rule in this setup for
-long unattended runs, and its Kiro twin is `KiroProjectSetupPrompt.v2.txt` Part 8.33.
+long unattended runs, and its Kiro twin is `prompts/setup-kiro.txt` Part 8.33.
 
 **The BEHAVIORAL half of the two is word-aligned on purpose; the MECHANICAL half is not, and
 one of those divergences is a gap rather than a host difference.** The alignment is real and
@@ -1906,27 +1907,26 @@ user-initiated; these apply to every session:
 
 ### Part 8.3 — Install the custom agents (.claude/agents/)
 
-Install the translated subagents from this repo's `claude-agents/` directory
+Install the subagents from this repo's `clients/claude/agents/` directory
 into the project's `.claude/agents/`:
 
 ```bash
 mkdir -p .claude/agents .claude/docs
-cp claude-agents/dead-code/dead-code-removal-agent.md         .claude/agents/
-cp claude-agents/doc-review/doc-reviewer-agent.md             .claude/agents/
-cp claude-agents/ci-worker/ci-workflow-agent.md               .claude/agents/
-cp claude-agents/issue-housekeeping/issue-housekeeping-agent.md .claude/agents/
-cp claude-agents/issue-intake/issue-intake-agent.md           .claude/agents/
-cp claude-agents/product-management/product-management-agent.md .claude/agents/
-cp claude-agents/spec-review/spec-review-agent.md             .claude/agents/
-cp claude-agents/spec-review/spec-prompt-author-agent.md      .claude/agents/
-cp claude-agents/cv/cv-*.md                                   .claude/agents/
+cp clients/claude/agents/dead-code-removal-agent.md   .claude/agents/
+cp clients/claude/agents/doc-reviewer-agent.md        .claude/agents/
+cp clients/claude/agents/ci-workflow-agent.md         .claude/agents/
+cp clients/claude/agents/issue-housekeeping-agent.md  .claude/agents/
+cp clients/claude/agents/issue-intake-agent.md        .claude/agents/
+cp clients/claude/agents/product-management-agent.md  .claude/agents/
+cp clients/claude/agents/spec-review-agent.md         .claude/agents/
+cp clients/claude/agents/spec-prompt-author-agent.md  .claude/agents/
 
 # Agent-sibling templates → .claude/docs/ (ON-DEMAND, deliberately NOT rules/:
 # each is read by its agent AT DRAFTING TIME, not loaded into every session)
-cp claude-agents/issue-intake/issue-draft-template.md          .claude/docs/
-cp claude-agents/product-management/pm-proposal-template.md    .claude/docs/
-cp claude-agents/issue-housekeeping/housekeeping-templates.md  .claude/docs/
-cp claude-agents/dead-code/language-matrix.md                  .claude/docs/dead-code-language-matrix.md
+cp clients/claude/docs/issue-draft-template.md      .claude/docs/
+cp clients/claude/docs/pm-proposal-template.md      .claude/docs/
+cp clients/claude/docs/housekeeping-templates.md    .claude/docs/
+cp clients/claude/docs/dead-code-language-matrix.md .claude/docs/
 ```
 
 (Install only the agents the project needs, but install each agent WITH its
@@ -1934,11 +1934,8 @@ sibling template: `issue-intake`, `product-management` and `issue-housekeeping`
 read their drafting templates from `.claude/docs/` at the moment they produce a
 draft/proposal, and `dead-code` reads `.claude/docs/dead-code-language-matrix.md`
 at language setup — the agent definitions point at those exact paths instead of
-carrying the templates in their bodies. See `claude-agents/README.md` for
-per-agent tool/permission notes and `claude-agents/cv/README.md` for the CV
-suite. The CV orchestrator must be run as the MAIN session —
-`claude --agent cv-orchestrator` — because Claude Code subagents cannot spawn
-subagents.)
+carrying the templates in their bodies. See `clients/claude/README.md` for
+per-agent tool/permission notes.)
 
 If ANY of `issue-intake`, `issue-housekeeping`, `product-management`,
 `doc-review`, or `dead-code` is installed, also install
@@ -1975,9 +1972,9 @@ weeks, and `pre-work.md` made two of them mandatory reading before every task. I
 the guard and the compile tool with the other check scripts:
 
 ```bash
-cp templates/test_instruction_corpus_budget.py.template test/test_instruction_corpus_budget.py
-cp templates/memory_compile.py.template               scripts/memory_compile.py
-cp claude-commands/compile-memory.md                  .claude/commands/
+cp src/payload/test/test_instruction_corpus_budget.py test/test_instruction_corpus_budget.py
+cp src/payload/scripts/memory_compile.py               scripts/memory_compile.py
+cp clients/claude/commands/compile-memory.md                  .claude/commands/
 mkdir -p docs/archive
 ```
 
@@ -2057,7 +2054,7 @@ is exactly the moment it cannot go and fetch them:
 
 ```bash
 mkdir -p docs
-cp project-docs/codebuild-ci-backup-mechanism.md docs/
+cp templates/docs/codebuild-ci-backup-mechanism.md docs/
 ```
 
 This is what the capacity ladder's Rung 2 (`docs/ci-capacity-ladder.md`,
@@ -2225,8 +2222,7 @@ this prompt (leave any existing one alone).
    under the same directory records one line per hook invocation and is the cheapest way to
    see whether the gates are running at all.
 8. Commands — intended slash commands exist in `.claude/commands/`.
-9. Agents — intended subagents exist in `.claude/agents/`; `cv-orchestrator`
-   has its `Agent(...)` allowlist line.
+9. Agents — intended subagents exist in `.claude/agents/`.
 10. Git wrapper — for the detected host, the wrapper + credential stub exist, and the
     subcommands `/close-session`'s task-item gate depends on are IMPLEMENTED, not just
     documented: `reopen-issue` / `issue reopen` (undo a close made over unfinished
@@ -2379,14 +2375,14 @@ just asserting it. It replaces the manual Kiro CLI ↔ IDE loop (author prompt �
 generate spec → review → resolve → repeat → implement) with a single autonomous
 Claude Code session.
 
-The full design and per-agent detail live in `claude-agents/spec-workflow/README.md`.
+The full design and per-agent detail live in `docs/design/agents/spec-workflow.md`.
 This part installs the files and wires the gates. Apply Rule 1 (merge, never
 overwrite project-specific content) and Rule 0 (never touch `.kiro/`).
 
 ### Part 12.1 — What gets installed
 
-From this repo's `claude-agents/spec-workflow/`, `claude-agents/spec-review/`, and
-`claude-commands/`, install into the project:
+From this repo's `clients/claude/` (agents, commands, rules, docs), `clients/common/`
+(phases, shared docs) and `src/hooks/`, install into the project:
 
 - **Conductor + specialists** → `.claude/agents/`:
   `spec-conductor` (the main-session orchestrator), `spec-author`, `spec-researcher`,
@@ -2618,37 +2614,39 @@ Install command (run from this repo, targeting the project root):
 ```bash
 mkdir -p .claude/agents .claude/commands .claude/rules .claude/hooks \
          .claude/specs/_workflow/phases
-cp claude-agents/spec-workflow/*.md            .claude/agents/    # excludes README via *.md? see note
-cp claude-agents/spec-review/*.md              .claude/agents/
-cp claude-commands/spec-*.md                   .claude/commands/
-cp claude-commands/compile-memory.md           .claude/commands/
-cp claude-agents/spec-workflow/phases/*.md     .claude/specs/_workflow/phases/
-cp claude-agents/spec-workflow/rules/*.md      .claude/rules/   # agent-state-convention,
-                                                               # no-ai-attribution,
-                                                               # keep-git-clean, issue-tracking,
-                                                               # issue-filing-discipline,
-                                                               # continuous-work,
-                                                               # ci-owns-the-test-suite,
-                                                               # proportionality,
-                                                               # parallel-by-default,
-                                                               # native-tools-over-shell
+for a in spec-conductor spec-author spec-researcher spec-implementer test-architect \
+         adversarial-verifier standards-reviewer best-practice-reviewer security-reviewer \
+         devops-iac-reviewer spec-review-agent spec-prompt-author-agent; do
+  cp "clients/claude/agents/$a.md" .claude/agents/
+done
+cp clients/claude/commands/spec-*.md         .claude/commands/
+cp clients/claude/commands/compile-memory.md .claude/commands/
+cp clients/common/phases/*.md                .claude/specs/_workflow/phases/
+cp clients/claude/rules/*.md                 .claude/rules/   # agent-state-convention,
+                                                              # no-ai-attribution,
+                                                              # keep-git-clean, issue-tracking,
+                                                              # issue-filing-discipline,
+                                                              # continuous-work,
+                                                              # ci-owns-the-test-suite,
+                                                              # proportionality,
+                                                              # parallel-by-default,
+                                                              # native-tools-over-shell
 mkdir -p .claude/docs
-cp claude-agents/spec-workflow/docs/review-contract.md .claude/docs/  # ON-DEMAND: every reviewer reads it
-cp claude-agents/spec-workflow/docs/run-identity.md .claude/docs/  # ON-DEMAND, deliberately NOT in
-                                                               # rules/: the authoritative
-                                                               # run-identity/gate-release contract,
-                                                               # read by registered runs at start —
-                                                               # a rules/ file with no paths: would
-                                                               # load into EVERY session
-cp claude-agents/spec-workflow/docs/delivery.md .claude/docs/  # ON-DEMAND: read at the PR phase
-cp claude-agents/spec-workflow/hooks/*.py      .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
-                                                               # red_for_right_reason.py,
-                                                               # wait_for.py, supervisor.py
-cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION .claude/hooks/
-cp claude-agents/spec-workflow/hooks/MIGRATION.md     .claude/hooks/
-cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md .claude/hooks/
+cp clients/common/docs/review-contract.md    .claude/docs/   # ON-DEMAND: every reviewer reads it
+cp clients/claude/docs/run-identity.md       .claude/docs/   # ON-DEMAND, deliberately NOT in
+                                                              # rules/: the authoritative
+                                                              # run-identity/gate-release contract,
+                                                              # read by registered runs at start —
+                                                              # a rules/ file with no paths: would
+                                                              # load into EVERY session
+cp clients/common/docs/delivery.md           .claude/docs/   # ON-DEMAND: read at the PR phase
+cp src/hooks/hook*.py src/hooks/gate_*.py src/hooks/red_for_right_reason.py \
+   src/hooks/wait_for.py src/hooks/supervisor.py .claude/hooks/   # not kiro_hooks.py (Kiro only)
+cp src/hooks/CONTRACT_VERSION                .claude/hooks/
+cp src/hooks/MIGRATION.md                    .claude/hooks/
+cp src/hooks/REVISION_NOTICE.md              .claude/hooks/
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.py .claude/hooks/tests/   # every module + conftest.py
+cp src/hooks/tests/*.py                      .claude/hooks/tests/   # every module + conftest.py
 rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                      # the bash predecessors, if any
 grep -q '^.claude/hooks/\*\* text eol=lf' .gitattributes 2>/dev/null || printf '.claude/hooks/** text eol=lf\n' >> .gitattributes   # same commit as the files
 ```
@@ -2723,10 +2721,6 @@ exits 0 on a registered run with no state file is INERT, and inert is indistingu
 satisfied without these suites — and a gate that cannot START is inert in exactly the same
 way, which is what the self-test exists to catch: it resolves `python` on PATH as the harness
 does, spawns the dispatcher with no shell, and fails if any event does not decide.
-NOTE: `claude-agents/spec-workflow/` contains a `README.md` you do NOT want in
-`.claude/agents/` — copy the ten agent files explicitly (see
-`claude-agents/spec-workflow/README.md` "Install" for the exact list) rather than a
-blind `*.md`, or remove `.claude/agents/README.md` afterward.
 
 ### Part 12.2 — Wire the TDD/evidence gates into settings.json
 
@@ -3013,7 +3007,7 @@ stranger's issue number stated with confidence.
 
 ### Part 12.2b — Deploying to a project whose agents are ALREADY RUNNING
 
-The full reference is `claude-agents/spec-workflow/hooks/MIGRATION.md`, installed to
+The full reference is `src/hooks/MIGRATION.md`, installed to
 `.claude/hooks/MIGRATION.md`. It exists because of a population problem: the sessions most
 likely to stop on unfinished work are the long-running ones, and those are exactly the sessions
 that started before the fix. A migration that only reaches NEW sessions misses the population it
@@ -3147,12 +3141,12 @@ TDD/evidence hooks). Install Part 12 first.
 
 ### Part 13.1 — What gets installed
 
-- `claude-agents/issue-work-orchestrator/issue-work-orchestrator.md` →
+- `clients/claude/agents/issue-work-orchestrator.md` →
   `.claude/agents/` (the main-session orchestrator;
   `claude --agent issue-work-orchestrator`).
-- `claude-agents/code-merge-reviewer/code-merge-reviewer.md` → `.claude/agents/` (the
+- `clients/claude/agents/code-merge-reviewer.md` → `.claude/agents/` (the
   mandatory conflict-resolution agent the orchestrator delegates every merge to).
-- `claude-commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
+- `clients/claude/commands/issues-work.md` → `.claude/commands/` (`/issues-work`, start or
   resume the WHOLE backlog).
 - FOUR narrower entry points beside it, all → `.claude/commands/`:
   - `work-issue.md` — `/work-issue <N>` runs the SAME full lifecycle for ONE named issue
@@ -3172,7 +3166,7 @@ TDD/evidence hooks). Install Part 12 first.
     (Part 6.1, step 2; needs the wrapper's `reopen-issue` / `issue reopen`).
   All five, `/issues-work` included, carry `disable-model-invocation: true`, so an autonomous merge-and-close run can
   never begin because a prompt merely mentioned an issue number.
-- `claude-commands/supervise.md` → `.claude/commands/` (`/supervise`, Part 6.1): not an entry
+- `clients/claude/commands/supervise.md` → `.claude/commands/` (`/supervise`, Part 6.1): not an entry
   point to the agent but the host backstop that resumes a run an API error stopped. It carries
   the same `disable-model-invocation: true`.
 - The `session-register` and `continuous-work-reinject` (SessionStart) and
@@ -3184,14 +3178,14 @@ TDD/evidence hooks). Install Part 12 first.
   also wired there, makes the claim-before-work ordering mechanical (Part 13.2).
 
 ```bash
-cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md .claude/agents/
-cp claude-agents/code-merge-reviewer/code-merge-reviewer.md         .claude/agents/
-cp claude-commands/issues-work.md                                   .claude/commands/
-cp claude-commands/work-issue.md                                    .claude/commands/
-cp claude-commands/auto-work.md                                     .claude/commands/
-cp claude-commands/continue-work.md                                 .claude/commands/
-cp claude-commands/close-session.md                                 .claude/commands/
-cp claude-commands/supervise.md                                     .claude/commands/
+cp clients/claude/agents/issue-work-orchestrator.md .claude/agents/
+cp clients/claude/agents/code-merge-reviewer.md         .claude/agents/
+cp clients/claude/commands/issues-work.md                                   .claude/commands/
+cp clients/claude/commands/work-issue.md                                    .claude/commands/
+cp clients/claude/commands/auto-work.md                                     .claude/commands/
+cp clients/claude/commands/continue-work.md                                 .claude/commands/
+cp clients/claude/commands/close-session.md                                 .claude/commands/
+cp clients/claude/commands/supervise.md                                     .claude/commands/
 ```
 
 Also: ensure the git wrapper implements the PR/merge/CI subcommands, the blocking wait, the
@@ -3579,46 +3573,41 @@ expected outcome, not a sign that something was missed.
 | agent `toolsSettings.shell.allowed/denied` | `permissions.allow/deny` (glob, not regex) |
 | agent `subagent.availableAgents` | `tools: Agent(name1, name2, …)` on the main-session agent |
 | `.kiro/agents/<name>.json` | `.claude/agents/<name>.md` (YAML frontmatter + body) |
-| `install_agents.py` | not needed — files discovered in place |
 
 ### Templates referenced (shared with the Kiro prompt, under templates/)
-- `aws_config.py.template`, `aws_accounts.json.template`,
+- `config/aws_accounts.json.template`,
   `setup-hooks.sh.template` (ENABLES the tracked hooks; no longer generates them),
   `githooks/pre-commit` (tracked, portable; lint + security on staged files),
   `githooks/pre-push` (tracked, portable; mypy, plus the full suite only while
   CI-OUTAGE MODE is declared),
   `pre-commit-config.yaml.template` (its `stages:` keys are what decide
   commit vs push vs manual),
-  `run_tests.py.template` (→ `scripts/run_tests.py`; bounded workers, refuses `-x`, holds
-  a host-wide suite slot for any run wider than named files),
-  `suite_semaphore.py.template` (→ `scripts/suite_semaphore.py`; the host-wide cap on
-  concurrent suites and synths, Part 2.2),
-  `run_checks.py.template` (→ `scripts/run_checks.py`; every check, every failure,
-  one pass — each CI job calls it, Part 7),
-  `ci_outage_mode.py.template` (→ `scripts/ci_outage_mode.py`; the shared CI-outage
-  marker the pre-push hook reads),
-  `gitlab.json.template`, `gitlab_wrapper.py.template`,
-  `github_wrapper.py.template`,
-  `reap_agent_temp.py.template` (→ `scripts/reap_agent_temp.py`; the OS-temp reaper,
-  Part 5.4) and `test_reap_agent_temp.py.template` (→ `test/test_reap_agent_temp.py`; its
-  suite),
-  `test_instruction_corpus_budget.py.template` (→ `test/test_instruction_corpus_budget.py`;
-  the memory-budget guard, Part 9),
-  `memory_compile.py.template` (→ `scripts/memory_compile.py`; the mechanical half of
-  `/compile-memory`, Part 9),
-  `merge_steward.py.template` (→ `scripts/merge_steward.py`; the merge queue, the train
-  builder and the post-deploy verdict, Part 7.1) and `test_merge_steward.py.template`
-  (→ `test/test_merge_steward.py`), `delivery.json.template` (→ `config/delivery.json`),
+  `config/gitlab.json.template`, `config/delivery.json.template` (→ `config/delivery.json`),
   `ci/github-merge-steward.yml.template`, `ci/github-deploy.yml.template` and
   `ci/gitlab-delivery.gitlab-ci.yml.template` (Part 7.1)
 
-### Custom agents (under claude-agents/ — see claude-agents/README.md)
+### Shipped Python (shared with the Kiro prompt, under src/payload/, laid out like the project)
+- `src/aws_config.py`,
+  `scripts/run_tests.py` (bounded workers, refuses `-x`, holds a host-wide suite slot for
+  any run wider than named files),
+  `scripts/suite_semaphore.py` (the host-wide cap on concurrent suites and synths, Part 2.2),
+  `scripts/run_checks.py` (every check, every failure, one pass — each CI job calls it,
+  Part 7),
+  `scripts/ci_outage_mode.py` (the shared CI-outage marker the pre-push hook reads),
+  `scripts/gitlab_wrapper.py`, `scripts/github_wrapper.py`,
+  `scripts/reap_agent_temp.py` (the OS-temp reaper, Part 5.4) and
+  `test/test_reap_agent_temp.py` (its suite),
+  `test/test_instruction_corpus_budget.py` (the memory-budget guard, Part 9),
+  `scripts/memory_compile.py` (the mechanical half of `/compile-memory`, Part 9),
+  `scripts/merge_steward.py` (the merge queue, the train builder and the post-deploy
+  verdict, Part 7.1) and `test/test_merge_steward.py`
+
+### Custom agents (under clients/claude/agents/ — see clients/claude/README.md)
 - dead-code-removal-agent, doc-reviewer-agent, ci-workflow-agent,
   issue-housekeeping-agent, issue-intake-agent, product-management-agent,
-  spec-review-agent, spec-prompt-author-agent, and the cv-* suite
-  (cv-orchestrator + 6 delegates).
+  spec-review-agent, spec-prompt-author-agent.
 
-### Spec-driven + test-driven workflow (Part 12; see claude-agents/spec-workflow/README.md)
+### Spec-driven + test-driven workflow (Part 12; see docs/design/agents/spec-workflow.md)
 - Conductor: `spec-conductor` (`claude --agent spec-conductor`).
 - Specialists: spec-author, spec-researcher, test-architect, adversarial-verifier,
   standards-reviewer, best-practice-reviewer, security-reviewer, devops-iac-reviewer,
@@ -3669,7 +3658,7 @@ expected outcome, not a sign that something was missed.
   On-demand docs in .claude/docs/: review-contract.md (the finding shape every reviewer
   uses), run-identity.md and delivery.md (how a green PR lands, deploys and is verified).
 
-### Autonomous issue resolution (Part 13; see claude-agents/issue-work-orchestrator/README.md)
+### Autonomous issue resolution (Part 13; see docs/design/agents/issue-work-orchestrator.md)
 - Orchestrator: `issue-work-orchestrator` (`claude --agent issue-work-orchestrator`).
   Works the whole open-issue backlog: select+claim → worktree → fix via the spec/TDD
   engine with proof → live issue updates → PR → CI → queue with the merge steward until it lands (or

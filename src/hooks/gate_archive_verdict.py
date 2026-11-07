@@ -2,7 +2,7 @@
 
 Measured 2026-11-01 (chess): in every turn that archived a session — 56 of them, before the delivery redesign and
 after — the close-out verdict was never printed; the archive replaced the report, and the operator found an archived
-session whose last words were "Session archived." (project-docs/session-endings-analysis-2026-11-01.md). So
+session whose last words were "Session archived." (docs/reports/session-endings-analysis-2026-11-01.md). So
 `archive_session` is refused unless an assistant text of the CURRENT turn (since the last real user prompt) holds
 `SESSION: CAN CLOSE — …`: print the verdict, then archive; a NEEDS YOU or NOT DONE session is never archived.
 

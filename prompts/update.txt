@@ -2,8 +2,8 @@
 
 The framework is the CodingProjectSetupPrompt repository you have been given access to
 alongside this project. It is read-only reference material: its setup prompt is the
-specification, and its claude-agents/, claude-commands/, kiro-prompts/, cli-agents/ and
-templates/ directories are the canonical sources of every asset the prompt installs.
+specification, and its clients/, src/ and templates/ directories are the canonical sources
+of every asset the prompt installs (prompts/ holds the prompts themselves).
 
 ## Task
 
@@ -22,8 +22,8 @@ reason, not delegated to a person.
    copied from the staging directory, never from the framework's working tree. The
    framework moves while you work (five commits landed during one measured update); a later
    HEAD is reported in the PR as the next update's target, never chased mid-run. Read the
-   applicable setup prompt completely from that export: ClaudeCodeSetupPrompt.txt for a
-   Claude Code project, KiroProjectSetupPrompt.v2.txt for a Kiro project, both for a dual
+   applicable setup prompt completely from that export: prompts/setup-claude.txt for a
+   Claude Code project, prompts/setup-kiro.txt for a Kiro project, both for a dual
    project. Its global execution rules and its final verification-and-report part govern
    this task.
 2. Already current? Read `.claude/FRAMEWORK_COMMIT` (Kiro: `.kiro/FRAMEWORK_COMMIT`), the
@@ -48,9 +48,11 @@ reason, not delegated to a person.
 5. Apply the setup prompt with the delta as your worklist. Its migration-aware merge rule is
    the update procedure: project-specific values and content are preserved, conflicts are
    flagged, relocated assets are installed at the new location before the old copy is
-   removed, obsolete assets are removed only when nothing references them. ONE kind of asset
+   removed, obsolete assets are removed only when nothing references them. The CV-customization
+   agents (`cv-*`) left the framework on 2026-11-07: a project that has them installed keeps
+   them, and the PR lists them as "no longer shipped by the framework; kept". ONE kind of asset
    is taken VERBATIM from the export, never three-way merged: the Kiro agent descriptors under
-   `cli-agents/` (a merge produced a duplicate `agentSpawn` key, and JSON keeps the last one,
+   `clients/kiro/agents/` (a merge produced a duplicate `agentSpawn` key, and JSON keeps the last one,
    the retired form). The Kiro steering copies of kernel rules ARE three-way merged like the
    Claude rules (base: the framework revision the project last installed; ours: the project's
    file; theirs: the export), with the FRONT MATTER taken from the export (`inclusion: always`,
@@ -153,7 +155,7 @@ of this in the same PR, in this order, and record the before/after sizes:
    citation form is now symbol-and-path. Record each retirement in the PR.
 6. **The hooks are Python.** Install `hooklib.py`, `hooks.py`, every `gate_*.py`,
    `red_for_right_reason.py`, `wait_for.py`, `supervisor.py` and `tests/` into `.claude/hooks/` (Kiro: the same modules plus
-   `kiro_hooks.py` into `.kiro/hooks-bin/`, and the agent descriptors from `cli-agents/`,
+   `kiro_hooks.py` into `.kiro/hooks-bin/`, and the agent descriptors from `clients/kiro/agents/`,
    whose `hooks` blocks already carry the launcher), replace the `hooks` block of
    `.claude/settings.json` with the output of `python .claude/hooks/hooks.py registration`
    (the launcher form of Part 12.2 — never a retyped block), add

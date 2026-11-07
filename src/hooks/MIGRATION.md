@@ -180,7 +180,7 @@ at session start and never refused.
    modified is merged on top, never replaced blind.
 2. Copy rules/continuous-work.md into <project>/.claude/rules/ and reference it from CLAUDE.md.
 3. Register the three exec-form `python` entries in <project>/.claude/settings.json
-   (ClaudeCodeSetupPrompt.txt Part 12.2), replacing every `"command": "bash"` entry.
+   (prompts/setup-claude.txt Part 12.2), replacing every `"command": "bash"` entry.
 4. Run the suites and the self-test (§7). Do NOTHING to the running sessions.
 ```
 

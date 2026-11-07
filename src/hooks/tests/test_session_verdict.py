@@ -1,4 +1,4 @@
-"""The session endings (2026-11-02, project-docs/session-endings-analysis-2026-11-01.md):
+"""The session endings (2026-11-02, docs/reports/session-endings-analysis-2026-11-01.md):
 
 * session-verdict: a released work run ENDS with `SESSION: CAN CLOSE | NEEDS YOU | NOT DONE — …` and its table;
 * archive-after-verdict: a work session is archived only after its CAN CLOSE verdict is printed in that turn;

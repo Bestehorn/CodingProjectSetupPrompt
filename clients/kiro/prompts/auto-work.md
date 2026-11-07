@@ -1,7 +1,7 @@
 # Auto-Work — autonomous open-issue backlog run (Kiro)
 
 Kiro counterpart of the Claude Code `/auto-work` command
-(`claude-commands/auto-work.md`). Installed to `.kiro/prompts/auto-work.md` and invoked in
+(`clients/claude/commands/auto-work.md`). Installed to `.kiro/prompts/auto-work.md` and invoked in
 Kiro CLI as **`@auto-work`** (Kiro's file-based prompts are invoked with `@name`, not
 `/name`, and take no arguments). The Kiro IDE reaches the same body through the
 `auto-work.kiro.hook` `userTriggered` hook, which tells the agent to read this file.

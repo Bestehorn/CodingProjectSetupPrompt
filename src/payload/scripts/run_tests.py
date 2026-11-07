@@ -62,7 +62,7 @@ from pathlib import Path
 
 SLOT_IMPORT_ERROR = ""
 try:
-    from suite_semaphore import suite_slot  # installed beside this script (templates/suite_semaphore.py.template)
+    from suite_semaphore import suite_slot  # installed beside this script (src/payload/scripts/suite_semaphore.py)
 except ImportError as exc:  # missing, or present but failing to import: run unbounded, and say exactly why
     suite_slot = None
     SLOT_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
@@ -235,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"run_tests: WARNING - the host-wide suite cap is NOT held for this run: importing "
             f"scripts/suite_semaphore.py failed ({SLOT_IMPORT_ERROR}). Concurrent suites on this machine are "
-            "unbounded until it imports; install or repair templates/suite_semaphore.py.template beside this "
+            "unbounded until it imports; install or repair src/payload/scripts/suite_semaphore.py beside this "
             "script.",
             file=sys.stderr,
             flush=True,

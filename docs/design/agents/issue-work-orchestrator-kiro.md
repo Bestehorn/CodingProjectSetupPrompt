@@ -1,13 +1,13 @@
 # Issue Work Orchestrator (Kiro CLI port)
 
 The Kiro CLI twin of the Claude Code
-[`issue-work-orchestrator`](../../claude-agents/issue-work-orchestrator/README.md): an
+[`issue-work-orchestrator`](issue-work-orchestrator.md): an
 autonomous, main-session agent that works a project's entire open-issue backlog end to
 end — select, claim, fix through the embedded spec/TDD engine, prove, PR, drive its CI green,
 queue it with the merge steward and see it LAND (or merge it — `config/delivery.json`,
 `.kiro/docs/delivery.md`), hand only the post-deploy check to the verdict watcher, clean up, repeat. The agent definition is
 [`issue-work-orchestrator.md`](issue-work-orchestrator.md); the Kiro agent config is
-[`KiroCLIAgent-IssueWorkOrchestrator.json`](KiroCLIAgent-IssueWorkOrchestrator.json).
+[`clients/kiro/agents/issue-work-orchestrator.json`](../../../clients/kiro/agents/issue-work-orchestrator.json).
 The lifecycle, the standing disciplines, the escalation contract, and the fixed SESSION
 verdict that ends every run (identical on both hosts) are documented in the Claude twin's
 README — this port differs in host paths (`.kiro/…`), a four-subagent concurrency cap, and
@@ -23,7 +23,7 @@ definition states the behavioral consequences and points here.
 
 Since the 2026-10-01 rewrite the Kiro hooks are Python and SHARED with Claude Code:
 `kiro_hooks.py` runs `hooklib.py` and the `gate_*.py` modules from
-`claude-agents/spec-workflow/hooks/` with the Kiro host (`.kiro/agent-state/`,
+`src/hooks/` with the Kiro host (`.kiro/agent-state/`,
 `.kiro/steering/`, `.kiro/hooks-bin/`). Everything the previous section of this file
 recorded as "not ported" is therefore in force on Kiro too, and the bash-era citations are
 gone with the scripts:
@@ -58,7 +58,7 @@ gone with the scripts:
   cap; a Kiro block is `{"decision":"block","reason":"..."}` on stdout with exit 0.
 
 The behaviour is pinned by the shared pytest modules under
-`claude-agents/spec-workflow/hooks/tests/` (installed to `.kiro/hooks-bin/tests/`).
+`src/hooks/tests/` (installed to `.kiro/hooks-bin/tests/`).
 
 The measured incident behind the never-invent-a-run-label rule happened on the Claude
 Code sibling: an agent told to "derive RUN_ID" wrote its state under a tidy self-chosen
@@ -66,7 +66,7 @@ label (`run-issue574-…`); both Stop hooks were silent no-ops for the entire se
 neither had ever blocked a turn-end in that clone across 189 registered sessions — and
 that run ended FOUR turns while under an explicit standing instruction never to stop
 without a proven reason. Full account: Incident `invented-run-label` in
-[`../../claude-agents/spec-workflow/hooks/MIGRATION.md`](../../claude-agents/spec-workflow/hooks/MIGRATION.md)
+[`src/hooks/MIGRATION.md`](../../../src/hooks/MIGRATION.md)
 §Incident record.
 
 ## Procedure changelog (maintainers)

@@ -1,6 +1,6 @@
 """Instruction-corpus and memory budget guard.
 
-Installed from ``templates/test_instruction_corpus_budget.py.template`` to
+Installed from ``src/payload/test/test_instruction_corpus_budget.py`` to
 ``test/test_instruction_corpus_budget.py``. Run by CI's tests group and by ``/compile-memory``.
 
 WHY THIS EXISTS

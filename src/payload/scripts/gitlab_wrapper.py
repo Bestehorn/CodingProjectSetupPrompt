@@ -168,7 +168,7 @@ def pipeline_wait(
 # or human-readable output.
 #
 # Merge-request / CI lifecycle subcommands (required by the
-# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13).
+# issue-work-orchestrator agent — see prompts/setup-claude.txt Part 13).
 # All paths are under /projects/{project_id} (URL-encode the id if it is a
 # namespace/path rather than a numeric id):
 #   - issue_list: support --state (opened/closed/all), --assignee (a
@@ -201,7 +201,7 @@ def pipeline_wait(
 #     (only needed if the MR did not auto-remove the source branch).
 #
 # Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
-# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# .claude/docs/delivery.md and src/payload/scripts/merge_steward.py). They DELEGATE — the queue's
 # rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
 #   - `enqueue-pr <iid>` (the same verb on both hosts, so the docs name one) ->
 #     `steward_delegate("enqueue-pr", [iid], _load_config()["token"], "gitlab")` (below): the
@@ -273,7 +273,7 @@ def pipeline_wait(
 
 
 # The delivery verbs (`enqueue-pr`, `dequeue-pr`, `queue-status`) — a REFERENCE IMPLEMENTATION, wired as-is in
-# main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
+# main(); test/test_wrapper_delivery.py (src/payload/test/test_wrapper_delivery.py) pins it.
 STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
 DELIVERY_CONFIG = Path("config") / "delivery.json"
 DELIVERY_VERBS = {

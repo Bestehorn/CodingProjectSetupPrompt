@@ -14,7 +14,7 @@ The portable form is a LOG with an exit line: start the background command as
 OPERATING-SYSTEM process id: under Git Bash on Windows `$!` is an MSYS id, not a Windows one, so there use the log
 form (or the Windows id from `/proc/<msys-id>/winpid`).
 
-Why it exists. Measured on two projects (project-docs/wait-time-analysis-2026-10-25.md): agents hand-rolled
+Why it exists. Measured on two projects (docs/reports/wait-time-analysis-2026-10-25.md): agents hand-rolled
 `until grep ...; do sleep 20; done`, `tail -f | grep -m1`, `Wait-Process` and per-run `wait_for_line.py` scripts
 to collect a background suite — 17 h of waits whose target nobody could read afterwards, and the loops the
 no-foreground-sleep gate refuses. This polls internally (the sleep is inside a Python process, not a shell

@@ -1,13 +1,14 @@
 tmp/*
 
-# CV Customizer Agent Suite — runtime state and install outputs.
-# Only the cli-agents/cv/ authoring tree is version-controlled; the following
-# are regenerated per machine (machine-specific absolute paths) or per run.
-.kiro/agent-state/
-.kiro/agents/cv-*.json
-.kiro/cv-suite/
+# Archived material (the CV suite, the legacy prompts): local only, never committed; the tag
+# cv-suite-final restores it. Anchored to the root on purpose: an unanchored `archive/` would also
+# ignore docs/archive/, which memory_compile.py writes and which must stay tracked.
+/archive/
 
-# Python test/byproduct caches (the CV suite introduces pytest into the repo).
+# Kiro per-run runtime state.
+.kiro/agent-state/
+
+# Python test/byproduct caches.
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -22,7 +23,7 @@ venv/
 .hypothesis/
 
 # Claude Code per-run runtime state and machine-local settings. The AUTHORING trees
-# (claude-agents/, claude-commands/, cli-agents/) are version-controlled; these are not:
+# (clients/, src/, templates/) are version-controlled; these are not:
 # agent-state is per-run, worktrees are ephemeral, and settings.local.json is per-machine.
 .claude/agent-state/
 .claude/worktrees/
@@ -32,4 +33,5 @@ venv/
 # set up by these prompts, scripts/run_checks.py. Regenerated per run.
 # NOTE: .secrets.baseline is deliberately NOT ignored — it is the audited
 # secret-scan allow-list and the pre-commit hook fails on every clone without it.
-reports/
+# Anchored: an unanchored `reports/` would also ignore docs/reports/, where this repository's reports live.
+/reports/

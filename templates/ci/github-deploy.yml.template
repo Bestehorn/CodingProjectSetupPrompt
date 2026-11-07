@@ -5,7 +5,7 @@
 # by `workflow_run` of the CI or by a trunk `push` never fires again, so its admission (`on:`, job `if:`s, reads
 # of `github.event.workflow_run.head_sha`) must admit this dispatch — setup prompt Part 7.1 item 4.
 #
-# THE THREE RULES (each from a measured failure, project-docs/merge-velocity-chess-2026-10-25.md):
+# THE THREE RULES (each from a measured failure, docs/reports/merge-velocity-chess-2026-10-25.md):
 #   1. The merge steward starts this workflow with the commit it just landed (`workflow_dispatch`, input `sha`);
 #      a push made with GITHUB_TOKEN starts no workflow, a dispatch does. The `push` trigger serves a project
 #      that merges directly (`merge: direct`, and the bootstrap before the steward is switched on): a merge made

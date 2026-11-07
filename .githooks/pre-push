@@ -90,7 +90,7 @@ echo "pre-push: running the full suite with bounded workers (scripts/run_tests.p
 
 if [ ! -f "$MAIN_CHECKOUT/scripts/run_tests.py" ]; then
     echo "ERROR: CI-outage mode is declared but scripts/run_tests.py is missing." >&2
-    echo "       Restore it (templates/run_tests.py.template) or clear the marker:" >&2
+    echo "       Restore it (src/payload/scripts/run_tests.py) or clear the marker:" >&2
     echo "       python scripts/ci_outage_mode.py clear" >&2
     exit 1
 fi

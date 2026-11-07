@@ -1,7 +1,7 @@
 # Close-Session — end-of-session close-out (Kiro)
 
 Kiro counterpart of the Claude Code `/close-session` command
-(`claude-commands/close-session.md`). Installed to `.kiro/prompts/close-session.md` and
+(`clients/claude/commands/close-session.md`). Installed to `.kiro/prompts/close-session.md` and
 invoked in Kiro CLI as **`@close-session`** (Kiro's file-based prompts are invoked with
 `@name`, not `/name`, and take no arguments).
 

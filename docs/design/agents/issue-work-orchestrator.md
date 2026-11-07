@@ -2,10 +2,10 @@
 
 An autonomous, main-session Claude Code agent that works a project's **entire open-issue
 backlog end to end**. It is the top layer above the spec-driven + test-driven engine in
-[`../spec-workflow/`](../spec-workflow/README.md): for each open issue it selects the
+[`spec-workflow`](spec-workflow.md): for each open issue it selects the
 highest-priority one, develops and **proves** a fix through the spec/TDD cycle, opens a
 PR, drives its CI green, hands it to the merge steward (or merges it — `config/delivery.json`,
-[`../spec-workflow/docs/delivery.md`](../spec-workflow/docs/delivery.md)), cleans up, closes or
+[`clients/common/docs/delivery.md`](../../../clients/common/docs/delivery.md)), cleans up, closes or
 hands off the issue, and moves on — checkpointing every step so it is fully resumable.
 
 ## The lifecycle
@@ -121,7 +121,7 @@ finding that needs extensive research, an evaluation of design options, or work 
 the issue's scope goes to `issue-intake` as ONE gated issue (`Origin: spawned-discovery`,
 `Spawned-from: #X`). Everything else becomes a row in `docs/findings-ledger.md`. A run
 that resolves issues and files none is the expected shape of a good run — see
-[`../spec-workflow/rules/issue-filing-discipline.md`](../spec-workflow/rules/issue-filing-discipline.md),
+[`clients/claude/rules/issue-filing-discipline.md`](../../../clients/claude/rules/issue-filing-discipline.md),
 mechanically backed by the `issue-filing-gate` gate.
 
 ## Why it embeds the spec engine (and does not call `spec-conductor`)
@@ -148,19 +148,19 @@ One session, one context, no nested `claude`.
 
 ## Install
 
-Depends on the spec-workflow being installed first (ClaudeCodeSetupPrompt.txt Part 12 —
+Depends on the spec-workflow being installed first (prompts/setup-claude.txt Part 12 —
 the leaf agents, the phase fragments under `.claude/specs/_workflow/phases/`, the
 `agent-state-convention` rule, and the TDD/evidence hooks).
 
 ```bash
 mkdir -p .claude/agents .claude/commands
-cp claude-agents/issue-work-orchestrator/issue-work-orchestrator.md  .claude/agents/
-cp claude-commands/issues-work.md                                    .claude/commands/
-cp claude-commands/work-issue.md                                     .claude/commands/
-cp claude-commands/auto-work.md                                      .claude/commands/
-cp claude-commands/continue-work.md                                  .claude/commands/
-cp claude-commands/close-session.md                                  .claude/commands/
-cp claude-commands/supervise.md                                      .claude/commands/
+cp clients/claude/agents/issue-work-orchestrator.md  .claude/agents/
+cp clients/claude/commands/issues-work.md                                    .claude/commands/
+cp clients/claude/commands/work-issue.md                                     .claude/commands/
+cp clients/claude/commands/auto-work.md                                      .claude/commands/
+cp clients/claude/commands/continue-work.md                                  .claude/commands/
+cp clients/claude/commands/close-session.md                                  .claude/commands/
+cp clients/claude/commands/supervise.md                                      .claude/commands/
 ```
 
 The first five commands drive this same agent, and `/continue-work` and `/close-session` are not
@@ -187,7 +187,7 @@ lists them: `get-pr`, `get-pr-checks`, the blocking `wait-run` (GitLab `pipeline
 and `list-issues` with state/assignee/label filters, plus the existing issue/run
 subcommands, plus `reopen-issue` / `issue reopen` and the checklist toggle that
 `/close-session`'s task-item gate needs), and add `.claude/worktrees/` to `.gitignore`.
-`ClaudeCodeSetupPrompt.txt` Part 13 does all of this for you.
+`prompts/setup-claude.txt` Part 13 does all of this for you.
 
 ## Run it
 
@@ -302,7 +302,7 @@ This agent is designed for long autonomous runs and performs real remote operati
 
 Historical notes moved out of the agent definition; current behavior is fully stated
 there, and the full incident accounts live in
-[`../spec-workflow/hooks/MIGRATION.md`](../spec-workflow/hooks/MIGRATION.md) §Incident
+[`src/hooks/MIGRATION.md`](../../../src/hooks/MIGRATION.md) §Incident
 record (installed as `.claude/hooks/MIGRATION.md`).
 
 - **SELECT's tracker claim was once a hand-rolled sequence.** The step originally

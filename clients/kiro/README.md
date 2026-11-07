@@ -1,6 +1,6 @@
-# kiro-prompts/ — reusable Kiro prompts (`@name`)
+# clients/kiro/prompts/ — reusable Kiro prompts (`@name`)
 
-Kiro counterparts of the Claude Code slash commands in [`claude-commands/`](../claude-commands/).
+Kiro counterparts of the Claude Code slash commands in [`clients/claude/commands/`](../claude/commands/).
 
 Kiro has **no user-defined `/name` slash commands** — that is a Claude Code concept. The
 equivalent surface is Kiro's *file-based prompts*: a markdown file placed in
@@ -19,31 +19,31 @@ Manage them with `/prompts list`, `/prompts edit <name>`, `/prompts details <nam
 The Kiro **IDE** has no `@prompt` invocation. For IDE parity, install a `userTriggered`
 `.kiro.hook` whose `askAgent` prompt tells the agent to read the prompt file — that keeps
 one source of truth instead of duplicating the workflow into the hook JSON. See
-`KiroProjectSetupPrompt.v2.txt` Part 9.4a for the `auto-work` example.
+`prompts/setup-kiro.txt` Part 9.4a for the `auto-work` example.
 
 ## Contents
 
 | File | Invoke as | Claude Code counterpart |
 |---|---|---|
-| `auto-work.md` | `@auto-work` (CLI) / "Auto-Work the Issue Backlog" hook (IDE) | `/auto-work` (`claude-commands/auto-work.md`) |
-| `continue-work.md` | `@continue-work` (CLI) / "Continue Work" hook (IDE) | `/continue-work` (`claude-commands/continue-work.md`) |
-| `close-session.md` | `@close-session` (CLI) / "Close Session" hook (IDE) | `/close-session` (`claude-commands/close-session.md`) |
-| `compile-memory.md` | `@compile-memory` (CLI) / "Compile Memory" hook (IDE) | `/compile-memory` (`claude-commands/compile-memory.md`) |
+| `auto-work.md` | `@auto-work` (CLI) / "Auto-Work the Issue Backlog" hook (IDE) | `/auto-work` (`clients/claude/commands/auto-work.md`) |
+| `continue-work.md` | `@continue-work` (CLI) / "Continue Work" hook (IDE) | `/continue-work` (`clients/claude/commands/continue-work.md`) |
+| `close-session.md` | `@close-session` (CLI) / "Close Session" hook (IDE) | `/close-session` (`clients/claude/commands/close-session.md`) |
+| `compile-memory.md` | `@compile-memory` (CLI) / "Compile Memory" hook (IDE) | `/compile-memory` (`clients/claude/commands/compile-memory.md`) |
 
 ## Install
 
-`KiroProjectSetupPrompt.v2.txt` Part 8A.5 does this for you:
+`prompts/setup-kiro.txt` Part 8A.5 does this for you:
 
 ```bash
 mkdir -p .kiro/prompts
-cp kiro-prompts/auto-work.md      .kiro/prompts/
-cp kiro-prompts/continue-work.md  .kiro/prompts/
-cp kiro-prompts/close-session.md  .kiro/prompts/
-cp kiro-prompts/compile-memory.md .kiro/prompts/
+cp clients/kiro/prompts/auto-work.md      .kiro/prompts/
+cp clients/kiro/prompts/continue-work.md  .kiro/prompts/
+cp clients/kiro/prompts/close-session.md  .kiro/prompts/
+cp clients/kiro/prompts/compile-memory.md .kiro/prompts/
 ```
 
 `compile-memory` is the maintenance pass that keeps the always-loaded corpus and the memory
-docs under their caps (`templates/test_instruction_corpus_budget.py.template`): it archives
+docs under their caps (`src/payload/test/test_instruction_corpus_budget.py`): it archives
 aged ledger rows and lessons to `docs/archive/`, turns recurring ones into tests or rules, and
 moves incident narratives out of steering files. Run it when the corpus test goes red, and
 once per framework update.

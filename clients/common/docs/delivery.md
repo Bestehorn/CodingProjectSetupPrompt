@@ -4,7 +4,7 @@ Installed at `.claude/docs/delivery.md`. NOT auto-loaded: `/work-issue`, the iss
 `/close-session` read it at their PR step. Mechanism: `scripts/merge_steward.py` (header docstring), the CI
 templates under the framework's `templates/ci/`, the `merge-steward`, `session-verdict`, `archive-after-verdict`
 and `stop-failure-recorder` gates. Why it
-has this shape: `project-docs/delivery-redesign-2026-10-26.md` in the framework repository.
+has this shape: `docs/reports/delivery-redesign-2026-10-26.md` in the framework repository.
 
 ## 1. The modes (`config/delivery.json`)
 

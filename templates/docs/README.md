@@ -1,11 +1,11 @@
-# project-docs/ — documents installed verbatim into a set-up project's `docs/`
+# templates/docs/ — documents installed verbatim into a set-up project's `docs/`
 
-Unlike [`templates/`](../templates/) (files with placeholders that the setup prompt fills
+Unlike the rest of [`templates/`](../) (files with placeholders that the setup prompt fills
 in), everything here is copied **byte-for-byte** into the target project's `docs/`
 directory. Both setup prompts install them:
 
-- `ClaudeCodeSetupPrompt.txt` — Part 9 (Documentation)
-- `KiroProjectSetupPrompt.v2.txt` — PART 12 (Documentation)
+- `prompts/setup-claude.txt` — Part 9 (Documentation)
+- `prompts/setup-kiro.txt` — PART 12 (Documentation)
 
 Installation happens on setup, migration, AND re-configuration of an existing project, so
 a project that hits a CI capacity outage already has the implementation instructions on

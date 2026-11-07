@@ -1,4 +1,4 @@
-"""The delivery redesign's hook layer (2026-10-26, project-docs/delivery-redesign-2026-10-26.md):
+"""The delivery redesign's hook layer (2026-10-26, docs/reports/delivery-redesign-2026-10-26.md):
 
 * merge-steward: where config/delivery.json says merge = steward, no agent writes the trunk directly;
 * HANDED_OFF releases a SINGLE-issue run and never a loop run (the issue-loop brake);

@@ -113,5 +113,5 @@ Create the file with an `# Decision Log` header on first use.
    `Supersedes` only when they exist. No entry quotes the artefact it decided about.
 
 The ported agents (dead-code, doc-review, ci-worker, issue-housekeeping, issue-intake,
-product-management, cv/*) inherit all of this without body edits — the rule is
+product-management) inherit all of this without body edits — the rule is
 always-loaded and referenced from `CLAUDE.md`.

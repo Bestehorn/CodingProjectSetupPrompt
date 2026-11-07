@@ -43,7 +43,7 @@
 #     form; the Kiro agent descriptors and the Kiro steering copies of kernel rules are
 #     taken VERBATIM in an update, never three-way merged; CONTRACT_VERSION 2026.10.10.
 #   - 2026-10-10 (later): never end a turn to wait. Forensics over three projects (the
-#     framework repo's project-docs/stop-forensics-2026-10-10.md): every operator restart
+#     framework repo's docs/reports/stop-forensics-2026-10-10.md): every operator restart
 #     followed a background task that died with the session's process, an API error, or a
 #     turn that ended "waiting in the background"; the stop gates themselves were honoured
 #     every time. CI waits run in the FOREGROUND, bounded and re-issued; the `no-idle-wait`
@@ -51,7 +51,7 @@
 #     refuses a turn that ends to wait; the stop gates' cap resets on real tool calls.
 #   - 2026-10-26: THE DELIVERY REDESIGN — a session stops waiting once its PR is handed
 #     over, and no change trades quality for speed. Measured on two projects (the
-#     framework repo's project-docs/wait-time-analysis-2026-10-25.md and
+#     framework repo's docs/reports/wait-time-analysis-2026-10-25.md and
 #     merge-velocity-chess-2026-10-25.md): two thirds of the build span was waiting,
 #     every merge cancelled the trunk run of the one before it, deploys starved, and
 #     sessions waited for a deploy of their own commit that supersession never produced.
@@ -139,8 +139,7 @@
 #     always-loaded fleet steering files (8.27-8.32:
 #     agent-state-convention, no-ai-attribution, keep-git-clean,
 #     issue-tracking, per-worktree-venv, issue-filing-discipline). Agents
-#     are copied from the prompt repo's cli-agents/ tree. The CV suite is
-#     a separate domain pack and is not installed by default.
+#     are copied from the prompt repo's clients/kiro/agents/ tree.
 #   - NEW steering file issue-filing-discipline.md (8.32) + the
 #     kiro-issue-filing-gate preToolUse gate: contains the measured
 #     backlog-self-amplification failure mode in which the fleet files
@@ -673,8 +672,8 @@ are its mechanism.
       script fails to execute on Linux/macOS. (Merge per Rule 1.)
    f. COMMIT `.githooks/` and `.gitattributes` — they are tracked. Do NOT add
       `.githooks/` to `.gitignore`.
-3. Copy the check scripts from `templates/` into `scripts/` (strip the
-   `.template` suffix):
+3. Copy the check scripts from `src/payload/scripts/` into `scripts/` (same
+   file names):
    - `run_tests.py` — the ONE definition of how tests are invoked. Bounded
      local workers (`min(4, cores // 4)`, floor 1), `--workers auto` for CI
      only, and it REFUSES `-x`/`--maxfail` so no caller can make a run report
@@ -1004,12 +1003,12 @@ values; merge only the keys that are absent.
 Apply Rule 1.
 
 1. If `config/aws_accounts.json.template` does NOT exist, copy
-   `templates/aws_accounts.json.template` to it.
+   `templates/config/aws_accounts.json.template` to it.
 2. If `config/aws_accounts.json` does NOT exist, also copy the template
    to that path so the developer has a stub to fill in. (The real file
    is gitignored; the template is checked in.)
 3. If `src/aws_config.py` does NOT exist, copy
-   `templates/aws_config.py.template` to `src/aws_config.py`.
+   `src/payload/src/aws_config.py` to `src/aws_config.py`.
 4. If `src/aws_config.py` exists but lacks `get_account`,
    `get_account_id`, `get_profile`, `get_region`, or `list_environments`,
    ADD the missing methods using the template as a reference.
@@ -1049,14 +1048,14 @@ a real (non-placeholder) token.
   - `credentials/github-pat.txt` (gitignored): same content as the
     template, for the developer to overwrite.
   - `scripts/github_wrapper.py`: copy from
-    `templates/github_wrapper.py.template`.
+    `src/payload/scripts/github_wrapper.py`.
 - GitLab:
   - `config/gitlab.json.template` (checked in): copy from
-    `templates/gitlab.json.template`.
+    `templates/config/gitlab.json.template`.
   - `config/gitlab.json` (gitignored): same content for the developer
     to fill in.
   - `scripts/gitlab_wrapper.py`: copy from
-    `templates/gitlab_wrapper.py.template`.
+    `src/payload/scripts/gitlab_wrapper.py`.
 
 The template wrapper scripts are skeletons. The agent should extend
 them with the subcommands needed for the current project (see the
@@ -1170,8 +1169,8 @@ session makes a LATER deploy fail (aws/aws-cdk#33201, #25711).
 **Install the reaper and its tests** (report-only by default; `--apply` deletes):
 
 ```bash
-cp templates/reap_agent_temp.py.template scripts/reap_agent_temp.py
-cp templates/test_reap_agent_temp.py.template test/test_reap_agent_temp.py
+cp src/payload/scripts/reap_agent_temp.py scripts/reap_agent_temp.py
+cp src/payload/test/test_reap_agent_temp.py test/test_reap_agent_temp.py
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp          # report
 python scripts/reap_agent_temp.py --scoped-temp tmp/os-temp --apply  # delete
 ```
@@ -1214,7 +1213,7 @@ essentially all of the residue and makes it attributable. **Kiro CLI has no sett
 `toolsSettings`, `toolAliases`, `hooks`, `mcpServers`, `resources` and `model`, and
 `.kiro/settings/mcp.json`'s `env` reaches MCP servers only. So there is no file that scopes
 temp for every command the way Claude Code's `.claude/settings.local.json` `env` block does
-(see ClaudeCodeSetupPrompt.txt Part 5.4).
+(see prompts/setup-claude.txt Part 5.4).
 
 Two workable forms, in order of preference:
 
@@ -1450,9 +1449,9 @@ a 4.7-hour deploy queue). Install the delivery set and choose the mode in
 headers explain each one — this Part points at them rather than repeating them:
 
 ```bash
-cp templates/merge_steward.py.template      scripts/merge_steward.py
-cp templates/test_merge_steward.py.template test/test_merge_steward.py
-cp templates/delivery.json.template         config/delivery.json
+cp src/payload/scripts/merge_steward.py      scripts/merge_steward.py
+cp src/payload/test/test_merge_steward.py test/test_merge_steward.py
+cp templates/config/delivery.json.template         config/delivery.json
 # GitHub: the steward workflow, the deploy workflow (or merge its trigger, concurrency
 # block and last two jobs into the existing deploy), and the steward-wake job appended to the
 # project's CI workflow (templates/ci/github-steward-wake.yml.template):
@@ -3542,7 +3541,7 @@ cannot drift from the real one), and `scripts/ci_outage_mode.py` (PART 2).
 
 ### 8.35 `proportionality.md` (always) — fleet convention — NEW
 
-The Kiro twin of `claude-agents/spec-workflow/rules/proportionality.md`. It is what stops a
+The Kiro twin of `clients/claude/rules/proportionality.md`. It is what stops a
 one-constant change from becoming a five-day, 1.5 MB specification: the ASK decides the tier,
 never the analysis.
 
@@ -3748,12 +3747,12 @@ standalone utility agents — plus the enforced gate hooks they rely on. These a
 **Kiro CLI** custom agents (`.kiro/agents/*.json`), distinct from the Part 9 Kiro
 hooks (`.kiro/hooks/*.kiro.hook`, which are the IDE/runtime automation surface).
 
-The agent definitions are authored in this prompt's repository under `cli-agents/`
-(each agent has a `KiroCLIAgent-<Name>.json` config; the larger ones also have a
-sibling `<agent-name>.md` prompt body referenced by `prompt: "file://<agent-name>.md"`).
+The agent definitions are authored in this prompt's repository under `clients/kiro/agents/`
+(each agent has a `<name>.json` config, already named as it installs; the larger ones also
+have a sibling `<name>.md` prompt body referenced by `prompt: "file://<name>.md"`).
 This part COPIES them into the project's `.kiro/agents/`. Run these steps from the
 prompt repository, targeting the project root (the same convention as the
-`templates/` copies elsewhere in this prompt). If `cli-agents/` is not available on
+`templates/` copies elsewhere in this prompt). If `clients/kiro/agents/` is not available on
 disk, skip PART 8A and note it in the migration report — the rest of the setup is
 unaffected.
 
@@ -3777,42 +3776,39 @@ mkdir -p .kiro/agents
 ```
 
 Install each agent below by copying its config to `.kiro/agents/<name>.json` (the
-filename, minus `.json`, MUST equal the agent's `name`), and — for the agents that use
-an external prompt body — also copying the sibling `<name>.md` into `.kiro/agents/`.
-Do NOT copy the `KiroCLIAgent-*.json` filenames verbatim; rename each to `<name>.json`.
-Do NOT copy `*Discussion.txt`, `*.schema.json`, `prompt.md` from inline-prompt agents,
-test files, or the `cli-agents/cv/` suite (the CV agents are a separate domain pack —
-install them only if the project needs CV customization).
+filename, minus `.json`, MUST equal the agent's `name`; the source files already carry
+that name), and — for the agents that use an external prompt body — also copying the
+sibling `<name>.md` into `.kiro/agents/`.
 
 **The advanced backlog fleet** (config has a sibling `<name>.md` — copy BOTH files):
 
 | Source config | → `.kiro/agents/` | Prompt body to also copy |
 |---|---|---|
-| `cli-agents/issue-work-orchestrator/KiroCLIAgent-IssueWorkOrchestrator.json` | `issue-work-orchestrator.json` | `issue-work-orchestrator.md` |
-| `cli-agents/spec-workflow/conductor/KiroCLIAgent-SpecConductor.json` | `spec-conductor.json` | `spec-conductor.md` |
-| `cli-agents/spec-workflow/author/KiroCLIAgent-SpecAuthor.json` | `spec-author.json` | `spec-author.md` |
-| `cli-agents/spec-workflow/researcher/KiroCLIAgent-SpecResearcher.json` | `spec-researcher.json` | `spec-researcher.md` |
-| `cli-agents/spec-workflow/test-architect/KiroCLIAgent-TestArchitect.json` | `test-architect.json` | `test-architect.md` |
-| `cli-agents/spec-workflow/adversarial-verifier/KiroCLIAgent-AdversarialVerifier.json` | `adversarial-verifier.json` | `adversarial-verifier.md` |
-| `cli-agents/spec-workflow/standards-reviewer/KiroCLIAgent-StandardsReviewer.json` | `standards-reviewer.json` | `standards-reviewer.md` |
-| `cli-agents/spec-workflow/best-practice-reviewer/KiroCLIAgent-BestPracticeReviewer.json` | `best-practice-reviewer.json` | `best-practice-reviewer.md` |
-| `cli-agents/spec-workflow/security-reviewer/KiroCLIAgent-SecurityReviewer.json` | `security-reviewer.json` | `security-reviewer.md` |
-| `cli-agents/spec-workflow/devops-iac-reviewer/KiroCLIAgent-DevOpsIaCReviewer.json` | `devops-iac-reviewer.json` | `devops-iac-reviewer.md` |
-| `cli-agents/spec-workflow/implementer/KiroCLIAgent-SpecImplementer.json` | `spec-implementer.json` | `spec-implementer.md` |
-| `cli-agents/code-merge-reviewer/KiroCLIAgent-CodeMergeReviewer.json` | `code-merge-reviewer.json` | `code-merge-reviewer.md` |
-| `cli-agents/ci-worker/KiroCLIAgent-CIWorkflowAgent.json` | `ci-workflow-agent.json` | `ci-workflow-agent.md` |
+| `clients/kiro/agents/issue-work-orchestrator.json` | `issue-work-orchestrator.json` | `issue-work-orchestrator.md` |
+| `clients/kiro/agents/spec-conductor.json` | `spec-conductor.json` | `spec-conductor.md` |
+| `clients/kiro/agents/spec-author.json` | `spec-author.json` | `spec-author.md` |
+| `clients/kiro/agents/spec-researcher.json` | `spec-researcher.json` | `spec-researcher.md` |
+| `clients/kiro/agents/test-architect.json` | `test-architect.json` | `test-architect.md` |
+| `clients/kiro/agents/adversarial-verifier.json` | `adversarial-verifier.json` | `adversarial-verifier.md` |
+| `clients/kiro/agents/standards-reviewer.json` | `standards-reviewer.json` | `standards-reviewer.md` |
+| `clients/kiro/agents/best-practice-reviewer.json` | `best-practice-reviewer.json` | `best-practice-reviewer.md` |
+| `clients/kiro/agents/security-reviewer.json` | `security-reviewer.json` | `security-reviewer.md` |
+| `clients/kiro/agents/devops-iac-reviewer.json` | `devops-iac-reviewer.json` | `devops-iac-reviewer.md` |
+| `clients/kiro/agents/spec-implementer.json` | `spec-implementer.json` | `spec-implementer.md` |
+| `clients/kiro/agents/code-merge-reviewer.json` | `code-merge-reviewer.json` | `code-merge-reviewer.md` |
+| `clients/kiro/agents/ci-workflow-agent.json` | `ci-workflow-agent.json` | `ci-workflow-agent.md` |
 
 **The standalone utility agents** (config has an INLINE prompt — copy the JSON only):
 
 | Source config | → `.kiro/agents/` |
 |---|---|
-| `cli-agents/dead-code/KiroCLIAgent-DeadCodeAgent.json` | `dead-code-removal-agent.json` |
-| `cli-agents/doc-review/KiroCLIAgent-DocReviewer.json` | `doc-reviewer-agent.json` |
-| `cli-agents/issue-intake/KiroCLIAgent-IssueIntake.json` | `issue-intake-agent.json` |
-| `cli-agents/issue-housekeeping/KiroCLIAgent-IssueHousekeeping.json` | `issue-housekeeping-agent.json` |
-| `cli-agents/product-management/KiroCLIAgent-ProductManagement.json` | `product-management-agent.json` |
-| `cli-agents/spec-review/KiroCLIAgent-SpecReviewer.json` | `spec-review-agent.json` |
-| `cli-agents/spec-review/KiroCLIAgent-SpecPromptAuthor.json` | `spec-prompt-author-agent.json` |
+| `clients/kiro/agents/dead-code-removal-agent.json` | `dead-code-removal-agent.json` |
+| `clients/kiro/agents/doc-reviewer-agent.json` | `doc-reviewer-agent.json` |
+| `clients/kiro/agents/issue-intake-agent.json` | `issue-intake-agent.json` |
+| `clients/kiro/agents/issue-housekeeping-agent.json` | `issue-housekeeping-agent.json` |
+| `clients/kiro/agents/product-management-agent.json` | `product-management-agent.json` |
+| `clients/kiro/agents/spec-review-agent.json` | `spec-review-agent.json` |
+| `clients/kiro/agents/spec-prompt-author-agent.json` | `spec-prompt-author-agent.json` |
 
 After copying, verify each installed file: the JSON parses, its `name` equals the
 filename stem, and for every `prompt: "file://<x>.md"` the named `<x>.md` is present
@@ -3824,13 +3820,13 @@ is a blocker they report, never a procedure they improvise:
 
 ```bash
 mkdir -p .kiro/specs/_workflow/phases .kiro/docs
-for f in claude-agents/spec-workflow/phases/*.md; do
+for f in clients/common/phases/*.md; do
   sed 's#\.claude/rules/#.kiro/steering/#g; s#\.claude/hooks/#.kiro/hooks-bin/#g; s#\.claude/#.kiro/#g' "$f" \
     > ".kiro/specs/_workflow/phases/$(basename "$f")"
 done
 for d in review-contract delivery; do
   sed 's#\.claude/rules/#.kiro/steering/#g; s#\.claude/hooks/#.kiro/hooks-bin/#g; s#\.claude/#.kiro/#g' \
-    "claude-agents/spec-workflow/docs/$d.md" > ".kiro/docs/$d.md"
+    "clients/common/docs/$d.md" > ".kiro/docs/$d.md"
 done
 ```
 
@@ -3857,16 +3853,16 @@ NOT confused with the Part 9 `.kiro/hooks/*.kiro.hook` runtime hooks:
 
 ```bash
 mkdir -p .kiro/hooks-bin .kiro/hooks-bin/tests
-cp claude-agents/spec-workflow/hooks/hooklib.py              .kiro/hooks-bin/   # the shared library
-cp claude-agents/spec-workflow/hooks/hooks.py                .kiro/hooks-bin/   # the shared dispatcher core
-cp claude-agents/spec-workflow/hooks/gate_*.py               .kiro/hooks-bin/   # every gate
-cp claude-agents/spec-workflow/hooks/red_for_right_reason.py .kiro/hooks-bin/
-cp claude-agents/spec-workflow/hooks/wait_for.py             .kiro/hooks-bin/   # the bounded wait for a background process
-cp claude-agents/spec-workflow/hooks/supervisor.py           .kiro/hooks-bin/   # not run on Kiro, but tests/ import it
-cp cli-agents/spec-workflow/hooks/kiro_hooks.py              .kiro/hooks-bin/   # the Kiro entry point
-cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION        .kiro/hooks-bin/   # keys the contract handshake
-cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md      .kiro/hooks-bin/   # printed at spawn while valid
-cp claude-agents/spec-workflow/hooks/tests/*.py              .kiro/hooks-bin/tests/
+cp src/hooks/hooklib.py              .kiro/hooks-bin/   # the shared library
+cp src/hooks/hooks.py                .kiro/hooks-bin/   # the shared dispatcher core
+cp src/hooks/gate_*.py               .kiro/hooks-bin/   # every gate
+cp src/hooks/red_for_right_reason.py .kiro/hooks-bin/
+cp src/hooks/wait_for.py             .kiro/hooks-bin/   # the bounded wait for a background process
+cp src/hooks/supervisor.py           .kiro/hooks-bin/   # not run on Kiro, but tests/ import it
+cp src/hooks/kiro_hooks.py           .kiro/hooks-bin/   # the Kiro entry point
+cp src/hooks/CONTRACT_VERSION        .kiro/hooks-bin/   # keys the contract handshake
+cp src/hooks/REVISION_NOTICE.md      .kiro/hooks-bin/   # printed at spawn while valid
+cp src/hooks/tests/*.py              .kiro/hooks-bin/tests/
 rm -f .kiro/hooks-bin/*.sh                                                       # the bash predecessors, if any
 python -m pytest .kiro/hooks-bin/tests -q -p no:cacheprovider                    # every module must pass
 ```
@@ -3875,7 +3871,7 @@ The hooks are PYTHON (standard library only, 3.9+) and they are the SAME gates C
 runs — `hooklib.py` and the `gate_*.py` modules are shared, and `kiro_hooks.py` runs them
 with the Kiro host: state under `.kiro/agent-state/`, rules under `.kiro/steering/`, hooks
 under `.kiro/hooks-bin/`. There is no bash, no `jq`, no Git Bash dependency: the agents'
-JSON `hooks` blocks (already wired in `cli-agents/`, so no further wiring is needed beyond
+JSON `hooks` blocks (already wired in `clients/kiro/agents/`, so no further wiring is needed beyond
 the copy) name ONE command per event:
 
 ```json
@@ -4025,15 +4021,15 @@ File-based prompts do NOT accept arguments (only MCP prompts do), which is fine 
 `/prompts details <name>` manage them.
 
 Install the never-stop autonomous backlog prompt (the counterpart of Claude Code's
-`/auto-work`, `ClaudeCodeSetupPrompt.txt` Part 13.1c), plus the two prompts that bracket a
+`/auto-work`, `prompts/setup-claude.txt` Part 13.1c), plus the two prompts that bracket a
 run: `@continue-work` restarts one that stopped early, `@close-session` closes one out.
 
 ```bash
 mkdir -p .kiro/prompts
-cp kiro-prompts/auto-work.md      .kiro/prompts/
-cp kiro-prompts/continue-work.md  .kiro/prompts/
-cp kiro-prompts/close-session.md  .kiro/prompts/
-cp kiro-prompts/compile-memory.md .kiro/prompts/
+cp clients/kiro/prompts/auto-work.md      .kiro/prompts/
+cp clients/kiro/prompts/continue-work.md  .kiro/prompts/
+cp clients/kiro/prompts/close-session.md  .kiro/prompts/
+cp clients/kiro/prompts/compile-memory.md .kiro/prompts/
 ```
 
 `@compile-memory` is the maintenance pass that keeps the always-loaded corpus and the memory
@@ -4044,7 +4040,7 @@ git), turns recurring ones into tests or rules, and ends when
 framework update; the mechanical half is `scripts/memory_compile.py` (PART 12).
 
 `@close-session` is the end-of-session close-out, the counterpart of Claude Code's
-`/close-session` (`ClaudeCodeSetupPrompt.txt` Part 6.1). It answers "can we close this
+`/close-session` (`prompts/setup-claude.txt` Part 6.1). It answers "can we close this
 session?" by FINISHING what is unfinished, then verifying, then emitting a one-glance
 verdict: nine steps — work-complete gate (a PR handed to the merge steward with its CI green
 counts as the session's work done; the verdict watcher closes the issue), task-item gate, CI
@@ -4618,8 +4614,8 @@ steering 8.2 made two of them mandatory reading before every task. Install the g
 compile tool with the other check scripts:
 
 ```bash
-cp templates/test_instruction_corpus_budget.py.template test/test_instruction_corpus_budget.py
-cp templates/memory_compile.py.template               scripts/memory_compile.py
+cp src/payload/test/test_instruction_corpus_budget.py test/test_instruction_corpus_budget.py
+cp src/payload/scripts/memory_compile.py               scripts/memory_compile.py
 mkdir -p docs/archive
 ```
 
@@ -4726,7 +4722,7 @@ the moment it cannot fetch them:
 
 ```bash
 mkdir -p docs
-cp project-docs/codebuild-ci-backup-mechanism.md docs/
+cp templates/docs/codebuild-ci-backup-mechanism.md docs/
 ```
 
 It is what steering 8.25's capacity ladder (Rung 2) points an implementing worker
@@ -4944,12 +4940,11 @@ replaced with awslabs.aws-iac-mcp-server (CDK MCP is deprecated).
 - From legacy dependency formats: [source -> pyproject.toml section, package count]
 
 ## Custom agents (PART 8A)
-- Fleet installed: [yes / no / skipped — cli-agents/ not available]
+- Fleet installed: [yes / no / skipped — clients/kiro/agents/ not available]
 - Advanced fleet (issue-work-orchestrator, spec-conductor + specialists,
   code-merge-reviewer, ci-workflow-agent): [count installed / list]
 - Utility agents (dead-code, doc-review, issue-intake, issue-housekeeping,
   product-management, spec-review, spec-prompt-author): [count installed / list]
-- CV suite: [installed / skipped — domain pack]
 - Gate scripts in `.kiro/hooks-bin/`: [present + executable / missing]
 - Issue-filing containment: steering 8.32 installed [yes / no],
   `kiro-issue-filing-gate` wired into [list of agents],
@@ -5108,35 +5103,38 @@ mechanism.
 
 ### Templates referenced by this prompt
 All under `templates/` in the prompt repository:
-- `aws_config.py.template`
-- `aws_accounts.json.template`
+- `config/aws_accounts.json.template`
 - `setup-hooks.sh.template`
 - `pre-commit-config.yaml.template`
-- `gitlab.json.template`
-- `gitlab_wrapper.py.template`
-- `github_wrapper.py.template`
-- `run_tests.py.template` (bounded workers, no fail-fast; holds a host-wide suite slot, PART 2.2)
-- `suite_semaphore.py.template` (the host-wide cap on concurrent suites and synths, PART 2.2)
-- `test_instruction_corpus_budget.py.template` (the memory-budget guard, PART 12)
-- `memory_compile.py.template` (the mechanical half of `@compile-memory`, PART 12)
+- `config/gitlab.json.template`
+
+### Shipped Python referenced by this prompt
+All under `src/payload/` in the prompt repository, laid out like the project:
+- `src/aws_config.py`
+- `scripts/gitlab_wrapper.py`
+- `scripts/github_wrapper.py`
+- `scripts/run_tests.py` (bounded workers, no fail-fast; holds a host-wide suite slot, PART 2.2)
+- `scripts/suite_semaphore.py` (the host-wide cap on concurrent suites and synths, PART 2.2)
+- `test/test_instruction_corpus_budget.py` (the memory-budget guard, PART 12)
+- `scripts/memory_compile.py` (the mechanical half of `@compile-memory`, PART 12)
 
 ### Custom-agent sources referenced by PART 8A
-All under `cli-agents/` in the prompt repository (copied into `.kiro/agents/`):
-- Advanced fleet (config + sibling `<name>.md` prompt body):
-  `issue-work-orchestrator/`, `code-merge-reviewer/`, `ci-worker/`, and
-  `spec-workflow/{conductor,author,researcher,test-architect,adversarial-verifier,
-  standards-reviewer,best-practice-reviewer,security-reviewer,devops-iac-reviewer,
-  implementer}/`.
-- Utility agents (inline-prompt config only): `dead-code/`, `doc-review/`,
-  `issue-intake/`, `issue-housekeeping/`, `product-management/`, `spec-review/`.
-- Hooks (copied into `.kiro/hooks-bin/`): `cli-agents/spec-workflow/hooks/kiro_hooks.py`
+All under `clients/kiro/agents/` in the prompt repository, named as installed (copied into
+`.kiro/agents/`):
+- Advanced fleet (config + sibling `<name>.md` prompt body): `issue-work-orchestrator`,
+  `code-merge-reviewer`, `ci-workflow-agent`, and `spec-conductor`, `spec-author`,
+  `spec-researcher`, `test-architect`, `adversarial-verifier`, `standards-reviewer`,
+  `best-practice-reviewer`, `security-reviewer`, `devops-iac-reviewer`, `spec-implementer`.
+- Utility agents (inline-prompt config only): `dead-code-removal-agent`, `doc-reviewer-agent`,
+  `issue-intake-agent`, `issue-housekeeping-agent`, `product-management-agent`,
+  `spec-review-agent`, `spec-prompt-author-agent`.
+- Hooks (copied into `.kiro/hooks-bin/`): `src/hooks/kiro_hooks.py`
   (the Kiro entry point) plus the shared Python modules from
-  `claude-agents/spec-workflow/hooks/` (`hooklib.py`, `hooks.py`, the `gate_*.py` gates,
+  `src/hooks/` (`hooklib.py`, `hooks.py`, the `gate_*.py` gates,
   `red_for_right_reason.py`, `CONTRACT_VERSION`, `REVISION_NOTICE.md`, `tests/`).
-- Not installed by default: the `cli-agents/cv/` CV-customization suite (domain pack).
 
 ### Reusable prompts (PART 8A.5)
-`kiro-prompts/*.md` in the prompt repository → `.kiro/prompts/` (workspace) or
+`clients/kiro/prompts/*.md` in the prompt repository → `.kiro/prompts/` (workspace) or
 `~/.kiro/prompts/` (global). Invoked in `kiro-cli` chat as **`@name`** (NOT `/name` — Kiro
 has no user-defined slash commands). File-based prompts take no arguments; local overrides
 global overrides MCP. Managed with `/prompts list|edit|details`.

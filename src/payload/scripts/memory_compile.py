@@ -2,7 +2,7 @@
 """Compile the project's agent memory: keep the findings ledger and the lessons inside their byte caps,
 report budgets, archive aged rows and lessons, move incident narratives out of the always-loaded rules.
 
-Installed from ``templates/memory_compile.py.template`` to ``scripts/memory_compile.py``. The mechanical
+Installed from ``src/payload/scripts/memory_compile.py`` to ``scripts/memory_compile.py``. The mechanical
 half of ``/compile-memory``; the judgment half (promote a finding to an issue, turn a lesson into a test)
 stays with the agent running that command.
 

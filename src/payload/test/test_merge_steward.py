@@ -1,6 +1,6 @@
 """Tests for scripts/merge_steward.py — the merge queue, the train builder and the post-deploy verdict.
 
-Installed from ``templates/test_merge_steward.py.template`` to ``test/test_merge_steward.py``. Each test builds
+Installed from ``src/payload/test/test_merge_steward.py`` to ``test/test_merge_steward.py``. Each test builds
 a real bare ``origin`` with git and drives the steward against it, with an in-memory tracker (``FakeHost``)
 standing in for GitHub/GitLab. What is proven is the contract the agents and the CI templates rely on:
 nothing lands that a green train did not test, a red train drops exactly its culprit, a moved trunk lands

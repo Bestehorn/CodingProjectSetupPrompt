@@ -7,7 +7,7 @@ main-session conductor that delegates to a panel of specialist subagents, conver
 the spec to zero blocking defects, then implements test-first and **proves every claim
 with captured command/test evidence**.
 
-It generalizes the proven `cv-orchestrator` pattern (main session owns the loop,
+It follows the main-session orchestrator pattern (main session owns the loop,
 delegates to flat subagents via the `Agent` tool, aggregates on-disk findings,
 enforces a convergence predicate + iteration cap, never does the protected work
 itself). Subagents cannot nest, so **every delegation originates from the conductor**.
@@ -61,7 +61,7 @@ for the pushed SHA, a local run only when none exists — and tries to *refute* 
 vacuity/skip/xfail scan; property stress; coverage; red-for-the-right-reason audit).
 The final `evidence/REPORT.md` quotes real command output for every passing claim.
 
-## The agents (in `claude-agents/spec-workflow/`)
+## The agents (in `clients/claude/agents/`)
 
 | Agent | Role | Gate phase |
 |---|---|---|
@@ -76,7 +76,7 @@ The final `evidence/REPORT.md` quotes real command output for every passing clai
 | `devops-iac-reviewer` | CI/CD, IaC least-privilege, observability, rollback. | design, verify |
 | `spec-implementer` | One task per call, several calls per wave in parallel; stays inside its declared Files. Never certifies. | implement |
 
-★ = core. Reused from `claude-agents/spec-review/`: `spec-review-agent` (the A/B/C/D
+★ = core. Reused from the spec-review pair: `spec-review-agent` (the A/B/C/D
 adversarial reviewer; report-only under the conductor, COMBINED mode — all six lenses in
 one pass — for tier S) and `spec-prompt-author-agent` (the interview protocol; also backs
 `/spec-new`). Every reviewer reads `docs/review-contract.md` (installed to `.claude/docs/`)
@@ -99,7 +99,7 @@ drove agents to one giant commit per feature. `rules/ci-owns-the-test-suite.md` 
 rule; the exception is a declared CI outage, where the `pre-push` hook runs the suite
 locally with bounded workers.
 
-## The hooks (in `claude-agents/spec-workflow/hooks/`)
+## The hooks (in `src/hooks/`)
 
 | File | Event | Does |
 |---|---|---|
@@ -208,7 +208,7 @@ terminal-value agreement this project had to adjudicate twice:
   gate refused it.
 
 ```bash
-cd claude-agents/spec-workflow/hooks
+cd src/hooks
 python -m pytest tests -q -p no:cacheprovider   # every module: crlf hygiene, library, tdd gate, no-sleep,
                                                 #   no-idle-wait, reinject (+ resume), stop gates (incl. the
                                                 #   freshness cache), over-block, unpinned fixes, scoped temp,
@@ -230,7 +230,7 @@ to `hooklib.py`: a gate regression is otherwise SILENT, which is the property th
 original defect persist for 189 sessions. They install alongside the hooks, but only because the
 recipe below copies `tests/` explicitly — the `hooks/*.py` glob does not descend into it.
 
-## Slash commands (in `claude-commands/`)
+## Slash commands (in `clients/claude/commands/`)
 
 For running one phase on demand instead of the whole pipeline:
 
@@ -248,23 +248,23 @@ mkdir -p .claude/agents .claude/commands .claude/rules \
          .claude/hooks .claude/specs/_workflow/phases
 
 # agents
-cp claude-agents/spec-workflow/spec-conductor.md          .claude/agents/
-cp claude-agents/spec-workflow/spec-author.md             .claude/agents/
-cp claude-agents/spec-workflow/spec-researcher.md         .claude/agents/
-cp claude-agents/spec-workflow/test-architect.md          .claude/agents/
-cp claude-agents/spec-workflow/adversarial-verifier.md    .claude/agents/
-cp claude-agents/spec-workflow/standards-reviewer.md      .claude/agents/
-cp claude-agents/spec-workflow/best-practice-reviewer.md  .claude/agents/
-cp claude-agents/spec-workflow/security-reviewer.md       .claude/agents/
-cp claude-agents/spec-workflow/devops-iac-reviewer.md     .claude/agents/
-cp claude-agents/spec-workflow/spec-implementer.md        .claude/agents/
-cp claude-agents/spec-review/spec-review-agent.md         .claude/agents/
-cp claude-agents/spec-review/spec-prompt-author-agent.md  .claude/agents/
+cp clients/claude/agents/spec-conductor.md          .claude/agents/
+cp clients/claude/agents/spec-author.md             .claude/agents/
+cp clients/claude/agents/spec-researcher.md         .claude/agents/
+cp clients/claude/agents/test-architect.md          .claude/agents/
+cp clients/claude/agents/adversarial-verifier.md    .claude/agents/
+cp clients/claude/agents/standards-reviewer.md      .claude/agents/
+cp clients/claude/agents/best-practice-reviewer.md  .claude/agents/
+cp clients/claude/agents/security-reviewer.md       .claude/agents/
+cp clients/claude/agents/devops-iac-reviewer.md     .claude/agents/
+cp clients/claude/agents/spec-implementer.md        .claude/agents/
+cp clients/claude/agents/spec-review-agent.md         .claude/agents/
+cp clients/claude/agents/spec-prompt-author-agent.md  .claude/agents/
 
 # commands, phase fragments, shared rule, hooks
-cp claude-commands/spec-*.md                              .claude/commands/
-cp claude-agents/spec-workflow/phases/*.md                .claude/specs/_workflow/phases/
-cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # agent-state-convention,
+cp clients/claude/commands/spec-*.md                              .claude/commands/
+cp clients/common/phases/*.md                .claude/specs/_workflow/phases/
+cp clients/claude/rules/*.md                 .claude/rules/   # agent-state-convention,
                                                                          # no-ai-attribution, keep-git-clean,
                                                                          # issue-tracking, per-worktree-venv,
                                                                          # issue-filing-discipline,
@@ -273,26 +273,27 @@ cp claude-agents/spec-workflow/rules/*.md                 .claude/rules/   # age
                                                                          # proportionality,
                                                                          # parallel-by-default,
                                                                          # native-tools-over-shell
-cp claude-commands/compile-memory.md                      .claude/commands/
+cp clients/claude/commands/compile-memory.md                      .claude/commands/
 mkdir -p .claude/docs
-cp claude-agents/spec-workflow/docs/review-contract.md    .claude/docs/  # ON-DEMAND: every reviewer reads it
-cp claude-agents/spec-workflow/docs/run-identity.md       .claude/docs/  # ON-DEMAND, deliberately NOT in
+cp clients/common/docs/review-contract.md    .claude/docs/  # ON-DEMAND: every reviewer reads it
+cp clients/claude/docs/run-identity.md       .claude/docs/  # ON-DEMAND, deliberately NOT in
                                                                          # rules/: the authoritative
                                                                          # run-identity/gate-release contract,
                                                                          # read by registered runs at start —
                                                                          # a rules/ file with no paths: would
                                                                          # load into EVERY session
-cp claude-agents/spec-workflow/docs/delivery.md           .claude/docs/  # ON-DEMAND: how a green PR lands,
+cp clients/common/docs/delivery.md           .claude/docs/  # ON-DEMAND: how a green PR lands,
                                                                          # deploys and is verified (read at
                                                                          # the PR phase; config/delivery.json)
-cp claude-agents/spec-workflow/hooks/*.py                 .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
+cp src/hooks/hook*.py src/hooks/gate_*.py src/hooks/red_for_right_reason.py \
+   src/hooks/wait_for.py src/hooks/supervisor.py .claude/hooks/   # hooks.py, hooklib.py, gate_*.py,
                                                                          # red_for_right_reason.py, wait_for.py,
                                                                          # supervisor.py
-cp claude-agents/spec-workflow/hooks/CONTRACT_VERSION     .claude/hooks/
-cp claude-agents/spec-workflow/hooks/MIGRATION.md         .claude/hooks/
-cp claude-agents/spec-workflow/hooks/REVISION_NOTICE.md   .claude/hooks/   # live-session notice; self-retires via Valid-until
+cp src/hooks/CONTRACT_VERSION     .claude/hooks/
+cp src/hooks/MIGRATION.md         .claude/hooks/
+cp src/hooks/REVISION_NOTICE.md   .claude/hooks/   # live-session notice; self-retires via Valid-until
 mkdir -p .claude/hooks/tests
-cp claude-agents/spec-workflow/hooks/tests/*.py           .claude/hooks/tests/
+cp src/hooks/tests/*.py           .claude/hooks/tests/
 rm -f .claude/hooks/*.sh .claude/hooks/tests/*.sh                        # the bash predecessors, if any
 grep -q '^.claude/hooks/\*\* text eol=lf' .gitattributes 2>/dev/null || printf '.claude/hooks/** text eol=lf\n' >> .gitattributes   # same commit as the files
 ```
@@ -334,7 +335,7 @@ registration.
 Registering the Stop gates without `session-register` is the configuration that produced
 the measured failure: with nothing seeding `runs/<run-id>/`, both gates resolved no state and
 exited 0 on every turn-end for 189 sessions. Root `CLAUDE.md` names the fleet rules in the
-one-line-per-rule "Fleet conventions" section of `ClaudeCodeSetupPrompt.txt` Part 8.1 / 12.3
+one-line-per-rule "Fleet conventions" section of `prompts/setup-claude.txt` Part 8.1 / 12.3
 (the rules themselves load into every session); Part 12 does all of this for you.
 
 ## Durable state (preserved for later agents)
@@ -367,7 +368,7 @@ field is read by no hook at all.
 
 The `decisions/decision-log.md` (`DL-NNN` entries: Decision / Driver / Alternatives /
 Evidence / Supersedes / Artifacts) is the cross-agent memory: every agent — these new
-ones AND the ported ones (dead-code, doc-review, issue-*, product-management, cv/*) —
+ones AND the ported ones (dead-code, doc-review, issue-*, product-management) —
 appends to it, so decisions and the discussion behind them survive across agents and
 sessions. See `rules/agent-state-convention.md`.
 

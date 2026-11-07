@@ -41,10 +41,10 @@ conflict resolution.
 
 ```bash
 mkdir -p .claude/agents
-cp claude-agents/code-merge-reviewer/code-merge-reviewer.md .claude/agents/
+cp clients/claude/agents/code-merge-reviewer.md .claude/agents/
 ```
 
-`ClaudeCodeSetupPrompt.txt` (Part 13) installs it alongside the issue-work-orchestrator.
+`prompts/setup-claude.txt` (Part 13) installs it alongside the issue-work-orchestrator.
 
 ## Scope and state
 

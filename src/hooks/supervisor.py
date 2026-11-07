@@ -17,7 +17,7 @@ for a session that has none (started before the watchdog existed, or a watchdog 
     exhausted   MAX_ATTEMPTS resumes did not bring it back -> report it to a person; do not retry
 
 It never resumes anything itself — a session is reached through the harness (`ListAgents` + `SendMessage` in
-a Desktop session; see claude-commands/supervise.md) — and it never touches a worktree, a branch or an issue.
+a Desktop session; see clients/claude/commands/supervise.md) — and it never touches a worktree, a branch or an issue.
 Standard library and hooklib only.
 """
 

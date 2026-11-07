@@ -8,7 +8,7 @@ request under `<agent root>/.resume-requests/<run-id>.json` for `.claude/hooks/s
 own run watchdog (a session-only CronCreate job, continuous-work.md) fires once the session is idle and
 resumes the recorded work; the supervisor is the host-level backstop for a session without one.
 
-MEASURED 2026-10-25 (project-docs/wait-time-analysis-2026-10-25.md): 17 turns ended on 401/403 authentication
+MEASURED 2026-10-25 (docs/reports/wait-time-analysis-2026-10-25.md): 17 turns ended on 401/403 authentication
 errors or a provider 400 idled a median 7.5 h each, 95 h in all, until a person typed /continue-work.
 
 Always exits 0 and prints nothing (StopFailure output is ignored); logs its decision like every gate.

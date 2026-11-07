@@ -1,6 +1,6 @@
 """Tests for scripts/reap_agent_temp.py, the OS-temp reaper.
 
-Installed from ``templates/test_reap_agent_temp.py.template`` to ``test/test_reap_agent_temp.py``.
+Installed from ``src/payload/test/test_reap_agent_temp.py`` to ``test/test_reap_agent_temp.py``.
 Run by CI's tests group; ``/close-session`` relies on the behaviour proven here.
 
 Every test works in its own temporary tree and passes ``--no-default-roots``, so the machine's real

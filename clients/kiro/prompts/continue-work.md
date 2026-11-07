@@ -1,7 +1,7 @@
 # Continue-Work — restart a stalled run (Kiro)
 
 Kiro counterpart of the Claude Code `/continue-work` command
-(`claude-commands/continue-work.md`). Installed to `.kiro/prompts/continue-work.md` and
+(`clients/claude/commands/continue-work.md`). Installed to `.kiro/prompts/continue-work.md` and
 invoked in Kiro CLI as **`@continue-work`**. The Kiro IDE reaches the same body through the
 `continue-work.kiro.hook` `userTriggered` hook.
 

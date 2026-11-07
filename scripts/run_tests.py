@@ -37,13 +37,14 @@ USAGE
     python scripts/run_tests.py --junit reports/junit.xml
     python scripts/run_tests.py --print-command          # show the argv, run nothing
 
-ADAPTED FOR THIS REPOSITORY (the prompt/agent authoring repo). Two deviations from
-templates/run_tests.py.template, both because this repo has no `src/` package:
+ADAPTED FOR THIS REPOSITORY (the framework's own repository). Two deviations from
+src/payload/scripts/run_tests.py, both because this repository's Python is not one package:
 
-  * The suite lives under `cli-agents/cv/` with its own `pytest.ini`, so the run happens
-    with that directory as cwd (SUITE_DIR below).
-  * `--coverage` is accepted but there is no single coverage source to point `--cov` at,
-    so it targets the shared scripts the tests actually exercise.
+  * With no test path given, the run covers the three suites in SUITES below: the hook
+    runtime's own suite, the shipped payload tests and the layout guard. It runs from the
+    repository root; the payload tests find their scripts beside them in src/payload/.
+  * `--coverage` measures `src/`, the Python those suites exercise. There is no
+    threshold gate here.
 
 This repository has no CI pipeline, so its suite really is run on demand rather than by
 CI. The bounded-worker and no-fail-fast contract is unchanged, which is the part worth
@@ -81,10 +82,11 @@ REPORT_ARGS: tuple[str, ...] = (
     "--continue-on-collection-errors",
 )
 
-# The only test suite in this repo, with its own pytest.ini.
-SUITE_DIR = Path(__file__).resolve().parent.parent / "cli-agents" / "cv"
+# The repository root, and the suites a run covers when no test path is given.
+ROOT = Path(__file__).resolve().parent.parent
+SUITES: tuple[str, ...] = ("src/hooks/tests", "src/payload/test", "test")
 
-COVERAGE_SOURCE = "shared/scripts"
+COVERAGE_SOURCE = "src"
 COVERAGE_THRESHOLD = 0  # no threshold gate in this repo
 
 
@@ -142,7 +144,9 @@ def build_command(
     extra: list[str],
 ) -> list[str]:
     """Assemble the pytest argv. Named parameters per the project's coding standards."""
-    cmd = [sys.executable, "-m", "pytest", *REPORT_ARGS]
+    # The root, explicitly: otherwise pytest takes the hook suite's own pytest.ini as the root of a run that spans
+    # all three suites, and every node id outside src/hooks/tests/ is reported under the wrong path.
+    cmd = [sys.executable, "-m", "pytest", "--rootdir", str(ROOT), *REPORT_ARGS]
 
     if workers == "auto":
         resolved = "auto"
@@ -161,7 +165,8 @@ def build_command(
         Path(junit).parent.mkdir(parents=True, exist_ok=True)
         cmd += [f"--junitxml={junit}"]
 
-    return cmd + extra
+    named = [arg for arg in extra if not arg.startswith("-") and (ROOT / arg.split("::")[0]).exists()]
+    return cmd + extra + ([] if named else list(SUITES))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,10 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         print(" ".join(cmd))
         return 0
 
-    print(f"run_tests: {' '.join(cmd)}  (cwd={SUITE_DIR})", flush=True)
-    if not SUITE_DIR.is_dir():
-        sys.exit(f"run_tests: suite directory {SUITE_DIR} not found")
-    return subprocess.call(cmd, cwd=SUITE_DIR)
+    print(f"run_tests: {' '.join(cmd)}  (cwd={ROOT})", flush=True)
+    return subprocess.call(cmd, cwd=ROOT)
 
 
 if __name__ == "__main__":
