@@ -1,0 +1,332 @@
+"""GitLab API wrapper for CI/CD and issue operations.
+
+Usage:
+    python scripts/gitlab_wrapper.py pipeline status
+    python scripts/gitlab_wrapper.py pipeline log
+    python scripts/gitlab_wrapper.py pipeline wait <pipeline_id> --timeout-seconds 540   # foreground; re-issue on 11
+        # BLOCKS until the pipeline is terminal, polling internally; exit 0 on success,
+        # 10 when it ended without success (failed/canceled/skipped/manual), 11 on timeout —
+        # distinct from the wrapper's own 1 (API error), 2 (usage), 3 (claim-check unclaimed).
+        # Agents run it AFTER the unblocked work, in the FOREGROUND, bounded
+        # (parallel-by-default.md) — never `sleep` in a tool call.
+    python scripts/gitlab_wrapper.py issue list
+    python scripts/gitlab_wrapper.py issue list --state opened --assignee "*" --labels in-progress
+    python scripts/gitlab_wrapper.py issue create --title "..." --labels "bug"
+    python scripts/gitlab_wrapper.py issue comment <iid> --body "..."
+    python scripts/gitlab_wrapper.py issue start <iid>        # claim in-progress (idempotent, verified)
+    python scripts/gitlab_wrapper.py issue claim-check <iid>  # read-only; exit 3 if open+unclaimed
+    python scripts/gitlab_wrapper.py issue release <iid>      # drop the claim
+    python scripts/gitlab_wrapper.py issue label-add <iid> --labels in-progress
+    python scripts/gitlab_wrapper.py issue assign <iid> --me
+    python scripts/gitlab_wrapper.py issue close <iid>
+    python scripts/gitlab_wrapper.py issue reopen <iid>       # undo a premature close
+    python scripts/gitlab_wrapper.py mr create --source <branch> --target main --title "..."
+    python scripts/gitlab_wrapper.py mr get <mr_iid>
+    python scripts/gitlab_wrapper.py mr checks <mr_iid>
+    python scripts/gitlab_wrapper.py mr approve <mr_iid>
+    python scripts/gitlab_wrapper.py mr merge <mr_iid>            # "merge": "direct" only
+    python scripts/gitlab_wrapper.py delete-branch <branch>
+    python scripts/gitlab_wrapper.py enqueue-pr <mr_iid>          # "merge": "steward": hand the MR to the queue
+    python scripts/gitlab_wrapper.py dequeue-pr <mr_iid> --reason "..."
+    python scripts/gitlab_wrapper.py queue-status [--json]
+    python scripts/gitlab_wrapper.py wait-landed <mr_iid> --timeout-seconds 540     # 0 landed, 10 returned, 11 re-issue
+    python scripts/gitlab_wrapper.py check-handoff <iid>                            # 0 ready, 4 not (reasons printed)
+    python scripts/gitlab_wrapper.py check-landed <mr_iid> [<mr_iid> ...]           # 0 all landed, 4 not
+
+Credentials: config/gitlab.json (gitignored).
+
+This wrapper is the project's mandated entry point for all GitLab API
+operations (see .kiro/steering/use-git-wrapper-scripts.md). Direct use
+of `glab`, `gh`, raw curl, or requests against the GitLab API is
+forbidden. If a host requires corporate-SSO cookie auth (e.g.
+Midway-protected GitLab), add that handling here as a clearly-commented
+extension point.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+CONFIG_FILE = Path("config") / "gitlab.json"
+PLACEHOLDER_MARKER = "PASTE_"
+
+FIELD_HOSTNAME = "hostname"
+FIELD_PROJECT_ID = "project_id"
+FIELD_TOKEN = "token"
+FIELD_TITLE = "title"
+FIELD_DESCRIPTION = "description"
+FIELD_LABELS = "labels"
+FIELD_CONFIDENTIAL = "confidential"
+FIELD_STATUS = "status"
+FIELD_ID = "id"
+
+logger = logging.getLogger("gitlab_wrapper")
+
+
+class GitLabAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 0, details: Any = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.details = details
+
+
+def _load_config() -> dict[str, Any]:
+    if not CONFIG_FILE.exists():
+        raise GitLabAPIError(
+            f"Missing credentials file: {CONFIG_FILE}. Copy config/gitlab.json.template and fill in real values."
+        )
+    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    for key in (FIELD_HOSTNAME, FIELD_PROJECT_ID, FIELD_TOKEN):
+        value = config.get(key, "")
+        if not value or str(value).startswith(PLACEHOLDER_MARKER):
+            raise GitLabAPIError(f"{CONFIG_FILE} is incomplete: fill in '{key}'.")
+    return config
+
+
+def _api_request(
+    *,
+    method: str,
+    path: str,
+    config: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    url = f"https://{config[FIELD_HOSTNAME]}/api/v4{path}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = Request(url=url, data=body, method=method)
+    req.add_header("PRIVATE-TOKEN", str(config[FIELD_TOKEN]))
+    req.add_header("Accept", "application/json")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req) as resp:
+            data = resp.read().decode("utf-8")
+            return json.loads(data) if data else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise GitLabAPIError(
+            f"GitLab API error: {exc.code} {exc.reason}",
+            status_code=exc.code,
+            details=details,
+        ) from exc
+
+
+PIPELINE_TERMINAL_STATUSES = frozenset({"success", "failed", "canceled", "skipped", "manual"})
+
+# Blocking-wait verdicts. Deliberately NOT 1/2/3: 1 is this wrapper's API-error exit (see
+# __main__), 2 is argparse's usage error, 3 is `issue claim-check`'s "open and unclaimed".
+# A caller that saw 1 could not tell "pipeline failed" from "the API call failed".
+EXIT_WAIT_NOT_SUCCESS = 10
+EXIT_WAIT_TIMEOUT = 11
+
+
+def pipeline_wait(
+    *,
+    config: dict[str, Any],
+    pipeline_id: int,
+    timeout_seconds: int = 540,  # the contract's bounded foreground wait; the caller re-issues on 11
+    interval_seconds: int = 30,
+) -> int:
+    """Block until the pipeline is terminal.
+
+    Exit-code semantics: 0 success, 10 not success (failed/canceled/skipped/manual), 11 timeout —
+    distinct from the wrapper's 1/2/3 (API error / usage error / claim-check unclaimed).
+
+    This is the ONE sanctioned way for an agent to wait on CI. The agent does the unblocked work first, then
+    runs this in the FOREGROUND with `--timeout-seconds 540` (under the tool's 10-minute ceiling), re-issuing
+    it while it exits 11 — never as a background task, which dies with the session's process and never wakes
+    the agent once stopped (measured 2026-10-10: 82 of 82). A `sleep N` in a
+    tool call, repeated, was measured at over a thousand hours of idle across three projects, each
+    wake-up re-reading a 400,000-token context.
+    """
+    import time
+
+    path = f"/projects/{config[FIELD_PROJECT_ID]}/pipelines/{pipeline_id}"
+    deadline = time.monotonic() + timeout_seconds
+    status = ""
+    while time.monotonic() < deadline:
+        data = _api_request(method="GET", path=path, config=config)
+        status = str(data.get(FIELD_STATUS, ""))
+        if status in PIPELINE_TERMINAL_STATUSES:
+            print(json.dumps({FIELD_ID: pipeline_id, FIELD_STATUS: status, "web_url": data.get("web_url", "")}))
+            return 0 if status == "success" else EXIT_WAIT_NOT_SUCCESS
+        time.sleep(interval_seconds)
+    print(json.dumps({FIELD_ID: pipeline_id, FIELD_STATUS: status or "unknown", "timeout_seconds": timeout_seconds}))
+    return EXIT_WAIT_TIMEOUT
+
+
+# Implement subcommand functions per the module docstring:
+# pipeline_status, pipeline_log, pipeline_wait (above — a REQUIRED subcommand,
+# wired as `pipeline wait <id> [--timeout-seconds N]`), issue_create, issue_list,
+# issue_show, label_list, label_create. Each takes named parameters and prints JSON
+# or human-readable output.
+#
+# Merge-request / CI lifecycle subcommands (required by the
+# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13).
+# All paths are under /projects/{project_id} (URL-encode the id if it is a
+# namespace/path rather than a numeric id):
+#   - issue_list: support --state (opened/closed/all), --assignee (a
+#     username, "*" for any-assignee, or "none"), and --labels filters, so
+#     the orchestrator can detect "in progress" issues (assignee set OR an
+#     in-progress label) and skip them. Map --assignee "*" -> assignee_id=Any,
+#     "none" -> assignee_id=None, else assignee_username=<user>.
+#   - issue_comment(iid, body): POST /issues/{iid}/notes
+#   - issue_close(iid): PUT /issues/{iid}?state_event=close
+#   - issue_reopen(iid): PUT /issues/{iid}?state_event=reopen. REQUIRED, not
+#     optional: it is how a close made over unfinished checklist items is undone
+#     (@close-session / /close-session step 2, and the Closing section of the
+#     issue-tracking rule). Idempotent — an already-opened issue exits 0.
+#     Re-claiming afterwards is issue_start's job, not this one's.
+#   - mr_create(source, target, title, description): POST /merge_requests
+#       {"source_branch","target_branch","title","description",
+#        "remove_source_branch": true}
+#   - mr_get(iid): GET /merge_requests/{iid} -> state (opened/merged/closed),
+#       draft/work_in_progress, merge_status, has_conflicts, approvals.
+#   - mr_checks(iid): GET /merge_requests/{iid}/pipelines (latest pipeline
+#       status) and/or the head pipeline jobs for CI status.
+#   - mr_approve(iid): POST /merge_requests/{iid}/approve  (requires the
+#       approvals feature; a user cannot approve their own MR on many
+#       instances — surface that so the orchestrator polls for external
+#       approval instead).
+#   - mr_merge(iid): PUT /merge_requests/{iid}/merge
+#       {"should_remove_source_branch": true,
+#        "merge_when_pipeline_succeeds": true (optional)}
+#   - delete_branch(branch): DELETE /repository/branches/{url-encoded-branch}
+#     (only needed if the MR did not auto-remove the source branch).
+#
+# Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
+# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
+#   - `enqueue-pr <iid>` (the same verb on both hosts, so the docs name one) ->
+#     `steward_delegate("enqueue-pr", [iid], _load_config()["token"], "gitlab")` (below): the
+#     steward's exit code passes through (0 queued, 4 refused with the reason printed — MR pipeline
+#     not green on the head, a closing keyword under watcher verification, a hold label, ...).
+#   - `dequeue-pr <iid> --reason <text>`, `queue-status [--json]`, `wait-landed <iid> --timeout-seconds 540`
+#     and `check-handoff <issue>` the same way.
+# The wrapper hands the steward ITS token on stdin (`--token-stdin`), so no second secret exists and
+# the steward never reads a token from a file git tracks. Under
+# "merge": "steward", mr_merge is refused by the merge-steward PreToolUse gate (only the steward
+# lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap MR
+# that installs the steward.
+#
+# Issue metadata + checklist subcommands (best-effort; see the
+# issue-tracking rule, .claude/rules/issue-tracking.md). GitLab supports
+# most of these natively:
+#
+#   *** IN-PROGRESS CLAIM — the deterministic, non-destructive path. ***
+#   NEVER set the in-progress label via `issue update --labels` (the plain
+#   "labels" field on PUT is a FULL REPLACE and silently drops other labels —
+#   this repeatedly caused the label to vanish and duplicate work). Use the
+#   DEDICATED additive fields instead:
+#   - label_add(iid, labels):    PUT /issues/{iid} {"add_labels": "a,b"}    (merge)
+#   - label_remove(iid, labels): PUT /issues/{iid} {"remove_labels": "a,b"} (subtract)
+#   - issue_assign(iid, --me|--user U|--unassign): set/clear the assignee
+#     (the "in progress" claim). PUT /issues/{iid} {"assignee_ids":[<id>]}.
+#     Resolve --me via GET /user; a username via GET /users?username=...;
+#     unassign with assignee_ids=[0]. assignee_ids is a JSON array, so send it
+#     as a JSON body, not urlencoded form fields.
+#   - issue_start(iid): THE CLAIM the orchestrator uses. Idempotent AND
+#     fail-closed: (1) re-fetch, abort if state != "opened"; (2) abort if
+#     already assigned to a different user (unless --force); (3) resolve the
+#     current user; (4) ONE PUT with {"add_labels": <in-progress label>,
+#     "assignee_ids":[me]}; (5) RE-READ and VERIFY the label is present AND
+#     the current user is an assignee — if not, exit non-zero printing the
+#     observed state (a claim is never believed unless it verifiably took).
+#     The in-progress label name is read from config/gitlab.json key
+#     "in_progress_label" (default "in-progress").
+#   - issue_release(iid): inverse of start — remove_labels=<in-progress> +
+#     assignee_ids=[0], for when an issue is too ambiguous to work now.
+#   - issue_claim_check(iid): READ-ONLY. Exit 0 if the issue is claimed
+#     (in-progress label present OR an assignee set) or not "opened"; exit 3
+#     if it is OPEN and UNCLAIMED. Consumed by the claim-before-worktree
+#     PreToolUse hook, which BLOCKS worktree creation for an unclaimed issue.
+#   - set_due_date / start: PUT /issues/{iid} {"due_date": "<YYYY-MM-DD>"}
+#     for a target/end date; GitLab has no first-class "start date" on plain
+#     issues (it exists on epics), so record the start as a dated note unless
+#     the project uses epics.
+#   - time tracking: POST /issues/{iid}/add_spent_time {"duration":"3h"}
+#     (equivalent to the /spend quick action) to record time-spent; optional
+#     POST /issues/{iid}/time_estimate.
+#   - set_parent(iid, parent): for an epic parent use the Epic-Issues API
+#     (PUT /groups/{g}/epics/{epic_iid}/issues/{issue_id}); for a parent/child
+#     issue link use POST /issues/{iid}/links. If neither applies, record the
+#     link as a note and report the limitation.
+#   - checklist items live in the issue DESCRIPTION as "- [ ]" / "- [x]"
+#     lines: toggle_checklist_item(iid, item_text, checked) by GET-ing the
+#     description, flipping the matching line, and PUT-ing it back. (GitLab
+#     renders these as "N of M checklist items completed".) NOT best-effort:
+#     this is how a task item is marked done, and the task-item gate in
+#     @close-session is satisfied by the resulting description. Consider a
+#     --count mode that reports ticked/total and lists the unticked items, so
+#     the gate needs no description parsing of its own.
+# For every field the host or this issue does not support, return a clear
+# "unsupported" result so the caller can fall back to a note and continue.
+#
+# If a host requires corporate-SSO cookie auth, add it at the documented
+# extension point above (same as the read-only subcommands).
+
+
+# The delivery verbs (`enqueue-pr`, `dequeue-pr`, `queue-status`) — a REFERENCE IMPLEMENTATION, wired as-is in
+# main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
+STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
+DELIVERY_CONFIG = Path("config") / "delivery.json"
+DELIVERY_VERBS = {
+    "enqueue-pr": "enqueue",
+    "dequeue-pr": "dequeue",
+    "queue-status": "status",
+    "wait-landed": "wait-landed",  # the session's bounded wait for its PR to land (0 landed, 10 returned, 11 re-issue)
+    "check-handoff": "check-handoff",  # may the issue be handed off? (0 yes, 4 no — the reasons are printed)
+    "check-landed": "check-landed",  # have all these PRs landed? (0 yes, 4 no — one line per PR that has not)
+}
+EXIT_DELIVERY_ELSEWHERE = 2
+
+
+def steward_delegate(verb: str, args: list[str], token: str, host: str) -> int:
+    """Run the project's merge steward for one delivery verb and return its exit code (0 accepted, 4 refused
+    with the reason printed, 1 host error, 2 usage). This wrapper's own token goes to the steward on STDIN —
+    never in argv, a URL, an environment variable or a second credential file. The queue lives on ONE host
+    (`config/delivery.json` `host`): on any other — a host kept as a read-only archive or mirror — every
+    delivery verb refuses, because no PR lands there."""
+    primary = "github"
+    if DELIVERY_CONFIG.is_file():
+        primary = str(json.loads(DELIVERY_CONFIG.read_text(encoding="utf-8")).get("host") or "github")
+    if primary != host:
+        logger.error(
+            "%s: the merge queue lives on %s (config/delivery.json), not on this %s host; enqueue the PR there",
+            verb,
+            primary,
+            host,
+        )
+        return EXIT_DELIVERY_ELSEWHERE
+    import subprocess  # nosec B404  # the project's own steward script, a fixed argv, never a shell
+
+    command = [sys.executable, str(STEWARD_SCRIPT), "--token-stdin", DELIVERY_VERBS[verb], *args]
+    return subprocess.run(command, input=token + "\n", text=True, check=False).returncode  # nosec B603  # fixed argv
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GitLab API wrapper")
+    parser.add_argument("subcommand")
+    args = parser.parse_args()
+    _ = _load_config()
+    raise NotImplementedError(
+        f"Subcommand '{args.subcommand}' not yet implemented in this skeleton. "
+        "Extend the wrapper as needed and remove this NotImplementedError."
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        main()
+    except GitLabAPIError as exc:
+        logger.error("%s", exc)
+        if exc.details:
+            logger.error("%s", exc.details)
+        sys.exit(1)

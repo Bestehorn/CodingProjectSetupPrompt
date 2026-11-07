@@ -178,15 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--coverage",
         action="store_true",
-        help=f"add --cov={COVERAGE_SOURCE} and the "
-        f"--cov-fail-under={COVERAGE_THRESHOLD} gate",
+        help=f"add --cov={COVERAGE_SOURCE} and the --cov-fail-under={COVERAGE_THRESHOLD} gate",
     )
     parser.add_argument(
         "--junit",
         default=None,
         metavar="PATH",
-        help="also write a JUnit XML report (CI reads this to list every "
-        "failing test, not just the first)",
+        help="also write a JUnit XML report (CI reads this to list every failing test, not just the first)",
     )
     parser.add_argument(
         "--print-command",

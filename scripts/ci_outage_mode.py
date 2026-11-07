@@ -71,10 +71,7 @@ def git_common_dir() -> Path:
         check=False,
     )
     if out.returncode != 0:
-        sys.exit(
-            "ci_outage_mode: not inside a git repository "
-            f"({out.stderr.strip() or 'git rev-parse failed'})"
-        )
+        sys.exit(f"ci_outage_mode: not inside a git repository ({out.stderr.strip() or 'git rev-parse failed'})")
     common = Path(out.stdout.strip())
     if not common.is_absolute():
         common = Path.cwd() / common
@@ -98,10 +95,7 @@ def do_declare(*, evidence_run: str, issue: str, rung: int, note: str) -> int:
 
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     body = (
-        f"{FIELD_DECLARED}: {now}\n"
-        f"{FIELD_EVIDENCE_RUN}: {evidence_run}\n"
-        f"{FIELD_ISSUE}: {issue}\n"
-        f"{FIELD_RUNG}: {rung}\n"
+        f"{FIELD_DECLARED}: {now}\n{FIELD_EVIDENCE_RUN}: {evidence_run}\n{FIELD_ISSUE}: {issue}\n{FIELD_RUNG}: {rung}\n"
     )
     if note:
         body += f"NOTE: {note}\n"
@@ -151,8 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     declare.add_argument(
         "--evidence-run",
         required=True,
-        help="the run/pipeline id whose per-job listing proved the "
-        "refusal (capacity ladder Rung 0)",
+        help="the run/pipeline id whose per-job listing proved the refusal (capacity ladder Rung 0)",
     )
     declare.add_argument(
         "--issue",
@@ -170,9 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     declare.add_argument("--note", default="", help="optional one-line context")
 
     status = sub.add_parser("status", help="exit 0 when active, 1 when not")
-    status.add_argument(
-        "--quiet", action="store_true", help="exit code only, no output"
-    )
+    status.add_argument("--quiet", action="store_true", help="exit code only, no output")
 
     sub.add_parser("clear", help="end CI-outage mode (do this as soon as CI is back)")
 

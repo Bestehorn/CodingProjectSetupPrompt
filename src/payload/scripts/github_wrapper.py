@@ -1,0 +1,350 @@
+"""GitHub API wrapper for CI/CD, issue, and PR operations.
+
+Usage:
+    python scripts/github_wrapper.py list-workflows
+    python scripts/github_wrapper.py list-runs --limit 5
+    python scripts/github_wrapper.py wait-run <run_id> --timeout-seconds 540   # foreground; re-issue on exit 11
+        # BLOCKS until the workflow run completes, polling internally; exit 0 on success,
+        # 10 when it completed with any non-success conclusion (failure/cancelled/skipped/
+        # timed_out/...), 11 on timeout — distinct from the wrapper's own 1 (API error),
+        # 2 (usage), 3 (claim-check unclaimed). Agents run it AFTER the unblocked work, in the
+        # FOREGROUND, bounded (parallel-by-default.md) — never `sleep` in a tool call.
+    python scripts/github_wrapper.py get-logs <run_id> --failed-only
+    python scripts/github_wrapper.py list-issues
+    python scripts/github_wrapper.py list-issues --state open --assignee "*" --label in-progress
+    python scripts/github_wrapper.py create-issue --title "..." --body "..."
+    python scripts/github_wrapper.py start-issue <number>    # claim in-progress (idempotent, verified)
+    python scripts/github_wrapper.py claim-check <number>    # read-only; exit 3 if open+unclaimed
+    python scripts/github_wrapper.py release-issue <number>  # drop the claim
+    python scripts/github_wrapper.py reopen-issue <number>   # undo a premature close
+    python scripts/github_wrapper.py create-pr --head <branch> --base main --title "..." --body-file <path>
+    python scripts/github_wrapper.py get-pr <pr_number>
+    python scripts/github_wrapper.py get-pr-checks <pr_number>
+    python scripts/github_wrapper.py approve-pr <pr_number>
+    python scripts/github_wrapper.py merge-pr <pr_number> --method squash   # "merge": "direct" only
+    python scripts/github_wrapper.py delete-remote-branch <branch>
+    python scripts/github_wrapper.py enqueue-pr <pr_number>     # "merge": "steward": hand the PR to the queue
+    python scripts/github_wrapper.py dequeue-pr <pr_number> --reason "..."
+    python scripts/github_wrapper.py queue-status [--json]
+    python scripts/github_wrapper.py wait-landed <pr_number> --timeout-seconds 540  # 0 landed, 10 returned, 11 re-issue
+    python scripts/github_wrapper.py check-handoff <issue_number>                   # 0 ready, 4 not (reasons printed)
+    python scripts/github_wrapper.py check-landed <pr_number> [<pr_number> ...]     # 0 all landed, 4 not
+
+Credentials: credentials/github-pat.txt (one-line PAT, gitignored).
+The owner/repo are auto-detected from .git/config — do NOT hardcode them.
+
+This wrapper is the project's mandated entry point for all GitHub API
+operations (see .kiro/steering/use-git-wrapper-scripts.md). Direct use
+of `gh`, `glab`, raw curl, or requests against api.github.com is
+forbidden.
+"""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import json
+import logging
+import re
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+CREDENTIALS_FILE = Path("credentials") / "github-pat.txt"
+PLACEHOLDER = "PASTE_YOUR_GITHUB_PAT_HERE"
+API_ROOT = "https://api.github.com"
+
+FIELD_MESSAGE = "message"
+FIELD_TITLE = "title"
+FIELD_BODY = "body"
+FIELD_STATE = "state"
+FIELD_LABELS = "labels"
+FIELD_WORKFLOWS = "workflows"
+FIELD_WORKFLOW_RUNS = "workflow_runs"
+FIELD_JOBS = "jobs"
+FIELD_NAME = "name"
+FIELD_CONCLUSION = "conclusion"
+
+logger = logging.getLogger("github_wrapper")
+
+
+class GitHubAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 0, details: Any = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.details = details
+
+
+def _detect_repo() -> tuple[str, str]:
+    """Parse .git/config to extract (owner, repo) from origin URL."""
+    cfg_path = Path(".git") / "config"
+    if not cfg_path.exists():
+        raise GitHubAPIError("Not a git repository (no .git/config found).")
+    parser = configparser.ConfigParser()
+    parser.read(cfg_path)
+    url = parser['remote "origin"']["url"]
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?/?$", url)
+    if not m:
+        raise GitHubAPIError(f"Could not parse GitHub owner/repo from origin URL: {url}")
+    return m.group(1), m.group(2)
+
+
+def _load_token() -> str:
+    if not CREDENTIALS_FILE.exists():
+        raise GitHubAPIError(
+            f"Missing credentials file: {CREDENTIALS_FILE}. Create it from credentials/github-pat.txt.template."
+        )
+    token = CREDENTIALS_FILE.read_text(encoding="utf-8").strip()
+    if not token or token == PLACEHOLDER:
+        raise GitHubAPIError(f"{CREDENTIALS_FILE} still contains the placeholder. Paste a real PAT.")
+    return token
+
+
+def _api_request(
+    *,
+    method: str,
+    path: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    url = f"{API_ROOT}{path}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = Request(url=url, data=body, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req) as resp:
+            data = resp.read().decode("utf-8")
+            return json.loads(data) if data else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise GitHubAPIError(
+            f"GitHub API error: {exc.code} {exc.reason}",
+            status_code=exc.code,
+            details=details,
+        ) from exc
+
+
+FIELD_STATUS = "status"
+RUN_STATUS_COMPLETED = "completed"
+RUN_CONCLUSION_SUCCESS = "success"
+
+# Blocking-wait verdicts. Deliberately NOT 1/2/3: 1 is this wrapper's API-error exit (see
+# __main__), 2 is argparse's usage error, 3 is `claim-check`'s "open and unclaimed". A caller
+# that saw 1 could not tell "the run failed" from "the API call failed".
+EXIT_WAIT_NOT_SUCCESS = 10
+EXIT_WAIT_TIMEOUT = 11
+
+
+def wait_run(
+    *,
+    owner: str,
+    repo: str,
+    token: str,
+    run_id: int,
+    timeout_seconds: int = 540,  # the contract's bounded foreground wait; the caller re-issues on 11
+    interval_seconds: int = 30,
+) -> int:
+    """Block until the workflow run completes.
+
+    Exit-code semantics: 0 success, 10 not success (any non-success conclusion: failure, cancelled,
+    skipped, timed_out, ...), 11 timeout — distinct from the wrapper's 1/2/3 (API error / usage
+    error / claim-check unclaimed).
+
+    The ONE sanctioned way for an agent to wait on CI: after the unblocked work is done, run in the FOREGROUND
+    with `--timeout-seconds 540` (under the tool's 10-minute ceiling) and re-issued while it exits 11. Not as
+    a background task: that dies with the session's process and a stopped task never wakes the agent
+    (measured 2026-10-10: 82 of 82). A `sleep N` in a tool call, repeated, was measured at over a thousand
+    hours of idle across three projects.
+    """
+    import time
+
+    path = f"/repos/{owner}/{repo}/actions/runs/{run_id}"
+    deadline = time.monotonic() + timeout_seconds
+    status = ""
+    conclusion = ""
+    while time.monotonic() < deadline:
+        data = _api_request(method="GET", path=path, token=token)
+        status = str(data.get(FIELD_STATUS, ""))
+        conclusion = str(data.get(FIELD_CONCLUSION) or "")
+        if status == RUN_STATUS_COMPLETED:
+            verdict = {"run_id": run_id, FIELD_STATUS: status, FIELD_CONCLUSION: conclusion}
+            print(json.dumps({**verdict, "html_url": data.get("html_url", "")}))
+            return 0 if conclusion == RUN_CONCLUSION_SUCCESS else EXIT_WAIT_NOT_SUCCESS
+        time.sleep(interval_seconds)
+    print(json.dumps({"run_id": run_id, FIELD_STATUS: status or "unknown", "timeout_seconds": timeout_seconds}))
+    return EXIT_WAIT_TIMEOUT
+
+
+# Implement subcommand functions: list_workflows, list_runs, get_run, wait_run
+# (above — a REQUIRED subcommand, wired as `wait-run <run_id> [--timeout-seconds N]`),
+# get_jobs, get_logs (with _NoRedirectHandler that strips Authorization
+# before following the 302 to Azure Blob Storage), rerun, cancel,
+# create_pr, list_issues, get_issue, get_issue_comments, comment_issue,
+# update_issue, create_issue. Each takes named parameters and prints
+# JSON or human-readable output.
+#
+# PR / merge / CI lifecycle subcommands (required by the
+# issue-work-orchestrator agent — see ClaudeCodeSetupPrompt.txt Part 13):
+#   - list_issues: support --state (open/closed/all), --assignee (a login,
+#     or "*" for "any assignee", or "none"), and --label filters, so the
+#     orchestrator can detect which open issues are "in progress"
+#     (assignee set OR an in-progress label) and skip them.
+#   - get_pr(pr_number): return the PR's state (open/closed/merged), draft
+#     flag, mergeable / mergeable_state, head/base refs, and review state.
+#       GET /repos/{owner}/{repo}/pulls/{number}
+#       GET /repos/{owner}/{repo}/pulls/{number}/reviews
+#   - get_pr_checks(pr_number): return the combined CI status and per-check
+#     conclusions for the PR's head SHA (resolve the head SHA from the PR,
+#     then query check-runs and/or the combined commit status).
+#       GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+#       GET /repos/{owner}/{repo}/commits/{sha}/status
+#   - approve_pr(pr_number): submit an APPROVE review.
+#       POST /repos/{owner}/{repo}/pulls/{number}/reviews  {"event":"APPROVE"}
+#     (Note: GitHub forbids approving your OWN PR; if the token user is the
+#     PR author this returns 422 — surface that clearly so the orchestrator
+#     falls back to polling for an external approval.)
+#   - merge_pr(pr_number, method): merge with method in {merge,squash,rebase}.
+#       PUT /repos/{owner}/{repo}/pulls/{number}/merge  {"merge_method": ...}
+#   - delete_remote_branch(branch): delete the head ref after merge.
+#       DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
+#   - (optional) get_pr_diff(pr_number): fetch the unified diff
+#       (Accept: application/vnd.github.v3.diff); and
+#     update_pr_description(pr_number, body): PATCH the PR body to link
+#     the fix documentation / evidence.
+#
+# Delivery subcommands (REQUIRED when config/delivery.json says "merge": "steward"; see
+# .claude/docs/delivery.md and templates/merge_steward.py.template). They DELEGATE — the queue's
+# rules live in ONE place, scripts/merge_steward.py, never re-implemented here:
+#   - `enqueue-pr <n>` -> `steward_delegate("enqueue-pr", [n], _load_token(), "github")` (below):
+#     the steward's exit code passes through (0 queued, 4 refused with the reason printed — PR CI not
+#     green on the head, a closing keyword under watcher verification, a hold label, ...).
+#   - `dequeue-pr <n> --reason <text>`, `queue-status [--json]`, `wait-landed <n> --timeout-seconds 540`
+#     and `check-handoff <issue>` the same way.
+# The wrapper hands the steward ITS token on stdin (`--token-stdin`), so no second secret exists. Under
+# "merge": "steward", merge_pr is refused by the merge-steward PreToolUse gate (only the steward
+# lands the trunk); keep it implemented for "merge": "direct" projects and for the bootstrap PR
+# that installs the steward.
+#
+# Issue metadata + checklist subcommands (best-effort; see the
+# issue-tracking rule, .claude/rules/issue-tracking.md). GitHub models
+# most of these differently from GitLab — implement what the host
+# supports and have the caller degrade gracefully:
+#
+#   *** IN-PROGRESS CLAIM — the deterministic, non-destructive path. ***
+#   GitHub has ADDITIVE label endpoints — use them, never a PATCH that
+#   replaces the whole "labels" array (that drops other labels):
+#   - label_add(number, labels):    POST   /repos/{o}/{r}/issues/{n}/labels {"labels":[...]}  (adds)
+#   - label_remove(number, label):  DELETE /repos/{o}/{r}/issues/{n}/labels/{label}           (one)
+#   - assign_issue(number, --me|--user U|--unassign): set/clear the assignee
+#     (the "in progress" claim). POST/DELETE
+#     /repos/{o}/{r}/issues/{n}/assignees {"assignees":[...]}. Resolve --me via
+#     GET /user; these assignee endpoints are additive/subtractive (not a full
+#     PATCH replace).
+#   - start_issue(number): THE CLAIM the orchestrator uses. Idempotent AND
+#     fail-closed: (1) GET the issue, abort if state != "open"; (2) abort if
+#     assigned to a different user (unless --force); (3) resolve the current
+#     user (GET /user); (4) POST the in-progress label AND POST the assignee;
+#     (5) RE-READ and VERIFY the label is present AND the current user is an
+#     assignee — else exit non-zero. In-progress label name from
+#     config/github.json key "in_progress_label" (default "in-progress").
+#   - release_issue(number): inverse — DELETE the in-progress label + DELETE
+#     the assignee.
+#   - claim_check(number): READ-ONLY. Exit 0 if claimed (in-progress label OR
+#     assignee) or not "open"; exit 3 if OPEN and UNCLAIMED. Consumed by the
+#     claim-before-worktree PreToolUse hook.
+#   - set_parent(number, parent): link a parent/tracking issue. GitHub has
+#     no first-class parent field on classic issues — implement via a
+#     task-list reference on the parent and/or the sub-issues API if the
+#     repo uses it; if unavailable, record the link as a comment and report
+#     "parent linking unsupported on this host".
+#   - toggle_checklist_item(number, item_text, checked): GitHub task lists
+#     live in the issue BODY as "- [ ] item" / "- [x] item" lines. Implement
+#     by GET-ing the issue body, flipping the matching line, and PATCH-ing
+#     the body back. (GitLab has a dedicated checklist API; GitHub does not.)
+#     NOT best-effort: this is how a task item is marked done, and the
+#     task-item gate in /close-session is satisfied by the resulting body.
+#     Consider a --count mode that just reports ticked/total and lists the
+#     unticked items, so the gate needs no body parsing of its own.
+#   - reopen_issue(number): PATCH /repos/{o}/{r}/issues/{n} {"state":"open"}.
+#     REQUIRED, not optional. It is how a close made over unfinished checklist
+#     items is undone (/close-session step 2, and the Closing section of the
+#     issue-tracking rule). Idempotent: an already-open issue is a no-op that
+#     exits 0. Re-claiming afterwards is start_issue's job, not this one's.
+#   - Time tracking: GitHub has no native time-tracking field. Record
+#     time-spent in a closing comment instead; report the limitation.
+#   - Start/end dates: no native field on classic issues; record as a dated
+#     comment (e.g. "Started: <ISO>") unless the repo uses Projects fields.
+# For every field the host does not support, return a clear "unsupported on
+# this host" result so the caller can fall back to a comment and move on.
+#
+# Reference: see the original scaffold in
+# CodingProjectSetupPrompt repo at templates/github_wrapper.py.template
+# and extend per project needs.
+
+
+# The delivery verbs (`enqueue-pr`, `dequeue-pr`, `queue-status`) — a REFERENCE IMPLEMENTATION, wired as-is in
+# main(); test/test_wrapper_delivery.py (templates/test_wrapper_delivery.py.template) pins it.
+STEWARD_SCRIPT = Path("scripts") / "merge_steward.py"
+DELIVERY_CONFIG = Path("config") / "delivery.json"
+DELIVERY_VERBS = {
+    "enqueue-pr": "enqueue",
+    "dequeue-pr": "dequeue",
+    "queue-status": "status",
+    "wait-landed": "wait-landed",  # the session's bounded wait for its PR to land (0 landed, 10 returned, 11 re-issue)
+    "check-handoff": "check-handoff",  # may the issue be handed off? (0 yes, 4 no — the reasons are printed)
+    "check-landed": "check-landed",  # have all these PRs landed? (0 yes, 4 no — one line per PR that has not)
+}
+EXIT_DELIVERY_ELSEWHERE = 2
+
+
+def steward_delegate(verb: str, args: list[str], token: str, host: str) -> int:
+    """Run the project's merge steward for one delivery verb and return its exit code (0 accepted, 4 refused
+    with the reason printed, 1 host error, 2 usage). This wrapper's own token goes to the steward on STDIN —
+    never in argv, a URL, an environment variable or a second credential file. The queue lives on ONE host
+    (`config/delivery.json` `host`): on any other — a host kept as a read-only archive or mirror — every
+    delivery verb refuses, because no PR lands there."""
+    primary = "github"
+    if DELIVERY_CONFIG.is_file():
+        primary = str(json.loads(DELIVERY_CONFIG.read_text(encoding="utf-8")).get("host") or "github")
+    if primary != host:
+        logger.error(
+            "%s: the merge queue lives on %s (config/delivery.json), not on this %s host; enqueue the PR there",
+            verb,
+            primary,
+            host,
+        )
+        return EXIT_DELIVERY_ELSEWHERE
+    import subprocess  # nosec B404  # the project's own steward script, a fixed argv, never a shell
+
+    command = [sys.executable, str(STEWARD_SCRIPT), "--token-stdin", DELIVERY_VERBS[verb], *args]
+    return subprocess.run(command, input=token + "\n", text=True, check=False).returncode  # nosec B603  # fixed argv
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GitHub API wrapper")
+    parser.add_argument("subcommand")
+    # ... add subparsers / arguments per the docstring above
+    args = parser.parse_args()
+    _ = _detect_repo()
+    _ = _load_token()
+    raise NotImplementedError(
+        f"Subcommand '{args.subcommand}' not yet implemented in this skeleton. "
+        "Extend the wrapper as needed and remove this NotImplementedError."
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        main()
+    except GitHubAPIError as exc:
+        logger.error("%s", exc)
+        if exc.details:
+            logger.error("%s", exc.details)
+        sys.exit(1)

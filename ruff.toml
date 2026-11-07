@@ -1,0 +1,5 @@
+# Lint and format profile for this repository's Python outside src/hooks/ (src/payload/, test/, scripts/).
+# It extends the profile the hooks ship with, so every Python file here is checked the way a project set up by
+# the framework checks it: 120 columns, the py39 floor, isort, mccabe 10. src/hooks/ keeps its own ruff.toml
+# because that file is installed with the hooks; ruff uses the nearest configuration file.
+extend = "src/hooks/ruff.toml"
